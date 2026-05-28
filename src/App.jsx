@@ -2892,11 +2892,6 @@ export default function App() {
 
   const [module, setModule] = useState(null); // null | "adulte_extra" | "adulte_intra" | "pediatrique" | "traumatique"
 
-  if (showPdf) return (
-    <PdfView patient={pat} noFlow={noFlowMin} lowFlow={lowFlowMin} acrTime={acrTime}
-      iot={iot} events={events} totalSec={sec} onClose={() => setShowPdf(false)} />
-  );
-
   // ── PAGE D'ACCUEIL GLOBALE ────────────────────────────────────────────────
   if (!module) return (
     <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans,
@@ -4153,6 +4148,12 @@ export default function App() {
           Appel régulation
         </button>
       </div>
+
+      {/* PDF adulte — overlay */}
+      {showPdf && (
+        <PdfView patient={pat} noFlow={noFlowMin} lowFlow={lowFlowMin} acrTime={acrTime}
+          iot={iot} events={events} totalSec={sec} onClose={() => setShowPdf(false)} />
+      )}
 
     </div>
   );
