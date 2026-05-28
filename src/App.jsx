@@ -34,6 +34,24 @@ function useTimer(active) {
   return [s, setS];
 }
 
+function calcAge(ddn) {
+  if (!ddn) return "";
+  const naissance = new Date(ddn);
+  if (isNaN(naissance)) return "";
+  const today = new Date();
+  let ans = today.getFullYear() - naissance.getFullYear();
+  const moisDiff = today.getMonth() - naissance.getMonth();
+  if (moisDiff < 0 || (moisDiff === 0 && today.getDate() < naissance.getDate())) ans--;
+  if (ans < 0) return "";
+  if (ans === 0) {
+    const mois = today.getMonth() - naissance.getMonth() +
+      (today.getDate() < naissance.getDate() ? -1 : 0) +
+      (today.getMonth() < naissance.getMonth() ? 12 : 0);
+    return mois <= 0 ? "< 1 mois" : `${mois} mois`;
+  }
+  return `${ans} ans`;
+}
+
 // ── ICÔNES SVG MÉDICALES ──────────────────────────────────────────────────────
 
 const ICONS = {
@@ -238,28 +256,50 @@ function Collapsible({ icon, title, children, badge }) {
 function ActionBtn({ action, onClick }) {
   const [press, setPress] = useState(false);
   const [flash, setFlash] = useState(false);
+  const active = flash || press;
   return (
     <button
-      onPointerDown={() => setPress(true)} onPointerUp={() => setPress(false)} onPointerLeave={() => setPress(false)}
-      onClick={() => { setFlash(true); setTimeout(() => setFlash(false), 500); onClick(); }}
+      onPointerDown={() => setPress(true)}
+      onPointerUp={() => setPress(false)}
+      onPointerLeave={() => setPress(false)}
+      onClick={() => { setFlash(true); setTimeout(() => setFlash(false), 600); onClick(); }}
       style={{
-        background: flash || press ? action.soft : P.surface,
-        border: `1.5px solid ${flash || press ? action.accent : P.border}`,
+        background: active ? action.soft : P.surface,
+        border: `1.5px solid ${active ? action.accent : P.border}`,
         borderRadius:14, padding:"14px 10px", cursor:"pointer", fontFamily:sans,
         display:"flex", flexDirection:"column", alignItems:"center", gap:6,
-        transform: press ? "scale(0.96)" : "scale(1)", transition:"all 0.12s",
+        transform: press ? "scale(0.95)" : "scale(1)",
+        transition:"all 0.12s",
         boxShadow: flash ? `0 0 0 3px ${action.soft}` : "0 1px 4px rgba(0,0,0,0.05)",
+        minWidth:0, boxSizing:"border-box", width:"100%",
       }}>
-      {/* SVG ou emoji */}
+      {/* Icône : SVG ou emoji */}
       {action.svg
-        ? <div style={{ width:32, height:32, color: flash || press ? action.accent : action.accent,
-            opacity: flash || press ? 1 : 0.75, transition:"opacity 0.12s" }}>
+        ? <div style={{
+            width:34, height:34,
+            color: action.accent,
+            opacity: active ? 1 : 0.6,
+            transform: active ? "scale(1.12)" : "scale(1)",
+            transition:"all 0.12s",
+          }}>
             {action.svg}
           </div>
-        : <span style={{ fontSize:24 }}>{action.icon}</span>
+        : <span style={{
+            fontSize: active ? 28 : 24,
+            transition:"font-size 0.12s",
+            filter: active ? `drop-shadow(0 0 4px ${action.accent})` : "none",
+          }}>
+            {action.icon}
+          </span>
       }
-      <span style={{ fontSize:12, fontWeight:500, color: flash ? action.textC : P.textMid,
-        textAlign:"center", lineHeight:1.3 }}>{action.label}</span>
+      <span style={{
+        fontSize:11, fontWeight: active ? 600 : 500,
+        color: active ? action.textC : P.textMid,
+        textAlign:"center", lineHeight:1.3,
+        transition:"color 0.12s",
+      }}>
+        {action.label}
+      </span>
     </button>
   );
 }
@@ -306,127 +346,398 @@ function ChoiceBtn({ label, sub, accent, soft, textC, onClick }) {
 
 // ── PDF ────────────────────────────────────────────────────────────────────────
 function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onClose }) {
-  const chocs  = events.filter(e => e.id === "choc").length;
-  const adrs   = events.filter(e => e.id === "adr").length;
-  const rosc   = events.find(e  => e.id === "rosc");
-  const deces  = events.find(e  => e.id === "deces");
+  const chocs = events.filter(e => e.id === "choc").length;
+  const adrs  = events.filter(e => e.id === "adr").length;
+  const rosc  = events.find(e => e.id === "rosc");
+  const deces = events.find(e => e.id === "deces");
+  const [copied, setCopied] = React.useState(false);
 
-  const summary =
-    `Arrêt cardio-respiratoire pris en charge le ${new Date().toLocaleDateString("fr-FR")}. ` +
-    (patient.nom ? `Patient : ${patient.nom}${patient.age ? `, ${patient.age} ans` : ""}. ` : "") +
-    (acrTime ? `Heure d'arrêt : ${acrTime}. ` : "") +
-    (noFlow  ? `No-flow estimé : ${noFlow} min. ` : "No-flow inconnu. ") +
-    (lowFlow ? `Low-flow : ${lowFlow} min. ` : "") +
-    `Durée totale de RCP : ${fmtSec(totalSec)}. ` +
-    (chocs ? `${chocs} choc(s) électrique(s) délivré(s). ` : "") +
-    (adrs  ? `Adrénaline administrée ${adrs} fois. ` : "") +
-    (iot.sonde ? `Intubation oro-trachéale réalisée (Cormack ${iot.cormack||"—"}, sonde ${iot.sonde} mm, repère ${iot.repere||"—"} cm${iot.capno ? `, ETCO2 ${iot.capno} mmHg` : ""}). ` : "") +
-    (rosc  ? `Reprise de pouls obtenue à ${rosc.time}.` :
-     deces ? `${deces.label} à ${deces.time}.` : "Issue non renseignée.");
+  // Génère le texte complet du compte-rendu
+  const buildText = () => {
+    const lines = [];
+    lines.push("═══════════════════════════════════");
+    lines.push("       COMPTE-RENDU DE SMUR");
+    lines.push("═══════════════════════════════════");
+    lines.push(`Date : ${new Date().toLocaleDateString("fr-FR")}  Heure : ${getNow()}`);
+    lines.push("");
+
+    if (patient?.nom || patient?.prenom) {
+      lines.push("── PATIENT ─────────────────────────");
+      if (patient.nom || patient.prenom)
+        lines.push(`Nom : ${[patient.nom, patient.prenom].filter(Boolean).join(" ")}`);
+      if (patient.ddn)
+        lines.push(`DDN : ${new Date(patient.ddn).toLocaleDateString("fr-FR")}`);
+      if (patient.age)  lines.push(`Âge : ${patient.age}`);
+      if (patient.atcd) lines.push(`ATCD : ${patient.atcd}`);
+      if (patient.histoire) lines.push(`Histoire : ${patient.histoire}`);
+      lines.push("");
+    }
+
+    lines.push("── DONNÉES RCP ─────────────────────");
+    lines.push(`Heure ACR      : ${acrTime || "Inconnue"}`);
+    lines.push(`No-flow        : ${noFlow  ? noFlow + " min" : "Inconnu"}`);
+    lines.push(`Low-flow       : ${lowFlow ? lowFlow + " min" : "—"}`);
+    lines.push(`Durée RCP      : ${fmtSec(totalSec)}`);
+    lines.push(`Chocs élect.   : ${chocs || "Aucun"}`);
+    lines.push(`Adrénaline     : ${adrs ? adrs + " × 1 mg" : "Non administrée"}`);
+    lines.push(`Issue          : ${rosc ? "ROSC à " + rosc.time : deces ? deces.label : "Non renseignée"}`);
+    lines.push("");
+
+    if (iot?.sonde) {
+      lines.push("── INTUBATION OT ───────────────────");
+      if (iot.cormack) lines.push(`Cormack  : ${iot.cormack}`);
+      lines.push(`Sonde    : ${iot.sonde} mm`);
+      if (iot.repere)  lines.push(`Repère   : ${iot.repere} cm`);
+      if (iot.capno)   lines.push(`EtCO₂    : ${iot.capno} mmHg`);
+      lines.push("");
+    }
+
+    lines.push("── CHRONOLOGIE ─────────────────────");
+    events.forEach(e => {
+      lines.push(`${e.time}  ${e.label}`);
+    });
+    lines.push("");
+
+    lines.push("── RÉSUMÉ ──────────────────────────");
+    lines.push(
+      `ACR pris en charge le ${new Date().toLocaleDateString("fr-FR")}.` +
+      (patient?.nom ? ` Patient : ${patient.nom}.` : "") +
+      (acrTime ? ` Heure d'arrêt : ${acrTime}.` : "") +
+      (noFlow  ? ` No-flow : ${noFlow} min.` : " No-flow inconnu.") +
+      (lowFlow ? ` Low-flow : ${lowFlow} min.` : "") +
+      ` Durée RCP : ${fmtSec(totalSec)}.` +
+      (chocs ? ` ${chocs} choc(s).` : "") +
+      (adrs  ? ` Adrénaline ${adrs} fois.` : "") +
+      (iot?.sonde ? ` IOT sonde ${iot.sonde} mm.` : "") +
+      (rosc  ? ` ROSC à ${rosc.time}.` : deces ? ` ${deces.label}.` : " Issue non renseignée.")
+    );
+    lines.push("");
+    lines.push("───────────────────────────────────");
+    lines.push("Usage professionnel exclusif");
+    lines.push("Outil d'aide cognitive — chaque");
+    lines.push("professionnel reste responsable");
+    lines.push("de ses prescriptions.");
+    return lines.join("\n");
+  };
+
+  const handleDownload = () => {
+    const text = buildText();
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    const date = new Date().toISOString().slice(0,10);
+    const nom  = patient?.nom ? `_${patient.nom}` : "";
+    a.href     = url;
+    a.download = `ACR${nom}_${date}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(buildText()).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    });
+  };
+
+  const Section = ({ title, children }) => (
+    <div style={{ marginBottom:14 }}>
+      <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:600, color:P.textSoft,
+        textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>{title}</p>
+      {children}
+    </div>
+  );
+
+  const Field = ({ label, value }) => value ? (
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+      padding:"6px 0", borderBottom:`1px solid ${P.borderSoft}`, gap:8 }}>
+      <span style={{ fontSize:12, color:P.textMid }}>{label}</span>
+      <span style={{ fontSize:13, fontWeight:600, color:P.text, fontFamily:mono,
+        textAlign:"right", flexShrink:0 }}>{value}</span>
+    </div>
+  ) : null;
 
   return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(28,43,58,0.6)", zIndex:60,
-      overflowY:"auto", padding:"20px 12px 60px", backdropFilter:"blur(3px)" }}>
-      <div style={{ background:P.surface, maxWidth:600, margin:"0 auto", borderRadius:18,
-        padding:"28px 22px", fontFamily:sans, boxShadow:"0 20px 60px rgba(0,0,0,0.2)" }}>
+    <div style={{ position:"fixed", inset:0, background:P.bg, zIndex:60,
+      overflowY:"auto", fontFamily:sans, boxSizing:"border-box" }}>
 
-        <div style={{ borderBottom:`1px solid ${P.border}`, paddingBottom:16, marginBottom:20,
-          display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-          <div>
-            <h2 style={{ margin:0, fontSize:18, fontWeight:600, color:P.text }}>Compte-rendu de SMUR</h2>
-            <p style={{ margin:"4px 0 0", fontSize:12, color:P.textSoft }}>ACR · {new Date().toLocaleDateString("fr-FR")} · {getNow()}</p>
-          </div>
+      {/* Header sticky */}
+      <div style={{ position:"sticky", top:0, background:P.surface,
+        borderBottom:`1px solid ${P.border}`, padding:"14px 16px",
+        display:"flex", alignItems:"center", justifyContent:"space-between",
+        zIndex:10, boxShadow:"0 2px 8px rgba(0,0,0,0.06)" }}>
+        <div>
+          <p style={{ margin:0, fontSize:14, fontWeight:600, color:P.text }}>Compte-rendu SMUR</p>
+          <p style={{ margin:0, fontSize:11, color:P.textSoft }}>
+            {new Date().toLocaleDateString("fr-FR")} · {getNow()}
+          </p>
         </div>
+        <button onClick={onClose}
+          style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`,
+            borderRadius:10, padding:"8px 14px", cursor:"pointer",
+            fontFamily:sans, fontSize:13, fontWeight:500, color:P.textMid }}>
+          ← Retour
+        </button>
+      </div>
 
-        {(patient.nom || patient.prenom || patient.ddn) && (
-          <div style={{ background:P.tealSoft, border:`1px solid #B2DADA`, borderRadius:12,
-            padding:"12px 16px", marginBottom:16 }}>
-            <Lbl>Patient</Lbl>
-            <p style={{ margin:0, fontSize:14, fontWeight:600, color:P.text }}>
-              {[patient.nom, patient.prenom].filter(Boolean).join(" ")}
+      <div style={{ padding:"16px 14px 100px", maxWidth:600, margin:"0 auto",
+        boxSizing:"border-box", width:"100%" }}>
+
+        {/* Patient */}
+        {(patient?.nom || patient?.prenom || patient?.ddn || patient?.age) && (
+          <div style={{ background:P.tealSoft, border:`1px solid #B2DADA`,
+            borderRadius:12, padding:"12px 14px", marginBottom:14 }}>
+            <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:600, color:P.tealText,
+              textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Patient</p>
+            <p style={{ margin:0, fontSize:16, fontWeight:700, color:P.text }}>
+              {[patient.nom, patient.prenom].filter(Boolean).join(" ") || "—"}
             </p>
-            <p style={{ margin:"3px 0 0", fontSize:13, color:P.textMid }}>
-              {[patient.ddn && `Né(e) le ${new Date(patient.ddn).toLocaleDateString("fr-FR")}`, patient.age && `${patient.age} ans`, patient.sexe].filter(Boolean).join(" · ")}
-            </p>
-          </div>
-        )}
-
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:16 }}>
-          {[
-            ["Heure ACR",   acrTime || "Inconnue"],
-            ["No-flow",    noFlow  ? `${noFlow} min` : "Inconnu"],
-            ["Low-flow",   lowFlow ? `${lowFlow} min` : "—"],
-            ["Durée RCP",  fmtSec(totalSec)],
-            ["Chocs",      chocs],
-            ["Adrénaline", `${adrs}×1mg`],
-            ["Issue",      rosc ? `✓ ROSC ${rosc.time}` : deces ? deces.label : "—"],
-          ].map(([k, v]) => (
-            <div key={k} style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px 14px" }}>
-              <Lbl>{k}</Lbl>
-              <p style={{ margin:0, fontSize:14, fontWeight:600, color:P.text }}>{String(v)}</p>
-            </div>
-          ))}
-        </div>
-
-        {iot.sonde && (
-          <div style={{ background:P.violetSoft, border:`1px solid #C4BBEE`, borderRadius:12,
-            padding:"12px 16px", marginBottom:16 }}>
-            <Lbl>Intubation oro-trachéale</Lbl>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:6 }}>
+            <p style={{ margin:"3px 0 0", fontSize:12, color:P.textMid }}>
               {[
-                ["Cormack",  iot.cormack || "—"],
-                ["Sonde",    iot.sonde ? `${iot.sonde} mm` : "—"],
-                ["Repère",   iot.repere ? `${iot.repere} cm` : "—"],
-                ["ETCO2",    iot.capno  ? `${iot.capno} mmHg` : "—"],
-              ].map(([k,v]) => (
-                <div key={k}>
-                  <p style={{ margin:"0 0 2px", fontSize:10, color:P.violetText, fontFamily:mono,
-                    textTransform:"uppercase", letterSpacing:"0.08em" }}>{k}</p>
-                  <p style={{ margin:0, fontSize:14, fontWeight:600, color:P.text }}>{v}</p>
-                </div>
-              ))}
-            </div>
+                patient.ddn && `Né(e) le ${new Date(patient.ddn).toLocaleDateString("fr-FR")}`,
+                patient.age,
+                patient.sexe
+              ].filter(Boolean).join(" · ")}
+            </p>
           </div>
         )}
 
-        {patient.atcd && <div style={{ marginBottom:12 }}><Lbl>Antécédents</Lbl>
-          <p style={{ margin:0, fontSize:13, color:P.textMid, background:P.surfaceAlt,
-            borderRadius:9, padding:"9px 12px", whiteSpace:"pre-wrap", lineHeight:1.6 }}>{patient.atcd}</p></div>}
-        {patient.traitement && <div style={{ marginBottom:12 }}><Lbl>Traitements habituels</Lbl>
-          <p style={{ margin:0, fontSize:13, color:P.textMid, background:P.surfaceAlt,
-            borderRadius:9, padding:"9px 12px", whiteSpace:"pre-wrap", lineHeight:1.6 }}>{patient.traitement}</p></div>}
-        {patient.histoire && <div style={{ marginBottom:16 }}><Lbl>Histoire de la maladie</Lbl>
-          <p style={{ margin:0, fontSize:13, color:P.textMid, background:P.surfaceAlt,
-            borderRadius:9, padding:"9px 12px", whiteSpace:"pre-wrap", lineHeight:1.6 }}>{patient.histoire}</p></div>}
+        {/* Données RCP */}
+        <Section title="Données RCP">
+          <div style={{ background:P.surface, border:`1px solid ${P.border}`,
+            borderRadius:12, padding:"4px 14px" }}>
+            <Field label="Heure ACR"         value={acrTime || "Inconnue"} />
+            <Field label="No-flow"           value={noFlow  ? `${noFlow} min` : "Inconnu"} />
+            <Field label="Low-flow"          value={lowFlow ? `${lowFlow} min` : null} />
+            <Field label="Durée RCP"         value={fmtSec(totalSec)} />
+            <Field label="Chocs électriques" value={chocs ? `${chocs} choc(s)` : "Aucun"} />
+            <Field label="Adrénaline"        value={adrs ? `${adrs} × 1 mg` : "Non administrée"} />
+            <Field label="Issue"             value={rosc ? `✓ ROSC — ${rosc.time}` : deces ? deces.label : "Non renseignée"} />
+          </div>
+        </Section>
 
-        <Lbl>Chronologie</Lbl>
-        <div style={{ borderRadius:12, border:`1px solid ${P.border}`, overflow:"hidden", marginBottom:16 }}>
-          {events.map((e, i) => (
-            <div key={i} style={{ display:"flex", gap:12, padding:"8px 14px",
-              background: i%2===0 ? P.surface : P.surfaceAlt, fontSize:12, alignItems:"center" }}>
-              <span style={{ fontFamily:mono, color:P.blue, fontWeight:500, minWidth:40 }}>{e.time}</span>
-              <span style={{ color:P.textMid }}>{e.icon} {e.label}</span>
+        {/* IOT */}
+        {iot?.sonde && (
+          <Section title="Intubation oro-trachéale">
+            <div style={{ background:P.violetSoft, border:`1px solid #C4BBEE`,
+              borderRadius:12, padding:"4px 14px" }}>
+              {iot.cormack && <Field label="Cormack" value={iot.cormack} />}
+              <Field label="Sonde"  value={`${iot.sonde} mm`} />
+              {iot.repere && <Field label="Repère"  value={`${iot.repere} cm`} />}
+              {iot.capno  && <Field label="EtCO₂"   value={`${iot.capno} mmHg`} />}
             </div>
-          ))}
-        </div>
+          </Section>
+        )}
 
-        <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"14px 16px",
-          marginBottom:22, border:`1px solid ${P.border}` }}>
-          <Lbl>Résumé médical</Lbl>
-          <p style={{ margin:0, fontSize:13, lineHeight:1.8, color:P.text }}>{summary}</p>
-        </div>
+        {patient?.atcd && (
+          <Section title="Antécédents">
+            <p style={{ margin:0, fontSize:13, color:P.textMid, background:P.surfaceAlt,
+              borderRadius:9, padding:"9px 12px", lineHeight:1.6 }}>{patient.atcd}</p>
+          </Section>
+        )}
+        {patient?.histoire && (
+          <Section title="Histoire de la maladie">
+            <p style={{ margin:0, fontSize:13, color:P.textMid, background:P.surfaceAlt,
+              borderRadius:9, padding:"9px 12px", lineHeight:1.6 }}>{patient.histoire}</p>
+          </Section>
+        )}
 
-        <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
-          <button onClick={onClose}
-            style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:9,
-              padding:"9px 18px", cursor:"pointer", fontFamily:sans, fontSize:13,
-              color:P.textMid, fontWeight:500 }}>← Retour</button>
-          <button onClick={() => window.print()}
-            style={{ background:P.blue, border:"none", borderRadius:9, padding:"9px 20px",
-              cursor:"pointer", fontFamily:sans, fontSize:13, fontWeight:600, color:"#fff" }}>
-            Imprimer
+        {/* Chronologie */}
+        <Section title={`Chronologie (${events.length} événements)`}>
+          <div style={{ border:`1px solid ${P.border}`, borderRadius:12, overflow:"hidden" }}>
+            {events.length === 0 && (
+              <p style={{ margin:0, padding:"12px 14px", fontSize:12, color:P.textSoft }}>
+                Aucun événement
+              </p>
+            )}
+            {events.map((e, i) => (
+              <div key={i} style={{ display:"flex", gap:10, padding:"8px 14px",
+                background: i%2===0 ? P.surface : P.surfaceAlt, alignItems:"center",
+                overflow:"hidden" }}>
+                <span style={{ fontFamily:mono, color:P.blue, fontWeight:600,
+                  fontSize:11, flexShrink:0 }}>{e.time}</span>
+                <span style={{ fontSize:12, color:P.textMid, flex:1, minWidth:0,
+                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                  {e.icon} {e.label}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Section>
+
+        {/* Résumé */}
+        <Section title="Résumé médical">
+          <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"14px",
+            border:`1px solid ${P.border}` }}>
+            <p style={{ margin:0, fontSize:13, lineHeight:1.8, color:P.text }}>
+              ACR pris en charge le {new Date().toLocaleDateString("fr-FR")}.
+              {patient?.nom ? ` Patient : ${patient.nom}.` : ""}
+              {acrTime ? ` Heure d'arrêt : ${acrTime}.` : ""}
+              {noFlow  ? ` No-flow : ${noFlow} min.` : " No-flow inconnu."}
+              {lowFlow ? ` Low-flow : ${lowFlow} min.` : ""}
+              {` Durée RCP : ${fmtSec(totalSec)}.`}
+              {chocs ? ` ${chocs} choc(s) électrique(s).` : ""}
+              {adrs  ? ` Adrénaline ${adrs} fois.` : ""}
+              {iot?.sonde ? ` IOT sonde ${iot.sonde} mm${iot.repere ? `, repère ${iot.repere} cm` : ""}${iot.capno ? `, EtCO2 ${iot.capno} mmHg` : ""}.` : ""}
+              {rosc  ? ` ROSC à ${rosc.time}.` : deces ? ` ${deces.label}.` : " Issue non renseignée."}
+            </p>
+          </div>
+        </Section>
+
+      </div>
+
+      {/* Boutons fixes en bas */}
+      <div style={{ position:"fixed", bottom:0, left:0, right:0, zIndex:20,
+        background:P.surface, borderTop:`1px solid ${P.border}`,
+        padding:"10px 14px 16px", boxShadow:"0 -4px 16px rgba(0,0,0,0.08)" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, maxWidth:600, margin:"0 auto" }}>
+          <button onClick={handleCopy}
+            style={{ background: copied ? P.greenSoft : P.surfaceAlt,
+              border:`1.5px solid ${copied ? P.green : P.border}`,
+              borderRadius:12, padding:"12px 8px", cursor:"pointer",
+              fontFamily:sans, fontSize:13, fontWeight:600,
+              color: copied ? P.greenText : P.textMid,
+              display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+            {copied ? "✓ Copié !" : "📋 Copier le texte"}
+          </button>
+          <button onClick={handleDownload}
+            style={{ background:"linear-gradient(135deg,#3B82C4,#2563A8)",
+              border:"none", borderRadius:12, padding:"12px 8px",
+              cursor:"pointer", fontFamily:sans, fontSize:13, fontWeight:600,
+              color:"#fff", display:"flex", alignItems:"center",
+              justifyContent:"center", gap:6 }}>
+            💾 Télécharger .txt
           </button>
         </div>
+        <p style={{ textAlign:"center", fontSize:9, color:P.textSoft, margin:"8px 0 0",
+          fontStyle:"italic" }}>
+          Usage professionnel · Chaque praticien reste responsable de ses prescriptions
+        </p>
+      </div>
+
+      {/* Header sticky */}
+      <div style={{ position:"sticky", top:0, background:P.surface, borderBottom:`1px solid ${P.border}`,
+        padding:"14px 16px", display:"flex", alignItems:"center", justifyContent:"space-between",
+        zIndex:10, boxShadow:"0 2px 8px rgba(0,0,0,0.06)" }}>
+        <div>
+          <p style={{ margin:0, fontSize:14, fontWeight:600, color:P.text }}>Compte-rendu SMUR</p>
+          <p style={{ margin:0, fontSize:11, color:P.textSoft }}>
+            {new Date().toLocaleDateString("fr-FR")} · {getNow()}
+          </p>
+        </div>
+        <button onClick={onClose}
+          style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:10,
+            padding:"8px 16px", cursor:"pointer", fontFamily:sans, fontSize:13,
+            fontWeight:500, color:P.textMid }}>← Retour</button>
+      </div>
+
+      <div style={{ padding:"16px 14px 40px", maxWidth:600, margin:"0 auto", boxSizing:"border-box", width:"100%" }}>
+
+        {/* Patient */}
+        {(patient?.nom || patient?.prenom || patient?.ddn || patient?.age) && (
+          <div style={{ background:P.tealSoft, border:`1px solid #B2DADA`, borderRadius:12,
+            padding:"12px 14px", marginBottom:14 }}>
+            <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:600, color:P.tealText,
+              textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Patient</p>
+            <p style={{ margin:0, fontSize:16, fontWeight:700, color:P.text }}>
+              {[patient.nom, patient.prenom].filter(Boolean).join(" ") || "—"}
+            </p>
+            <p style={{ margin:"3px 0 0", fontSize:12, color:P.textMid }}>
+              {[
+                patient.ddn && `Né(e) le ${new Date(patient.ddn).toLocaleDateString("fr-FR")}`,
+                patient.age && `${patient.age}`,
+                patient.sexe
+              ].filter(Boolean).join(" · ")}
+            </p>
+          </div>
+        )}
+
+        {/* Données RCP */}
+        <Section title="Données RCP">
+          <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:12, padding:"4px 14px" }}>
+            <Field label="Heure ACR"    value={acrTime || "Inconnue"} />
+            <Field label="No-flow"      value={noFlow  ? `${noFlow} min` : "Inconnu"} />
+            <Field label="Low-flow"     value={lowFlow ? `${lowFlow} min` : null} />
+            <Field label="Durée RCP"    value={fmtSec(totalSec)} />
+            <Field label="Chocs électriques" value={chocs ? `${chocs} choc(s)` : "Aucun"} />
+            <Field label="Adrénaline"   value={adrs ? `${adrs} × 1 mg` : "Non administrée"} />
+            <Field label="Issue"        value={rosc ? `✓ ROSC — ${rosc.time}` : deces ? deces.label : "Non renseignée"} />
+          </div>
+        </Section>
+
+        {/* IOT */}
+        {iot?.sonde && (
+          <Section title="Intubation oro-trachéale">
+            <div style={{ background:P.violetSoft, border:`1px solid #C4BBEE`, borderRadius:12, padding:"4px 14px" }}>
+              {iot.cormack && <Field label="Cormack" value={iot.cormack} />}
+              <Field label="Sonde"  value={`${iot.sonde} mm`} />
+              {iot.repere && <Field label="Repère"  value={`${iot.repere} cm`} />}
+              {iot.capno  && <Field label="EtCO₂"   value={`${iot.capno} mmHg`} />}
+            </div>
+          </Section>
+        )}
+
+        {/* Antécédents / Histoire */}
+        {patient?.atcd && (
+          <Section title="Antécédents">
+            <p style={{ margin:0, fontSize:13, color:P.textMid, background:P.surfaceAlt,
+              borderRadius:9, padding:"9px 12px", lineHeight:1.6 }}>{patient.atcd}</p>
+          </Section>
+        )}
+        {patient?.histoire && (
+          <Section title="Histoire de la maladie">
+            <p style={{ margin:0, fontSize:13, color:P.textMid, background:P.surfaceAlt,
+              borderRadius:9, padding:"9px 12px", lineHeight:1.6 }}>{patient.histoire}</p>
+          </Section>
+        )}
+
+        {/* Chronologie */}
+        <Section title={`Chronologie (${events.length} événements)`}>
+          <div style={{ border:`1px solid ${P.border}`, borderRadius:12, overflow:"hidden" }}>
+            {events.length === 0 && (
+              <p style={{ margin:0, padding:"12px 14px", fontSize:12, color:P.textSoft }}>Aucun événement</p>
+            )}
+            {events.map((e, i) => (
+              <div key={i} style={{ display:"flex", gap:10, padding:"8px 14px",
+                background: i%2===0 ? P.surface : P.surfaceAlt,
+                alignItems:"center", overflow:"hidden" }}>
+                <span style={{ fontFamily:mono, color:P.blue, fontWeight:600,
+                  fontSize:11, flexShrink:0 }}>{e.time}</span>
+                <span style={{ fontSize:12, color:P.textMid, flex:1, minWidth:0,
+                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                  {e.icon} {e.label}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Section>
+
+        {/* Résumé texte */}
+        <Section title="Résumé médical">
+          <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"14px",
+            border:`1px solid ${P.border}` }}>
+            <p style={{ margin:0, fontSize:13, lineHeight:1.8, color:P.text }}>
+              Arrêt cardio-respiratoire pris en charge le {new Date().toLocaleDateString("fr-FR")}.
+              {patient?.nom ? ` Patient : ${patient.nom}${patient.age ? `, ${patient.age}` : ""}.` : ""}
+              {acrTime ? ` Heure d'arrêt : ${acrTime}.` : ""}
+              {noFlow  ? ` No-flow estimé : ${noFlow} min.` : " No-flow inconnu."}
+              {lowFlow ? ` Low-flow : ${lowFlow} min.` : ""}
+              {` Durée totale de RCP : ${fmtSec(totalSec)}.`}
+              {chocs ? ` ${chocs} choc(s) électrique(s) délivré(s).` : ""}
+              {adrs  ? ` Adrénaline administrée ${adrs} fois.` : ""}
+              {iot?.sonde ? ` Intubation oro-trachéale réalisée (sonde ${iot.sonde} mm${iot.repere ? `, repère ${iot.repere} cm` : ""}${iot.capno ? `, ETCO2 ${iot.capno} mmHg` : ""}).` : ""}
+              {rosc  ? ` Reprise de pouls obtenue à ${rosc.time}.` :
+               deces ? ` ${deces.label} à ${deces.time}.` : " Issue non renseignée."}
+            </p>
+          </div>
+        </Section>
+
+        <p style={{ textAlign:"center", fontSize:9, color:P.textSoft, marginTop:8, fontStyle:"italic" }}>
+          Usage professionnel exclusif · Outil d'aide cognitive — chaque professionnel demeure responsable de ses prescriptions
+        </p>
+
       </div>
     </div>
   );
@@ -748,7 +1059,7 @@ function RemplissageSection({ racs, setRacs }) {
 // Colonnes : poids, masque, sondeAspi(Ch), lame, mandrin, sondeIOT, repere, guedel, fr, vt, defibJ, adrMg, amioMg
 // Colonnes normes post-RACS : fc, pas, pamTC, pamHorsTC, vtRange, frRange, ie, peep, sng, fio2
 const PED_TABLE = [
-  // Sédation : midPSE = vitesse PSE midazolam mL/h (0.1mg/kg/h) | sufBolus = bolus sufentanyl mL (0.2µg/kg) | sufPSE = PSE sufentanyl mL/h (0.2µg/kg/h)
+  // Sédation : midPSE = vitesse PSE midazolam mL/h (0.1mg/kg/h) | sufBolus = bolus sufentanyl mL (0.2μg/kg) | sufPSE = PSE sufentanyl mL/h (0.2μg/kg/h)
   { age:"NN",       p:3,  masque:"0-1",  aspi:"6",    lame:"Dte 0/1", mandrin:"6",      sonde:"3",   repere:9,  guedel:"0-0", fr:25, vt:18,  ezio:"E-ZIO 15mm",         adrMg:0.05, adrMl:0.5, amioMg:15,  amioMl:0.5, defib4:12,  defib6:18,  defib8:24,  fcN:135, pasN:60,  pamTC:45, pamHTC:35, vtR:"30-50",  frR:"40",  ie:"1/2", peep:5, sng:6,  fio2:"100% puis QSP 94-98%", midPSE:0.3, sufBolus:0.6, sufPSE:0.6 , nimbex1:0.9, nimbex2:0.45, rempliVol:30, rempliDebit:12, adrPSE1:1.8, adrPSE2:4.5, adrPSE3:9, adrPSE4:13.5 },
   { age:"NN",       p:4,  masque:"0-1",  aspi:"6",    lame:"Dte 0/1", mandrin:"6",      sonde:"3",   repere:9,  guedel:"0-0", fr:25, vt:24,  ezio:"E-ZIO 15mm",         adrMg:0.05, adrMl:0.5, amioMg:20,  amioMl:0.5, defib4:16,  defib6:24,  defib8:32,  fcN:130, pasN:60,  pamTC:45, pamHTC:35, vtR:"30-50",  frR:"40",  ie:"1/2", peep:5, sng:6,  fio2:"100% puis QSP 94-98%", midPSE:0.4, sufBolus:0.8, sufPSE:0.8 , nimbex1:1.2, nimbex2:0.4, rempliVol:40, rempliDebit:16, adrPSE1:2.4, adrPSE2:6, adrPSE3:12, adrPSE4:18 },
   { age:"3 mois",   p:5,  masque:"0-1",  aspi:"6-8",  lame:"Dte 0/1", mandrin:"6",      sonde:"3.5", repere:10, guedel:"0",   fr:25, vt:30,  ezio:"E-ZIO 15mm",         adrMg:0.05, adrMl:0.5, amioMg:25,  amioMl:0.5, defib4:20,  defib6:30,  defib8:40,  fcN:120, pasN:80,  pamTC:55, pamHTC:40, vtR:"30",     frR:"40",  ie:"1/2", peep:5, sng:6,  fio2:"100% puis QSP 94-98%", midPSE:0.5, sufBolus:1.0, sufPSE:1.0 , nimbex1:1.5, nimbex2:0.5, rempliVol:50, rempliDebit:20, adrPSE1:3, adrPSE2:7.5, adrPSE3:15, adrPSE4:22.5 },
@@ -844,6 +1155,114 @@ function calcMateriel(poids) {
 const POIDS_LISTE = PED_TABLE.map(r => r.p);
 const AGE_LISTE   = PED_TABLE.map(r => r.age);
 
+const VOLUMES_PED = [50, 100, 150, 200, 250, 500];
+
+function RemplissageVasculairePed({ racs, setRacs, localMat }) {
+  const [vol,   setVol]   = useState(localMat?.rempliVol || 100);
+  const [sol,   setSol]   = useState("NaCl 0,9%");
+  const [autre, setAutre] = useState("");
+
+  const total = (racs.remplissagesPed || []).reduce((s,r) => s + r.vol, 0);
+
+  const ajouter = () => {
+    const solLabel = sol === "Autre" ? (autre || "Autre") : sol;
+    const entry = { vol, sol: solLabel, time: getNow() };
+    setRacs(p => ({ ...p, remplissagesPed: [...(p.remplissagesPed||[]), entry] }));
+    if (sol === "Autre") setAutre("");
+  };
+
+  const retirer = (i) =>
+    setRacs(p => ({ ...p, remplissagesPed: (p.remplissagesPed||[]).filter((_,idx) => idx !== i) }));
+
+  return (
+    <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px", marginBottom:10 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+        <p style={{ margin:0, fontSize:9, fontWeight:500, color:P.textSoft,
+          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
+          Remplissage vasculaire
+          {localMat && <span style={{ fontWeight:400, marginLeft:6, color:P.textSoft }}>
+            (10 mL/kg = {localMat.rempliVol} mL)
+          </span>}
+        </p>
+        {total > 0 && (
+          <span style={{ fontSize:13, fontWeight:700, color:P.blueText, fontFamily:mono }}>
+            Total : {total} mL
+          </span>
+        )}
+      </div>
+
+      {/* Molette volume */}
+      <div style={{ display:"flex", gap:5, marginBottom:6, flexWrap:"wrap" }}>
+        {VOLUMES_PED.map(v => (
+          <button key={v} onClick={() => setVol(v)}
+            style={{ flex:1, minWidth:"calc(33% - 4px)", padding:"7px 2px", borderRadius:9,
+              fontSize:12, fontWeight:700,
+              border:`1.5px solid ${vol===v ? P.blue : P.border}`,
+              background: vol===v ? P.blueSoft : P.surface,
+              color: vol===v ? P.blueText : P.textMid,
+              cursor:"pointer", fontFamily:mono }}>
+            {v}
+          </button>
+        ))}
+      </div>
+      <p style={{ margin:"0 0 8px", fontSize:9, color:P.textSoft, textAlign:"center", fontFamily:mono }}>mL</p>
+
+      {/* Solutés */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, marginBottom:8 }}>
+        {SOLUTES.map(s => (
+          <button key={s} onClick={() => setSol(s)}
+            style={{ padding:"7px 6px", borderRadius:9, fontSize:11, fontWeight:500,
+              border:`1.5px solid ${sol===s ? P.teal : P.border}`,
+              background: sol===s ? P.tealSoft : P.surface,
+              color: sol===s ? P.tealText : P.textMid,
+              cursor:"pointer", fontFamily:sans }}>
+            {s}
+          </button>
+        ))}
+      </div>
+
+      {sol === "Autre" && (
+        <input value={autre} onChange={e => setAutre(e.target.value)}
+          placeholder="Préciser le soluté..."
+          style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
+            borderRadius:8, padding:"8px 10px", fontSize:13, color:P.text, fontFamily:sans,
+            boxSizing:"border-box", outline:"none", marginBottom:8 }}
+          onFocus={e => e.target.style.borderColor = P.teal}
+          onBlur={e  => e.target.style.borderColor = P.border} />
+      )}
+
+      <button onClick={ajouter}
+        style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
+          border:"none", borderRadius:9, padding:"10px", color:"#fff",
+          fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:sans,
+          boxShadow:`0 3px 10px ${P.blue}33`,
+          marginBottom: (racs.remplissagesPed||[]).length>0 ? 10 : 0 }}>
+        + Ajouter {vol} mL {sol !== "Autre" ? sol : (autre || "Autre")}
+      </button>
+
+      {(racs.remplissagesPed||[]).length > 0 && (
+        <div style={{ borderTop:`1px solid ${P.border}`, paddingTop:8 }}>
+          {racs.remplissagesPed.map((r, i) => (
+            <div key={i} style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+              padding:"5px 0", borderBottom: i<racs.remplissagesPed.length-1 ? `1px solid ${P.borderSoft}` : "none" }}>
+              <span style={{ fontSize:12, color:P.textMid }}>{r.time} · {r.vol} mL {r.sol}</span>
+              <button onClick={() => retirer(i)}
+                style={{ background:"transparent", border:"none", color:P.textSoft,
+                  cursor:"pointer", fontSize:14, padding:"0 4px", lineHeight:1 }}>✕</button>
+            </div>
+          ))}
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+            marginTop:8, padding:"7px 10px",
+            background:P.blueSoft, borderRadius:8, border:`1px solid ${P.blue}44` }}>
+            <span style={{ fontSize:11, color:P.textSoft }}>Total remplissage</span>
+            <span style={{ fontSize:17, fontWeight:700, color:P.blueText, fontFamily:mono }}>{total} mL</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── RCP PÉDIATRIQUE ───────────────────────────────────────────────────────────
 
 function RcpPediatrique({ onBack, acrTime, poids, mat }) {
@@ -862,7 +1281,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
 
   const [modalDecesPed, setModalDecesPed] = useState(false);
   const [showPatPed,    setShowPatPed]    = useState(false);
-  const [patPed, setPatPed] = useState({ nom:"", prenom:"", ddn:"", atcd:"", traitement:"", histoire:"" });
+  const [patPed, setPatPed] = useState({ nom:"", prenom:"", ddn:"", age:"", poids:"", atcd:"", traitement:"", histoire:"" });
   const spf = k => v => setPatPed(p => ({ ...p, [k]: v }));
 
   const [noFlowMin,    setNoFlowMin]    = useState("");
@@ -894,7 +1313,8 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
   const [racsPed, setRacsPed] = useState({
     fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"",
     tas:"", tad:"", fc:"", noradrV:"",
-    midazolamV:"", sufentaV:"", autresHemo:""
+    midazolamV:"", sufentaV:"", autresHemo:"",
+    remplissagesPed:[]
   });
   const srp = k => v => setRacsPed(p => ({ ...p, [k]: v }));
 
@@ -924,7 +1344,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
     setRunning(true);
     setEvents([{ id:"start", label:"Début MCE pédiatrique — Low-flow démarré", icon:"🫀", time:lf, sec:0 }]);
   };
-  useEffect(() => { start(); }, []);
+  useEffect(() => { window.scrollTo(0, 0); start(); }, []);
 
   const cp = sec%120, pct=(cp/120)*100, rem=120-cp;
   const warn=rem<=30, crit=rem<=8;
@@ -1067,7 +1487,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
 
       {/* Voie d'abord */}
       {modalVvpPed && (
-        <Modal title="Voie d'abord" icon="🩹" soft={P.greenSoft} onClose={() => setModalVvpPed(false)}>
+        <Modal title="Voie d'abord" icon={<div style={{width:24,height:24,color:P.green}}>{ICONS.vvp}</div>} soft={P.greenSoft} onClose={() => setModalVvpPed(false)}>
           <ChoiceBtn label="Voie veineuse périphérique" sub="VVP — cathéter veineux périphérique"
             accent={P.green} soft={P.greenSoft} textC={P.greenText}
             onClick={()=>{addEvent("vvp","Voie veineuse périphérique (VVP) posée","🩹");setModalVvpPed(false);}} />
@@ -1395,12 +1815,12 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                       {/* Sufentanyl */}
                       <div>
                         <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.amberText}}>
-                          Sufentanyl — 50 µg / 50 mL (1 µg/mL)
+                          Sufentanyl — 50 μg / 50 mL (1 μg/mL)
                         </p>
                         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 10px"}}>
                           {[
-                            ["Bolus IVD 0,2 µg/kg", `${localMat.sufBolus} mL`],
-                            ["PSE 0,2 µg/kg/h",     `${localMat.sufPSE} mL/h`],
+                            ["Bolus IVD 0,2 μg/kg", `${localMat.sufBolus} mL`],
+                            ["PSE 0,2 μg/kg/h",     `${localMat.sufPSE} mL/h`],
                             ["Plage PSE",            `${localMat.sufPSE}–${(localMat.sufPSE*5).toFixed(1)} mL/h`],
                           ].map(([l,v])=>(
                             <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -1410,7 +1830,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                           ))}
                         </div>
                         <p style={{margin:"3px 0 0",fontSize:8,color:P.amberText,fontStyle:"italic"}}>
-                          Diluer 50 µg dans 50 mL NaCl 0,9% → 1 µg/mL
+                          Diluer 50 μg dans 50 mL NaCl 0,9% → 1 μg/mL
                         </p>
                       </div>
                     </div>
@@ -1451,7 +1871,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                   <div style={{background:P.surfaceAlt,borderRadius:10,padding:"10px"}}>
                     <p style={{margin:"0 0 6px",fontSize:9,fontWeight:500,color:P.textSoft,
                       textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
-                      Sufentanyl — 50 µg / 50 mL (1 µg/mL)
+                      Sufentanyl — 50 μg / 50 mL (1 μg/mL)
                     </p>
                     <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:7}}>
                       <input type="number" inputMode="decimal" value={racsPed.sufentaV||""}
@@ -1471,7 +1891,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                           border:`1.5px solid ${ok?P.violet:P.border}`}}>
                           <span style={{fontSize:11,color:P.textSoft}}>→ Posologie</span>
                           <span style={{fontSize:17,fontWeight:700,color:ok?P.violetText:P.textSoft,fontFamily:mono}}>
-                            {ok?`${dose} µg/h`:"—"}
+                            {ok?`${dose} μg/h`:"—"}
                           </span>
                         </div>
                       );
@@ -1481,7 +1901,9 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                   {/* NIMBEX dans sédation */}
                   {localMat && (
                     <div style={{background:P.violetSoft,border:`1px solid ${P.violet}44`,borderRadius:10,padding:"10px 12px"}}>
-                      <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.violetText}}>Nimbex (curare)</p>
+                      <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.violetText}}>
+                        Nimbex <span style={{fontWeight:400,fontSize:9,color:P.violet,fontStyle:"italic"}}>Cisatracurium — Curare non dépolarisant</span>
+                      </p>
                       <p style={{margin:"0 0 8px",fontSize:9,color:P.violetText,fontStyle:"italic"}}>
                         {localPoids<20?"0,5 mg/mL — 10 mg dans 20 mL NaCl 0,9%":"PUR 2 mg/mL"}
                       </p>
@@ -1573,10 +1995,10 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                     <div style={{background:P.roseSoft,border:`1px solid ${P.rose}44`,borderRadius:10,padding:"10px 12px",marginBottom:10}}>
                       <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.roseText}}>Adrénaline IVSE</p>
                       <p style={{margin:"0 0 8px",fontSize:9,color:P.roseText,fontStyle:"italic"}}>
-                        {localPoids<=10?"1 mg/50 mL → 0,02 mg/mL":"5 mg/50 mL → 0,1 mg/mL"} · débuter 0,1–0,2 µg/kg/min ↑ par palier 0,1
+                        {localPoids<=10?"1 mg/50 mL → 0,02 mg/mL":"5 mg/50 mL → 0,1 mg/mL"} · débuter 0,1–0,2 μg/kg/min ↑ par palier 0,1
                       </p>
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:10}}>
-                        {[[`0,2 µg/kg/min`,localMat.adrPSE1],[`0,5 µg/kg/min`,localMat.adrPSE2],[`1,0 µg/kg/min`,localMat.adrPSE3],[`1,5 µg/kg/min`,localMat.adrPSE4]].map(([palier,vitesse],i)=>(
+                        {[[`0,2 μg/kg/min`,localMat.adrPSE1],[`0,5 μg/kg/min`,localMat.adrPSE2],[`1,0 μg/kg/min`,localMat.adrPSE3],[`1,5 μg/kg/min`,localMat.adrPSE4]].map(([palier,vitesse],i)=>(
                           <button key={palier} onClick={()=>{setAdrPalier(i);setAdrVitesse(String(vitesse));}}
                             style={{background:adrPalier===i?"rgba(217,107,107,0.18)":"rgba(255,255,255,0.6)",
                               border:`1.5px solid ${adrPalier===i?P.rose:"rgba(217,107,107,0.2)"}`,
@@ -1602,42 +2024,8 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                     </div>
                   )}
 
-                  {/* REMPLISSAGE — volumes éditables */}
-                  {localMat && (
-                    <div style={{background:P.blueSoft,border:`1px solid ${P.blue}44`,borderRadius:10,padding:"10px 12px",marginBottom:10}}>
-                      <p style={{margin:"0 0 6px",fontSize:10,fontWeight:600,color:P.blueText}}>Remplissage — Soluté balancé ou NaCl 0,9%</p>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                        <div>
-                          <p style={{margin:"0 0 4px",fontSize:9,color:P.textSoft,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Initial (10 mL/kg)</p>
-                          <div style={{display:"flex",alignItems:"center",gap:5}}>
-                            <input type="number" inputMode="decimal"
-                              value={rempliVol !== "" ? rempliVol : String(localMat.rempliVol)}
-                              onChange={e=>setRempliVol(e.target.value)}
-                              style={{flex:1,minWidth:0,background:P.surface,border:`1.5px solid ${P.border}`,borderRadius:8,
-                                padding:"9px 4px",fontSize:15,color:P.text,fontFamily:mono,outline:"none",
-                                textAlign:"center",fontWeight:700,boxSizing:"border-box"}}
-                              onFocus={e=>{if(rempliVol==="")setRempliVol(String(localMat.rempliVol));e.target.style.borderColor=P.blue;}}
-                              onBlur={e=>e.target.style.borderColor=P.border}/>
-                            <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>mL</span>
-                          </div>
-                        </div>
-                        <div>
-                          <p style={{margin:"0 0 4px",fontSize:9,color:P.textSoft,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Débit de base</p>
-                          <div style={{display:"flex",alignItems:"center",gap:5}}>
-                            <input type="text" inputMode="decimal"
-                              value={rempliDebit !== "" ? rempliDebit : (typeof localMat.rempliDebit==="string"?localMat.rempliDebit:String(localMat.rempliDebit))}
-                              onChange={e=>setRempliDebit(e.target.value)}
-                              style={{flex:1,minWidth:0,background:P.surface,border:`1.5px solid ${P.border}`,borderRadius:8,
-                                padding:"9px 4px",fontSize:15,color:P.text,fontFamily:mono,outline:"none",
-                                textAlign:"center",fontWeight:700,boxSizing:"border-box"}}
-                              onFocus={e=>{if(rempliDebit==="")setRempliDebit(typeof localMat.rempliDebit==="string"?localMat.rempliDebit:String(localMat.rempliDebit));e.target.style.borderColor=P.blue;}}
-                              onBlur={e=>e.target.style.borderColor=P.border}/>
-                            {typeof localMat.rempliDebit==="number"&&<span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>mL/h</span>}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                  {/* REMPLISSAGE — même composant que l'adulte */}
+                  <RemplissageVasculairePed racs={racsPed} setRacs={setRacsPed} localMat={localMat} />
 
 
                   <p style={{margin:"4px 0 4px",fontSize:9,fontWeight:500,color:P.textSoft,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Autres thérapeutiques</p>
@@ -1669,6 +2057,9 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
               if(racsPed.fc)  p.push(`FC ${racsPed.fc}/min`);
               // Amines — seulement si vitesse saisie
               if(adrVitesse)  p.push(`Adrénaline IVSE ${adrVitesse}mL/h`);
+              // Remplissage pédiatrique
+              const totalRempli = (racsPed.remplissagesPed||[]).reduce((s,r)=>s+r.vol,0);
+              if(totalRempli > 0) p.push(`Remplissage total ${totalRempli}mL`);
               // Remplissage — seulement si modifié
               if(rempliVol !== "" && localMat && rempliVol !== String(localMat.rempliVol))
                 p.push(`Remplissage ${rempliVol}mL`);
@@ -1863,7 +2254,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
 
         {/* Dossier patient */}
         <Collapsible icon="🪪"
-          title={patPed.nom ? `${patPed.nom} ${patPed.prenom}${patPed.ddn ? ` · ${patPed.ddn}` : ""}` : "Dossier patient"}
+          title={patPed.nom ? `${patPed.nom} ${patPed.prenom}${patPed.ddn ? ` · ${calcAge(patPed.ddn)||patPed.ddn}` : ""}` : "Dossier patient"}
           badge="éditable">
           <div style={{ display:"grid", gap:10 }}>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
@@ -1871,7 +2262,15 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
               <div><Lbl>Prénom</Lbl><TInput value={patPed.prenom} onChange={spf("prenom")} placeholder="Léa" /></div>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-              <div><Lbl>Date de naissance</Lbl><TInput type="date" value={patPed.ddn} onChange={spf("ddn")} /></div>
+              <div>
+                <Lbl>Date de naissance</Lbl>
+                <TInput type="date" value={patPed.ddn} onChange={v => { spf("ddn")(v); spf("age")(calcAge(v)); }} />
+                {patPed.ddn && calcAge(patPed.ddn) && (
+                  <p style={{ margin:"4px 0 0", fontSize:11, color:P.amber, fontWeight:600 }}>
+                    → {calcAge(patPed.ddn)}
+                  </p>
+                )}
+              </div>
               <div><Lbl>Poids</Lbl><TInput value={patPed.poids} onChange={spf("poids")} placeholder={`${localPoids} kg`} /></div>
             </div>
             <div><Lbl>Antécédents</Lbl>
@@ -1888,7 +2287,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
           <ActionBtn action={{label:"Voie d'abord",svg:ICONS.vvp,accent:P.green,soft:P.greenSoft,textC:P.greenText}}
             onClick={()=>setModalVvpPed(true)}/>
           <ActionBtn action={{label:adrLabel,svg:ICONS.adr,accent:P.rose,soft:P.roseSoft,textC:P.roseText}}
-            onClick={()=>addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10µg/kg)`,"💉")}/>
+            onClick={()=>addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉")}/>
           <ActionBtn action={{label:"Défibrillation",svg:ICONS.choc,accent:P.blue,soft:P.blueSoft,textC:P.blueText}}
             onClick={()=>setModalChocPed(true)}/>
           <ActionBtn action={{label:amioLabel,svg:ICONS.amio,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
@@ -2008,7 +2407,15 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
       {/* PDF pédiatrique */}
       {showPdf && (
         <PdfView
-          patient={{ nom:"", prenom:"", age:localRow?.age||"", sexe:"" }}
+          patient={{
+            nom:     patPed.nom,
+            prenom:  patPed.prenom,
+            ddn:     patPed.ddn,
+            age:     patPed.age || calcAge(patPed.ddn) || localRow?.age || "",
+            sexe:    "",
+            atcd:    patPed.atcd,
+            histoire:patPed.histoire,
+          }}
           noFlow={noFlowMin}
           lowFlow={lowFlowMin}
           acrTime={localAcrTime}
@@ -2227,7 +2634,7 @@ function ModulePediatrique({ onBack }) {
             <div style={{ background:P.roseSoft, borderRadius:8, padding:"8px 12px", marginBottom:8,
               border:`1px solid ${P.rose}44` }}>
               <p style={{ margin:"0 0 4px", fontSize:9, color:P.roseText, textTransform:"uppercase",
-                letterSpacing:"0.07em", fontFamily:mono }}>Adrénaline — 10 µg/kg/4 min (0,1 mg/mL)</p>
+                letterSpacing:"0.07em", fontFamily:mono }}>Adrénaline — 10 μg/kg/4 min (0,1 mg/mL)</p>
               <div style={{ display:"flex", gap:16 }}>
                 <div>
                   <p style={{ margin:0, fontSize:18, fontWeight:700, color:P.roseText, fontFamily:mono }}>{mat.adrenalineMg} mg</p>
@@ -2854,7 +3261,7 @@ export default function App() {
 
       {/* Modal Voie veineuse */}
       {modalVvp && (
-        <Modal title="Voie d'abord" icon="🩹" soft={P.greenSoft} onClose={() => setModalVvp(false)}>
+        <Modal title="Voie d'abord" icon={<div style={{width:24,height:24,color:P.green}}>{ICONS.vvp}</div>} soft={P.greenSoft} onClose={() => setModalVvp(false)}>
           <ChoiceBtn label="Voie veineuse périphérique" sub="VVP — cathéter veineux périphérique"
             accent={P.green} soft={P.greenSoft} textC={P.greenText}
             onClick={() => { addEvent("vvp","Voie veineuse périphérique (VVP) posée","🩹"); setModalVvp(false); }} />
@@ -2866,7 +3273,7 @@ export default function App() {
 
       {/* Modal Cordarone */}
       {modalCord && (
-        <Modal title="Cordarone (Amiodarone)" icon="💊" soft={P.amberSoft} onClose={() => setModalCord(false)}>
+        <Modal title="Cordarone (Amiodarone)" icon={<div style={{width:24,height:24,color:P.amber}}>{ICONS.amio}</div>} soft={P.amberSoft} onClose={() => setModalCord(false)}>
           <ChoiceBtn label="300 mg IV/IO" sub="1re injection · après le 3e choc infructueux"
             accent={P.amber} soft={P.amberSoft} textC={P.amberText}
             onClick={() => { addEvent("cord300","Cordarone 300 mg IV/IO","💊"); setModalCord(false); }} />
@@ -2890,7 +3297,7 @@ export default function App() {
 
       {/* Modal Intubation */}
       {modalIot && (
-        <Modal title="Intubation oro-trachéale" icon="🫁" soft={P.violetSoft} onClose={() => setModalIot(false)}>
+        <Modal title="Intubation oro-trachéale" icon={<div style={{width:24,height:24,color:P.violet}}>{ICONS.iot}</div>} soft={P.violetSoft} onClose={() => setModalIot(false)}>
 
           <div style={{ marginBottom:18 }}>
             <Lbl>Cormack</Lbl>
@@ -2935,7 +3342,7 @@ export default function App() {
 
       {/* Modal Fast-écho */}
       {modalFast && (
-        <Modal title="Fast-écho" icon="🔊" soft={P.blueSoft} onClose={() => setModalFast(false)}>
+        <Modal title="Fast-écho" icon={<div style={{width:24,height:24,color:P.blue}}>{ICONS.fast}</div>} soft={P.blueSoft} onClose={() => setModalFast(false)}>
           <div style={{ marginBottom:20 }}>
             <Lbl>Résultat de l'échographie</Lbl>
             <TArea value={fastResult} onChange={setFastResult} rows={4}
@@ -2968,7 +3375,7 @@ export default function App() {
           if (racs.fio2)          p.push(`FiO₂ ${racs.fio2}%`);
           if (racs.capno)         p.push(`EtCO₂ ${racs.capno} mmHg`);
           if (racs.hypnovelV)     p.push(`Hypnovel ${racs.hypnovelV} mL/h → ${hypnovelDose} mg/h`);
-          if (racs.sufentaV)      p.push(`Sufentanyl ${racs.sufentaV} mL/h → ${sufentaDose} µg/h`);
+          if (racs.sufentaV)      p.push(`Sufentanyl ${racs.sufentaV} mL/h → ${sufentaDose} μg/h`);
           if (racs.curare)        p.push(`Curare ${racs.curare} mg`);
           if (racs.autresDrogues) p.push(racs.autresDrogues);
           if (racs.tas && racs.tad) p.push(`TA ${racs.tas}/${racs.tad} mmHg (PAM ${Math.round((parseFloat(racs.tas)+2*parseFloat(racs.tad))/3)} mmHg)`);
@@ -2979,7 +3386,7 @@ export default function App() {
           }
           if (racs.fc)            p.push(`FC ${racs.fc}/min`);
           if (racs.noradrV)       p.push(`Noradrénaline ${racs.noradrV} mL/h → ${noradrDose} mg/h (8mg/40cc)`);
-          if (racs.dobut)         p.push(`Dobutamine ${racs.dobut} µg/kg/min`);
+          if (racs.dobut)         p.push(`Dobutamine ${racs.dobut} μg/kg/min`);
           if (racs.autresHemo)    p.push(racs.autresHemo);
           return p.length ? `Soins post-RACS : ${p.join(" · ")}` : "Soins post-RACS initiés";
         };
@@ -3172,7 +3579,7 @@ export default function App() {
 
                     {/* Sufentanyl inline */}
                     <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"12px", marginBottom:12 }}>
-                      <Lbl>Sufentanyl — 250 µg / 50 cc</Lbl>
+                      <Lbl>Sufentanyl — 250 μg / 50 cc</Lbl>
                       <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
                         <input type="number" inputMode="decimal" value={racs.sufentaV}
                           onChange={e => sr("sufentaV")(e.target.value)} placeholder="5"
@@ -3193,7 +3600,7 @@ export default function App() {
                             border:`1.5px solid ${ok ? P.violet : P.border}` }}>
                             <span style={{ fontSize:12, color:P.textSoft }}>→ Posologie</span>
                             <span style={{ fontSize:20, fontWeight:700, color: ok ? P.violetText : P.textSoft, fontFamily:mono }}>
-                              {ok ? `${dose} µg/h` : "—"}
+                              {ok ? `${dose} μg/h` : "—"}
                             </span>
                           </div>
                         );
@@ -3310,7 +3717,7 @@ export default function App() {
                             fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
                           onFocus={e => e.target.style.borderColor = P.rose}
                           onBlur={e  => e.target.style.borderColor = P.border} />
-                        <span style={{ fontSize:9, color:P.textSoft, flexShrink:0, whiteSpace:"nowrap" }}>µg/kg/min</span>
+                        <span style={{ fontSize:9, color:P.textSoft, flexShrink:0, whiteSpace:"nowrap" }}>μg/kg/min</span>
                       </div>
                     </div>
 
@@ -3460,7 +3867,7 @@ export default function App() {
                 <div><Lbl>Prénom</Lbl><TInput value={pat.prenom} onChange={sf("prenom")} placeholder="Jean" /></div>
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-                <div><Lbl>Date de naissance</Lbl><TInput type="date" value={pat.ddn} onChange={sf("ddn")} /></div>
+                <div><Lbl>Date de naissance</Lbl><TInput type="date" value={pat.ddn} onChange={v => { sf("ddn")(v); sf("age")(calcAge(v)); }} /></div>
                 <div><Lbl>Âge</Lbl><TInput value={pat.age} onChange={sf("age")} placeholder="67 ans" /></div>
               </div>
               <div><Lbl>Antécédents médicaux</Lbl>
