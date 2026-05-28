@@ -420,26 +420,78 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onC
     return lines.join("\n");
   };
 
-  const handleDownload = () => {
+  const handleShare = async () => {
     const text = buildText();
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
     const date = new Date().toISOString().slice(0,10);
     const nom  = patient?.nom ? `_${patient.nom}` : "";
-    a.href     = url;
-    a.download = `ACR${nom}_${date}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const filename = `ACR${nom}_${date}.txt`;
+
+    // Méthode 1 : Web Share API (iOS Safari, Android Chrome) — partage natif
+    if (navigator.share) {
+      try {
+        const file = new File([text], filename, { type: "text/plain" });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: "Compte-rendu ACR" });
+          return;
+        }
+        // Partage sans fichier (texte seul)
+        await navigator.share({ title: "Compte-rendu ACR", text });
+        return;
+      } catch (e) {
+        if (e.name !== "AbortError") console.error(e);
+        else return;
+      }
+    }
+
+    // Méthode 2 : data URI (fallback Android)
+    try {
+      const a = document.createElement("a");
+      a.href = "data:text/plain;charset=utf-8," + encodeURIComponent(text);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    } catch(e) {}
+
+    // Méthode 3 : ouvrir dans un nouvel onglet (dernier recours)
+    const w = window.open("", "_blank");
+    if (w) {
+      w.document.write("<pre style='font-family:monospace;font-size:13px;padding:16px;white-space:pre-wrap'>" +
+        text.replace(/</g,"&lt;").replace(/>/g,"&gt;") + "</pre>");
+      w.document.close();
+    }
   };
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(buildText()).then(() => {
+    const text = buildText();
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2500);
+      }).catch(() => {
+        // Fallback pour les contextes sans clipboard API
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2500);
+      });
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
-    });
+    }
   };
 
   const Section = ({ title, children }) => (
@@ -600,15 +652,15 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onC
               fontFamily:sans, fontSize:13, fontWeight:600,
               color: copied ? P.greenText : P.textMid,
               display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-            {copied ? "✓ Copié !" : "📋 Copier le texte"}
+            {copied ? "✓ Copié !" : "📋 Copier"}
           </button>
-          <button onClick={handleDownload}
+          <button onClick={handleShare}
             style={{ background:"linear-gradient(135deg,#3B82C4,#2563A8)",
               border:"none", borderRadius:12, padding:"12px 8px",
               cursor:"pointer", fontFamily:sans, fontSize:13, fontWeight:600,
               color:"#fff", display:"flex", alignItems:"center",
               justifyContent:"center", gap:6 }}>
-            💾 Télécharger .txt
+            📤 Envoyer / Sauvegarder
           </button>
         </div>
         <p style={{ textAlign:"center", fontSize:9, color:P.textSoft, margin:"8px 0 0",
