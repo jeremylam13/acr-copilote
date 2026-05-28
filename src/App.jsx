@@ -350,7 +350,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onC
   const adrs  = events.filter(e => e.id === "adr").length;
   const rosc  = events.find(e => e.id === "rosc");
   const deces = events.find(e => e.id === "deces");
-  const [copied, setCopied] = React.useState(false);
+  const [copied, setCopied] = useState(false);
 
   // Génère le texte complet du compte-rendu
   const buildText = () => {
