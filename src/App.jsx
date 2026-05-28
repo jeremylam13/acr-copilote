@@ -183,6 +183,13 @@ const ICONS = {
   deces: (
     <span style={{ fontSize:26, lineHeight:1, display:"flex", alignItems:"center", justifyContent:"center" }}>🕊️</span>
   ),
+  note: (
+    <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M28 6 L34 12 L16 30 L8 32 L10 24 Z" />
+      <line x1="24" y1="10" x2="30" y2="16" />
+      <line x1="8" y1="37" x2="32" y2="37" strokeWidth="1.5" strokeDasharray="3,2" />
+    </svg>
+  ),
 };
 
 // ── Composants de base ─────────────────────────────────────────────────────────
@@ -1335,6 +1342,8 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
   const [showPatPed,    setShowPatPed]    = useState(false);
   const [patPed, setPatPed] = useState({ nom:"", prenom:"", ddn:"", age:"", poids:"", atcd:"", traitement:"", histoire:"" });
   const spf = k => v => setPatPed(p => ({ ...p, [k]: v }));
+  const [showNotePed,  setShowNotePed]   = useState(false);
+  const [noteTextPed,  setNoteTextPed]   = useState("");
 
   const [noFlowMin,    setNoFlowMin]    = useState("");
   const [lowFlowMin,   setLowFlowMin]   = useState("");
@@ -2356,6 +2365,47 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
             onClick={()=>setModalDecesPed(true)}/>
         </div>
 
+        {/* Bandeau Note libre */}
+        <div style={{marginBottom:10}}>
+          {!showNotePed ? (
+            <button onClick={()=>setShowNotePed(true)}
+              style={{width:"100%",background:P.tealSoft,border:`1.5px solid #B2DADA`,
+                borderRadius:12,padding:"10px 14px",cursor:"pointer",fontFamily:sans,
+                display:"flex",alignItems:"center",gap:10}}>
+              <div style={{width:22,height:22,color:P.teal,flexShrink:0}}>{ICONS.note}</div>
+              <span style={{fontSize:12,fontWeight:500,color:P.tealText}}>Ajouter une note libre</span>
+              <span style={{marginLeft:"auto",fontSize:16,color:P.teal,lineHeight:1}}>+</span>
+            </button>
+          ) : (
+            <div style={{background:P.tealSoft,border:`1.5px solid #B2DADA`,borderRadius:12,padding:"12px 14px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <div style={{width:20,height:20,color:P.teal,flexShrink:0}}>{ICONS.note}</div>
+                <p style={{margin:0,fontSize:12,fontWeight:600,color:P.tealText}}>Note libre</p>
+                <button onClick={()=>{setShowNotePed(false);setNoteTextPed("");}}
+                  style={{marginLeft:"auto",background:"transparent",border:"none",
+                    color:P.teal,fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>
+              </div>
+              <textarea value={noteTextPed} onChange={e=>setNoteTextPed(e.target.value)}
+                placeholder="Ex : famille contactée, antécédents connus, circonstances..."
+                rows={3}
+                style={{width:"100%",background:"rgba(255,255,255,0.7)",
+                  border:`1.5px solid #B2DADA`,borderRadius:8,padding:"10px 12px",
+                  fontSize:13,color:P.text,fontFamily:sans,outline:"none",
+                  resize:"none",boxSizing:"border-box",lineHeight:1.6,marginBottom:8}}
+                onFocus={e=>e.target.style.borderColor=P.teal}
+                onBlur={e=>e.target.style.borderColor="#B2DADA"}/>
+              <button onClick={()=>{
+                if(noteTextPed.trim()) addEvent("note", noteTextPed.trim(), "📝");
+                setNoteTextPed(""); setShowNotePed(false);
+              }} style={{width:"100%",background:`linear-gradient(135deg,${P.teal},#1A6A6A)`,
+                border:"none",borderRadius:9,color:"#fff",fontSize:13,fontWeight:600,
+                padding:"10px",cursor:"pointer",fontFamily:sans}}>
+                ✓ Ajouter à la chronologie
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* Chronologie */}
         <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:14,overflow:"hidden",marginBottom:10}}>
           <button onClick={()=>setShowLog(v=>!v)}
@@ -2807,6 +2857,8 @@ export default function App() {
   const [modalDeces,  setModalDeces]  = useState(false);
   const [modalIot,    setModalIot]    = useState(false);
   const [modalFast,   setModalFast]   = useState(false);
+  const [modalNote,   setModalNote]   = useState(false);
+  const [noteText,    setNoteText]    = useState("");
   const [fastResult,  setFastResult]  = useState("");
   const [modalRythme, setModalRythme] = useState(false);
   const [modalVvp,    setModalVvp]    = useState(false);
@@ -3405,6 +3457,30 @@ export default function App() {
         </Modal>
       )}
 
+      {/* ── Modal Note libre ── */}
+      {modalNote && (
+        <Modal title="Note libre" icon={<div style={{width:24,height:24,color:P.teal}}>{ICONS.note}</div>}
+          soft={P.tealSoft} onClose={() => setModalNote(false)}>
+          <p style={{margin:"0 0 10px",fontSize:12,color:P.textSoft}}>
+            Note interne — s'affiche dans la chronologie uniquement
+          </p>
+          <TArea value={noteText} onChange={setNoteText} rows={5}
+            placeholder="Ex : famille contactée, médecin traitant appelé, circonstances particulières..." />
+          <button onClick={() => {
+            if (noteText.trim()) {
+              addEvent("note", noteText.trim(), "📝");
+              setNoteText("");
+            }
+            setModalNote(false);
+          }} style={{ width:"100%", background:`linear-gradient(135deg,${P.teal},#1A6A6A)`,
+            border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:600,
+            padding:"14px", cursor:"pointer", fontFamily:sans, marginTop:14,
+            boxShadow:`0 6px 18px ${P.teal}33` }}>
+            ✓ Ajouter à la chronologie
+          </button>
+        </Modal>
+      )}
+
       {/* ── Modal Soins post-RACS ── */}
       {modalRacs && (() => {
         // Calculs de dilution
@@ -3947,17 +4023,23 @@ export default function App() {
                 onClick={() => addEvent("doublechoc","Double défibrillation délivrée","⚡⚡")} />
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <ActionBtn action={{ label:"Intubation IOT", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
+                onClick={() => setModalIot(true)} />
+              <ActionBtn action={{ label:"Note libre", svg:ICONS.note, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
+                onClick={() => setModalNote(true)} />
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Planche à masser", svg:ICONS.planche, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
                 onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
               <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
                 onClick={() => setModalFast(true)} />
             </div>
-            <ActionBtn action={{ label:"Intubation IOT", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
-              onClick={() => setModalIot(true)} />
-            <ActionBtn action={{ label:"Soins post-RACS", icon:"🫀", accent:P.green, soft:P.greenSoft, textC:P.greenText }}
-              onClick={() => setModalRacs(true)} />
-            <ActionBtn action={{ label:"Constat de décès", svg:ICONS.deces, accent:P.slate, soft:P.slateSoft, textC:P.slateText }}
-              onClick={() => setModalDeces(true)} />
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <ActionBtn action={{ label:"Soins post-RACS", icon:"🫀", accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+                onClick={() => setModalRacs(true)} />
+              <ActionBtn action={{ label:"Constat de décès", svg:ICONS.deces, accent:P.slate, soft:P.slateSoft, textC:P.slateText }}
+                onClick={() => setModalDeces(true)} />
+            </div>
           </div>
         </>}
 
