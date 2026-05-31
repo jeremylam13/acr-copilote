@@ -5,6 +5,15 @@ fontLink.rel = "stylesheet";
 fontLink.href = "https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap";
 document.head.appendChild(fontLink);
 
+const styleSheet = document.createElement("style");
+styleSheet.textContent = `
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.02); box-shadow: 0 8px 28px rgba(217,107,107,0.7); }
+  }
+`;
+document.head.appendChild(styleSheet);
+
 const P = {
   bg:"#F2F5F9", surface:"#FFFFFF", surfaceAlt:"#EEF2F7",
   border:"#DDE3ED", borderSoft:"#E8ECF4",
@@ -50,6 +59,190 @@ function calcAge(ddn) {
     return mois <= 0 ? "< 1 mois" : `${mois} mois`;
   }
   return `${ans} ans`;
+}
+
+// ── PERSISTANCE LOCALE ─────────────────────────────────────────────────────────
+function useLocalState(key, initialValue) {
+  const [value, setValue] = useState(() => {
+    try {
+      const stored = localStorage.getItem(key);
+      return stored !== null ? JSON.parse(stored) : initialValue;
+    } catch { return initialValue; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(value)); }
+    catch {}
+  }, [key, value]);
+  return [value, setValue];
+}
+
+function clearSession(prefix) {
+  try {
+    Object.keys(localStorage).forEach(k => {
+      if (k.startsWith(prefix)) localStorage.removeItem(k);
+    });
+  } catch {}
+}
+
+// ── WAKE LOCK : empêche le verrouillage écran ──────────────────────────────────
+function useWakeLock(active) {
+  useEffect(() => {
+    if (!active) return;
+    let wakeLock = null;
+    let cancelled = false;
+
+    const request = async () => {
+      try {
+        if ("wakeLock" in navigator) {
+          wakeLock = await navigator.wakeLock.request("screen");
+        }
+      } catch (e) { /* utilisateur refuse ou non supporté */ }
+    };
+
+    const handleVisibility = () => {
+      if (!cancelled && document.visibilityState === "visible" && active) request();
+    };
+
+    request();
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", handleVisibility);
+      if (wakeLock) { try { wakeLock.release(); } catch {} }
+    };
+  }, [active]);
+}
+
+// ── BIP SONORE (Web Audio API) ─────────────────────────────────────────────────
+function playAdrenalineBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // 3 bips courts et doux
+    [0, 0.3, 0.6].forEach(t => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 880; // La5
+      osc.type = "sine";
+      const start = ctx.currentTime + t;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.25, start + 0.02);
+      gain.gain.linearRampToValueAtTime(0, start + 0.18);
+      osc.start(start);
+      osc.stop(start + 0.2);
+    });
+    // Ferme le contexte après 1 sec
+    setTimeout(() => { try { ctx.close(); } catch {} }, 1000);
+  } catch {}
+}
+
+function vibrateAdrenaline() {
+  try {
+    if ("vibrate" in navigator) navigator.vibrate([200, 100, 200, 100, 200]);
+  } catch {}
+}
+
+// ── COMPOSANT TIMER ADRÉNALINE (option C : discret puis impossible à manquer) ──
+function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, onCancel, running, P, mono, sans, fmtSec }) {
+  // startSec = valeur de `sec` au moment où l'adré a été donnée
+  // intervalMin = 3 / 4 / 5
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+  // recalcule à chaque tick : combien de secondes depuis la dose
+  // mais on ne dispose pas de `sec` ici directement — donc on utilise un timestamp absolu
+  // → on calcule différemment : `secAtStart` = timestamp absolu de la dose
+  const elapsed = Math.floor((now - startSec) / 1000);
+  const total = intervalMin * 60;
+  const remaining = Math.max(0, total - elapsed);
+  const expired = elapsed >= total;
+  const [played, setPlayed] = useState(false);
+
+  useEffect(() => {
+    if (expired && !played) {
+      playAdrenalineBeep();
+      vibrateAdrenaline();
+      setPlayed(true);
+    }
+  }, [expired, played]);
+
+  if (!expired) {
+    // Mode DISCRET : petite chip en haut à droite
+    return (
+      <div style={{
+        position:"sticky", top:0, zIndex:8,
+        display:"flex", justifyContent:"flex-end", padding:"4px 0",
+        pointerEvents:"none",
+      }}>
+        <div style={{
+          background:P.rose+"15", border:`1px solid ${P.rose}44`, borderRadius:99,
+          padding:"4px 10px", display:"flex", alignItems:"center", gap:6,
+          pointerEvents:"auto", boxShadow:"0 1px 4px rgba(0,0,0,0.06)",
+        }}>
+          <span style={{ fontSize:11, color:P.roseText, fontFamily:mono, fontWeight:600 }}>
+            ⏱ Prochaine adré
+          </span>
+          <span style={{ fontSize:13, color:P.roseText, fontFamily:mono, fontWeight:700 }}>
+            {fmtSec(remaining)}
+          </span>
+          <div style={{ display:"flex", gap:2, marginLeft:4 }}>
+            {[3,4,5].map(m => (
+              <button key={m} onClick={() => setIntervalMin(m)}
+                style={{
+                  background: intervalMin===m ? P.rose : "transparent",
+                  border:"none", borderRadius:99, padding:"2px 6px",
+                  fontSize:10, fontWeight:600, fontFamily:mono,
+                  color: intervalMin===m ? "#fff" : P.roseText,
+                  cursor:"pointer",
+                }}>{m}</button>
+            ))}
+          </div>
+          <button onClick={onCancel}
+            style={{ background:"transparent", border:"none", color:P.roseText,
+              fontSize:13, cursor:"pointer", padding:"0 2px", lineHeight:1, opacity:0.6 }}>×</button>
+        </div>
+      </div>
+    );
+  }
+
+  // Mode ALERTE : gros bandeau orange clignotant
+  return (
+    <div style={{
+      position:"sticky", top:0, zIndex:9,
+      animation:"pulse 1.2s ease-in-out infinite",
+      background:`linear-gradient(135deg, ${P.rose}, #C53030)`,
+      borderRadius:14, padding:"12px 16px", margin:"0 0 10px",
+      boxShadow:`0 6px 20px ${P.rose}55`,
+      display:"flex", alignItems:"center", gap:10,
+    }}>
+      <span style={{ fontSize:28 }}>💉</span>
+      <div style={{ flex:1, minWidth:0 }}>
+        <p style={{ margin:0, fontSize:14, fontWeight:700, color:"#fff" }}>
+          Adrénaline 1 mg recommandée
+        </p>
+        <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,0.85)" }}>
+          {intervalMin} min écoulées depuis la précédente
+        </p>
+      </div>
+      <button onClick={onAdminister}
+        style={{
+          background:"#fff", border:"none", borderRadius:9,
+          padding:"8px 14px", fontSize:13, fontWeight:700,
+          color:P.roseText, cursor:"pointer", fontFamily:sans,
+          boxShadow:"0 2px 8px rgba(0,0,0,0.15)",
+        }}>
+        Administrer
+      </button>
+      <button onClick={onCancel}
+        style={{ background:"transparent", border:"none", color:"#fff",
+          fontSize:18, cursor:"pointer", padding:"4px 6px", lineHeight:1 }}>×</button>
+    </div>
+  );
 }
 
 // ── ICÔNES SVG MÉDICALES ──────────────────────────────────────────────────────
@@ -188,6 +381,16 @@ const ICONS = {
       <path d="M28 6 L34 12 L16 30 L8 32 L10 24 Z" />
       <line x1="24" y1="10" x2="30" y2="16" />
       <line x1="8" y1="37" x2="32" y2="37" strokeWidth="1.5" strokeDasharray="3,2" />
+    </svg>
+  ),
+  transmission: (
+    <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {/* Casque de pompier stylisé / passage de relais */}
+      <path d="M8 28 Q8 14 20 14 Q32 14 32 28" />
+      <line x1="6" y1="28" x2="34" y2="28" strokeWidth="2.5" />
+      <line x1="20" y1="14" x2="20" y2="22" />
+      <circle cx="20" cy="24" r="2" fill="currentColor" stroke="none" />
+      <path d="M14 32 L26 32" strokeDasharray="2,2" />
     </svg>
   ),
 };
@@ -1326,29 +1529,51 @@ function RemplissageVasculairePed({ racs, setRacs, localMat }) {
 
 function RcpPediatrique({ onBack, acrTime, poids, mat }) {
   const [running,      setRunning]      = useState(false);
+  const [secStored,    setSecStored]    = useLocalState("acr_ped_sec", 0);
   const [sec,          setSec]          = useTimer(running);
-  const [events,       setEvents]       = useState([]);
+  useEffect(() => { if (secStored > 0 && sec === 0) setSec(secStored); }, []);
+  useEffect(() => { setSecStored(sec); }, [sec]);
+
+  const [cycleOffset,  setCycleOffset]  = useLocalState("acr_ped_cycleOffset", 0);
+  const [events,       setEvents]       = useLocalState("acr_ped_events", []);
   const [alert,        setAlert]        = useState(null);
   const [showLog,      setShowLog]      = useState(false);
   const [showPdf,      setShowPdf]      = useState(false);
   const initIdx = PED_TABLE.findIndex(r => r.p === parseFloat(poids));
-  const [localPoidsIdx, setLocalPoidsIdx] = useState(initIdx >= 0 ? initIdx : 0);
+  const [localPoidsIdx, setLocalPoidsIdx] = useLocalState("acr_ped_poidsIdx", initIdx >= 0 ? initIdx : 0);
   const [showPoidsEdit, setShowPoidsEdit] = useState(false);
   const localRow  = PED_TABLE[localPoidsIdx];
   const localMat  = calcMateriel(localRow.p);
   const localPoids = localRow.p;
 
+  // Wake Lock — empêche le verrouillage écran pendant la réa
+  useWakeLock(true);
+
   const [modalDecesPed, setModalDecesPed] = useState(false);
+  const [omlStepPed,    setOmlStepPed]    = useState(0);
+  const [omlTxtPed,     setOmlTxtPed]     = useState("");
   const [showPatPed,    setShowPatPed]    = useState(false);
-  const [patPed, setPatPed] = useState({ nom:"", prenom:"", ddn:"", age:"", poids:"", atcd:"", traitement:"", histoire:"" });
+  const [patPed, setPatPed] = useLocalState("acr_ped_pat", { nom:"", prenom:"", ddn:"", age:"", poids:"", atcd:"", traitement:"", histoire:"" });
   const spf = k => v => setPatPed(p => ({ ...p, [k]: v }));
   const [showNotePed,  setShowNotePed]   = useState(false);
   const [noteTextPed,  setNoteTextPed]   = useState("");
+  // Transmission équipes pré-SMUR
+  const [modalTransPed, setModalTransPed] = useState(false);
+  const [transPed, setTransPed] = useLocalState("acr_ped_trans", {
+    hEffondrement:"", temoin:"", mceTemoin:"",
+    hArriveePompiers:"", hPoseDSA:"", h1erChoc:"",
+    chocsPompiers:0, rythmeDSA:"",
+    note:"", saved:false,
+  });
+  // Minuteur Adrénaline pédiatrique
+  const [adrTimerStartPed, setAdrTimerStartPed] = useLocalState("acr_ped_adrStart", 0);
+  const [adrIntervalPed,   setAdrIntervalPed]   = useLocalState("acr_ped_adrInterval", 4);
+  const stp = k => v => setTransPed(p => ({ ...p, [k]: v }));
 
-  const [noFlowMin,    setNoFlowMin]    = useState("");
-  const [lowFlowMin,   setLowFlowMin]   = useState("");
-  const [lowFlowStart, setLowFlowStart] = useState("");
-  const [localAcrTime, setLocalAcrTime] = useState(acrTime || "");
+  const [noFlowMin,    setNoFlowMin]    = useLocalState("acr_ped_noFlow", "");
+  const [lowFlowMin,   setLowFlowMin]   = useLocalState("acr_ped_lowFlow", "");
+  const [lowFlowStart, setLowFlowStart] = useLocalState("acr_ped_lowFlowStart", "");
+  const [localAcrTime, setLocalAcrTime] = useLocalState("acr_ped_acrTime", acrTime || "");
 
   // Modals
   const [modalRythme,  setModalRythme]  = useState(false);
@@ -1403,11 +1628,11 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
     const lf = getNow();
     setLowFlowStart(lf);
     setRunning(true);
-    setEvents([{ id:"start", label:"Début MCE pédiatrique — Low-flow démarré", icon:"🫀", time:lf, sec:0 }]);
+    setEvents([{ id:"start", label:"Début RCP médicalisée", icon:"🫀", time:lf, sec:0 }]);
   };
   useEffect(() => { window.scrollTo(0, 0); start(); }, []);
 
-  const cp = sec%120, pct=(cp/120)*100, rem=120-cp;
+  const cp = (sec - cycleOffset)%120, pct=(cp/120)*100, rem=120-cp;
   const warn=rem<=30, crit=rem<=8;
   const bar=crit?P.rose:warn?P.amber:P.blue;
 
@@ -1539,9 +1764,19 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
           </div>
           <button onClick={()=>{addEvent("patchs","Changement de patchs — Position antéro-postérieure","🔄");setModalChocPed(false);}}
             style={{width:"100%",background:P.surfaceAlt,border:`1.5px solid ${P.border}`,
-              borderRadius:12,padding:"12px 16px",cursor:"pointer",fontFamily:sans,textAlign:"left"}}>
+              borderRadius:12,padding:"12px 16px",cursor:"pointer",fontFamily:sans,textAlign:"left",marginBottom:8}}>
             <p style={{margin:"0 0 2px",fontSize:14,fontWeight:600,color:P.text}}>🔄 Changement de patchs</p>
             <p style={{margin:0,fontSize:12,color:P.textSoft}}>Position antéro-postérieure</p>
+          </button>
+          <button onClick={()=>{addEvent("doublechoc","Double défibrillation délivrée","⚡⚡");setModalChocPed(false);}}
+            style={{width:"100%",background:P.blueSoft,border:`1.5px solid ${P.blue}44`,
+              borderRadius:12,padding:"12px 16px",cursor:"pointer",fontFamily:sans,textAlign:"left",
+              display:"flex",alignItems:"center",gap:12}}>
+            <div style={{width:30,height:30,color:P.blue,flexShrink:0}}>{ICONS.doublechoc}</div>
+            <div>
+              <p style={{margin:"0 0 2px",fontSize:14,fontWeight:600,color:P.blueText}}>Double défibrillation</p>
+              <p style={{margin:0,fontSize:12,color:P.textSoft}}>Deux chocs simultanés délivrés</p>
+            </div>
           </button>
         </Modal>
       )}
@@ -2234,9 +2469,86 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
 
         {/* Chronomètre */}
         <div style={{textAlign:"center",marginBottom:12}}>
+          <p style={{margin:"0 0 2px",fontSize:10,color:P.textSoft,letterSpacing:"0.1em",
+            textTransform:"uppercase",fontFamily:mono}}>Début RCP médicalisé</p>
           <span style={{fontSize:58,fontWeight:300,letterSpacing:"-0.03em",
             color:running?P.text:P.textSoft,fontFamily:mono,lineHeight:1}}>{fmtSec(sec)}</span>
         </div>
+
+        {/* Minuteur Adrénaline pédiatrique */}
+        {adrTimerStartPed > 0 && running && !events.find(e => e.id === "rosc") && (
+          <AdrenalineTimer
+            startSec={adrTimerStartPed}
+            intervalMin={adrIntervalPed}
+            setIntervalMin={setAdrIntervalPed}
+            onAdminister={() => { addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }}
+            onCancel={() => setAdrTimerStartPed(0)}
+            running={running}
+            P={P} mono={mono} sans={sans} fmtSec={fmtSec}
+          />
+        )}
+
+        {/* Compteur chocs cumulés + rappel Amiodarone */}
+        {(() => {
+          const chocsSmur  = events.filter(e => e.id === "choc").length;
+          const chocsPomp  = parseInt(transPed.chocsPompiers) || 0;
+          const chocsTotal = chocsSmur + chocsPomp;
+          const adrCount   = events.filter(e => e.id === "adr").length;
+          const amioCount  = events.filter(e => e.id === "cord" || e.id === "amio").length;
+          if (chocsTotal === 0 && !running && events.length === 0) return null;
+          const showAmio1 = chocsTotal >= 3 && amioCount === 0;
+          const showAmio2 = chocsTotal >= 5 && amioCount === 1;
+          return (
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+              <div style={{background: chocsTotal > 0 ? P.blueSoft : P.surfaceAlt,
+                border:`1px solid ${chocsTotal > 0 ? P.blue+"44" : P.border}`,
+                borderRadius:10,padding:"7px 10px"}}>
+                <p style={{margin:"0 0 2px",fontSize:9,color:P.textSoft,textTransform:"uppercase",
+                  letterSpacing:"0.09em",fontFamily:mono}}>Chocs cumulés</p>
+                <div style={{display:"flex",alignItems:"baseline",gap:5}}>
+                  <span style={{fontSize:24,fontWeight:700,color:P.blueText,fontFamily:mono,lineHeight:1}}>
+                    {chocsTotal}
+                  </span>
+                  {chocsPomp > 0 && (
+                    <span style={{fontSize:10,color:P.textSoft,fontFamily:mono}}>
+                      ({chocsPomp} pomp. + {chocsSmur} SMUR)
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div style={{background: adrCount > 0 ? P.roseSoft : P.surfaceAlt,
+                border:`1px solid ${adrCount > 0 ? P.rose+"44" : P.border}`,
+                borderRadius:10,padding:"7px 10px"}}>
+                <p style={{margin:"0 0 2px",fontSize:9,color:P.textSoft,textTransform:"uppercase",
+                  letterSpacing:"0.09em",fontFamily:mono}}>Adré · Amio</p>
+                <span style={{fontSize:16,fontWeight:700,color:P.roseText,fontFamily:mono}}>
+                  {adrCount} × · {amioCount}
+                </span>
+              </div>
+              {(showAmio1 || showAmio2) && localMat && (
+                <div style={{gridColumn:"1 / -1",background:"#FEF3C7",
+                  border:"1.5px solid #F59E0B",borderRadius:10,padding:"8px 12px",
+                  display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:18}}>💊</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <p style={{margin:0,fontSize:11,fontWeight:700,color:"#92400E"}}>
+                      Rappel : Amiodarone {localMat.amio} mg ({localMat.amioMl} mL)
+                    </p>
+                    <p style={{margin:0,fontSize:10,color:"#B45309"}}>
+                      Après le {showAmio1 ? "3ᵉ" : "5ᵉ"} choc cumulé · 5 mg/kg · {localPoids} kg
+                    </p>
+                  </div>
+                  <button onClick={() => addEvent("cord",`Amiodarone ${localMat.amio}mg IV/IO (5mg/kg)`,"💊")}
+                    style={{background:"#F59E0B",border:"none",borderRadius:7,
+                      color:"#fff",padding:"6px 10px",fontSize:11,fontWeight:600,
+                      cursor:"pointer",fontFamily:sans}}>
+                    Administrer
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Encarts No-flow / Low-flow indépendants */}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
@@ -2271,9 +2583,17 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
             <p style={{margin:"3px 0 0",fontSize:8,color:P.textSoft,fontStyle:"italic"}}>Durée MCE</p>
           </div>
         </div>
-        <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
           <span style={{fontSize:10,color:P.textSoft,fontFamily:mono}}>Cycle RCP · 2 min</span>
-          <span style={{fontSize:10,fontWeight:500,color:warn?bar:P.textSoft,fontFamily:mono}}>{warn?`⚠ ${rem}s`:`${rem}s`}</span>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:10,fontWeight:500,color:warn?bar:P.textSoft,fontFamily:mono}}>{warn?`⚠ ${rem}s`:`${rem}s`}</span>
+            <button onClick={()=>{setCycleOffset(sec);addEvent("cycle","↺ Cycle remis à zéro","↺");}}
+              style={{background:P.surfaceAlt,border:`1px solid ${P.border}`,borderRadius:6,
+                padding:"2px 8px",fontSize:10,color:P.textMid,cursor:"pointer",
+                fontFamily:sans,lineHeight:1.4}}>
+              ↺ Reset
+            </button>
+          </div>
         </div>
         <div style={{background:P.surfaceAlt,borderRadius:99,height:5,overflow:"hidden"}}>
           <div style={{width:`${pct}%`,height:5,borderRadius:99,background:bar,transition:"width 1s linear,background 0.5s"}}/>
@@ -2343,12 +2663,14 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
 
         {/* Grille actions */}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:10}}>
+          <ActionBtn action={{label: transPed.saved ? "Transmission ✓" : "Transmission équipes", svg:ICONS.transmission, accent:P.amber, soft:P.amberSoft, textC:P.amberText}}
+            onClick={()=>setModalTransPed(true)}/>
           <ActionBtn action={{label:"Analyse de rythme",svg:ICONS.rythme,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
             onClick={()=>setModalRythme(true)}/>
           <ActionBtn action={{label:"Voie d'abord",svg:ICONS.vvp,accent:P.green,soft:P.greenSoft,textC:P.greenText}}
             onClick={()=>setModalVvpPed(true)}/>
           <ActionBtn action={{label:adrLabel,svg:ICONS.adr,accent:P.rose,soft:P.roseSoft,textC:P.roseText}}
-            onClick={()=>addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉")}/>
+            onClick={()=>{ addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }}/>
           <ActionBtn action={{label:"Défibrillation",svg:ICONS.choc,accent:P.blue,soft:P.blueSoft,textC:P.blueText}}
             onClick={()=>setModalChocPed(true)}/>
           <ActionBtn action={{label:amioLabel,svg:ICONS.amio,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
@@ -2475,14 +2797,215 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
       </div>
 
       {/* Modal Constat de décès pédiatrique */}
+      {/* ── Modal Transmission équipes en place — pédiatrique ── */}
+      {modalTransPed && (
+        <Modal title="Transmission équipes en place"
+          icon={<div style={{width:24,height:24,color:P.amber}}>{ICONS.transmission}</div>}
+          soft={P.amberSoft} onClose={() => setModalTransPed(false)}>
+
+          <p style={{margin:"0 0 14px",fontSize:12,color:P.textSoft,lineHeight:1.5}}>
+            Recueil de ce qui a été fait avant l'arrivée SMUR (pompiers, témoins).
+            <br/>Les heures saisies créeront des entrées horodatées dans la chronologie.
+          </p>
+
+          {/* Contexte */}
+          <div style={{background:P.surfaceAlt,borderRadius:10,padding:"10px 12px",marginBottom:12}}>
+            <p style={{margin:"0 0 8px",fontSize:10,fontWeight:600,color:P.textSoft,
+              textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Contexte</p>
+            <Lbl>Témoin de l'effondrement</Lbl>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:8}}>
+              {["Oui","Non","Inconnu"].map(v => (
+                <button key={v} onClick={()=>stp("temoin")(v)}
+                  style={{padding:"7px 4px",borderRadius:8,fontSize:11,fontWeight:600,
+                    border:`1.5px solid ${transPed.temoin===v?P.amber:P.border}`,
+                    background:transPed.temoin===v?P.amberSoft:P.surface,
+                    color:transPed.temoin===v?P.amberText:P.textMid,
+                    cursor:"pointer",fontFamily:sans}}>{v}</button>
+              ))}
+            </div>
+            <Lbl>MCE par témoin / avant pompiers</Lbl>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5}}>
+              {["Oui","Non","Inconnu"].map(v => (
+                <button key={v} onClick={()=>stp("mceTemoin")(v)}
+                  style={{padding:"7px 4px",borderRadius:8,fontSize:11,fontWeight:600,
+                    border:`1.5px solid ${transPed.mceTemoin===v?P.amber:P.border}`,
+                    background:transPed.mceTemoin===v?P.amberSoft:P.surface,
+                    color:transPed.mceTemoin===v?P.amberText:P.textMid,
+                    cursor:"pointer",fontFamily:sans}}>{v}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Horaires */}
+          <div style={{background:P.surfaceAlt,borderRadius:10,padding:"10px 12px",marginBottom:12}}>
+            <p style={{margin:"0 0 8px",fontSize:10,fontWeight:600,color:P.textSoft,
+              textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Horaires (HH:MM)</p>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+              <div>
+                <Lbl>Effondrement</Lbl>
+                <input type="time" value={transPed.hEffondrement} onChange={e=>stp("hEffondrement")(e.target.value)}
+                  style={{width:"100%",background:P.surface,border:`1.5px solid ${P.border}`,
+                    borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
+                    color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box"}}/>
+              </div>
+              <div>
+                <Lbl>Arrivée pompiers</Lbl>
+                <input type="time" value={transPed.hArriveePompiers} onChange={e=>stp("hArriveePompiers")(e.target.value)}
+                  style={{width:"100%",background:P.surface,border:`1.5px solid ${P.border}`,
+                    borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
+                    color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box"}}/>
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <div>
+                <Lbl>Pose DSA</Lbl>
+                <input type="time" value={transPed.hPoseDSA} onChange={e=>stp("hPoseDSA")(e.target.value)}
+                  style={{width:"100%",background:P.surface,border:`1.5px solid ${P.border}`,
+                    borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
+                    color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box"}}/>
+              </div>
+              <div>
+                <Lbl>1er choc</Lbl>
+                <input type="time" value={transPed.h1erChoc} onChange={e=>stp("h1erChoc")(e.target.value)}
+                  style={{width:"100%",background:P.surface,border:`1.5px solid ${P.border}`,
+                    borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
+                    color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box"}}/>
+              </div>
+            </div>
+          </div>
+
+          {/* Chocs et rythme */}
+          <div style={{background:P.blueSoft,border:`1px solid ${P.blue}44`,
+            borderRadius:10,padding:"10px 12px",marginBottom:12}}>
+            <p style={{margin:"0 0 8px",fontSize:10,fontWeight:600,color:P.blueText,
+              textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
+              Chocs délivrés par le DSA
+            </p>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:14,marginBottom:8}}>
+              <button onClick={()=>stp("chocsPompiers")(Math.max(0,(parseInt(transPed.chocsPompiers)||0)-1))}
+                style={{background:P.surface,border:`1.5px solid ${P.blue}`,borderRadius:"50%",
+                  width:40,height:40,fontSize:18,fontWeight:700,color:P.blueText,
+                  cursor:"pointer",fontFamily:sans}}>−</button>
+              <span style={{fontSize:32,fontWeight:700,color:P.blueText,fontFamily:mono,minWidth:42,textAlign:"center"}}>
+                {transPed.chocsPompiers || 0}
+              </span>
+              <button onClick={()=>stp("chocsPompiers")((parseInt(transPed.chocsPompiers)||0)+1)}
+                style={{background:P.blue,border:"none",borderRadius:"50%",
+                  width:40,height:40,fontSize:18,fontWeight:700,color:"#fff",
+                  cursor:"pointer",fontFamily:sans}}>+</button>
+            </div>
+            <Lbl>Rythme initial</Lbl>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5}}>
+              {[["choquable","Choquable"],["nonChoquable","Non choquable"],["nonAnalyse","Non analysé"]].map(([id,label])=>(
+                <button key={id} onClick={()=>stp("rythmeDSA")(id)}
+                  style={{padding:"7px 4px",borderRadius:8,fontSize:10,fontWeight:600,
+                    border:`1.5px solid ${transPed.rythmeDSA===id?P.blue:P.border}`,
+                    background:transPed.rythmeDSA===id?P.blueSoft:P.surface,
+                    color:transPed.rythmeDSA===id?P.blueText:P.textMid,
+                    cursor:"pointer",fontFamily:sans}}>{label}</button>
+              ))}
+            </div>
+          </div>
+
+          <Lbl>Note libre (circonstances, témoins, etc.)</Lbl>
+          <TArea value={transPed.note} onChange={stp("note")} rows={2}
+            placeholder="Ex : noyade, étouffement, trouvé inconscient..." />
+
+          <button onClick={() => {
+            const newEvents = [];
+            if (transPed.hEffondrement) {
+              const detail = [
+                transPed.temoin === "Oui" ? "témoigné" : transPed.temoin === "Non" ? "non témoigné" : null,
+                transPed.mceTemoin === "Oui" ? "MCE par témoin" : null,
+              ].filter(Boolean).join(", ");
+              newEvents.push({ id:"effondrement", time:transPed.hEffondrement, sec:0,
+                label:`Effondrement${detail ? ` (${detail})` : ""}`, icon:"⏱️" });
+            }
+            if (transPed.hArriveePompiers)
+              newEvents.push({ id:"pompiers", time:transPed.hArriveePompiers, sec:0,
+                label:"Arrivée pompiers · début MCE secouriste", icon:"🚒" });
+            if (transPed.hPoseDSA)
+              newEvents.push({ id:"dsa", time:transPed.hPoseDSA, sec:0,
+                label:`Pose DSA${transPed.rythmeDSA ? ` (${transPed.rythmeDSA === "choquable" ? "rythme choquable" : transPed.rythmeDSA === "nonChoquable" ? "non choquable" : "non analysé"})` : ""}`, icon:"⚡" });
+            const nbChocs = parseInt(transPed.chocsPompiers) || 0;
+            if (nbChocs > 0) {
+              newEvents.push({ id:"chocs_pomp", time:transPed.h1erChoc || getNow(), sec:0,
+                label:`${nbChocs} choc(s) DSA délivré(s) par pompiers`, icon:"⚡" });
+            }
+            if (transPed.note.trim())
+              newEvents.push({ id:"trans_note", time:getNow(), sec:0,
+                label:`Pré-SMUR : ${transPed.note.trim()}`, icon:"📝" });
+
+            const sorted = [...events, ...newEvents].sort((a,b) => {
+              const ta = a.time || "00:00", tb = b.time || "00:00";
+              return ta.localeCompare(tb);
+            });
+            setEvents(sorted);
+            stp("saved")(true);
+            setModalTransPed(false);
+          }} style={{width:"100%",background:`linear-gradient(135deg,${P.amber},#D97706)`,
+            border:"none",borderRadius:12,color:"#fff",fontSize:14,fontWeight:600,
+            padding:"14px",cursor:"pointer",fontFamily:sans,marginTop:14,
+            boxShadow:`0 6px 18px ${P.amber}33`}}>
+            ✓ Enregistrer la transmission
+          </button>
+        </Modal>
+      )}
+
+      {/* ── Modal Constat de décès — pédiatrique ── */}
       {modalDecesPed && (
-        <Modal title="Constat de décès" icon="🕊️" soft={P.slateSoft} onClose={() => setModalDecesPed(false)}>
-          <ChoiceBtn label="Avec OML" sub="Officier de l'état civil contacté"
-            accent={P.slate} soft={P.slateSoft} textC={P.slateText}
-            onClick={() => { addEvent("deces","Constat de décès — avec OML","🕊️"); setModalDecesPed(false); }} />
-          <ChoiceBtn label="Sans OML" sub="Sans officier de l'état civil"
-            accent={P.slate} soft={P.slateSoft} textC={P.slateText}
-            onClick={() => { addEvent("deces","Constat de décès — sans OML","🕊️"); setModalDecesPed(false); }} />
+        <Modal title="Constat de décès" icon="🕊️" soft={P.slateSoft}
+          onClose={() => { setModalDecesPed(false); setOmlStepPed(0); setOmlTxtPed(""); }}>
+          {omlStepPed === 0 ? (
+            <>
+              <ChoiceBtn label="Avec OML" sub="Obstacle médico-légal — signalement nécessaire"
+                accent={P.rose} soft={P.roseSoft} textC={P.roseText}
+                onClick={() => setOmlStepPed(1)} />
+              <ChoiceBtn label="Sans OML" sub="Pas d'obstacle médico-légal"
+                accent={P.slate} soft={P.slateSoft} textC={P.slateText}
+                onClick={() => { addEvent("deces","Constat de décès — sans OML","🕊️"); setModalDecesPed(false); setOmlStepPed(0); }} />
+            </>
+          ) : (
+            <>
+              <p style={{ margin:"0 0 12px", fontSize:12, color:P.textSoft }}>
+                Autorité contactée pour l'OML :
+              </p>
+              {[
+                { label:"Gendarmerie", sub:"Gendarmerie nationale" },
+                { label:"Police",      sub:"Police nationale" },
+                { label:"OPJ",         sub:"Officier de police judiciaire" },
+              ].map(c => (
+                <ChoiceBtn key={c.label} label={c.label} sub={c.sub}
+                  accent={P.rose} soft={P.roseSoft} textC={P.roseText}
+                  onClick={() => {
+                    addEvent("deces", `Constat de décès — avec OML, remis à : ${c.label}`, "🕊️");
+                    setModalDecesPed(false); setOmlStepPed(0); setOmlTxtPed("");
+                  }} />
+              ))}
+              <div style={{ marginTop:6 }}>
+                <Lbl>Autre / préciser</Lbl>
+                <div style={{ display:"flex", gap:8 }}>
+                  <input value={omlTxtPed} onChange={e => setOmlTxtPed(e.target.value)}
+                    placeholder="Ex : parquet contacté..."
+                    style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                      borderRadius:9, padding:"10px 12px", fontSize:14, color:P.text,
+                      fontFamily:sans, outline:"none", boxSizing:"border-box" }}
+                    onFocus={e => e.target.style.borderColor = P.rose}
+                    onBlur={e  => e.target.style.borderColor = P.border} />
+                  <button onClick={() => {
+                    addEvent("deces", `Constat de décès — avec OML, remis à : ${omlTxtPed.trim() || "autre"}`, "🕊️");
+                    setModalDecesPed(false); setOmlStepPed(0); setOmlTxtPed("");
+                  }} style={{ background:P.rose, border:"none", borderRadius:9,
+                    color:"#fff", padding:"10px 14px", fontSize:13, fontWeight:600,
+                    cursor:"pointer", fontFamily:sans, flexShrink:0 }}>✓</button>
+                </div>
+              </div>
+              <button onClick={() => setOmlStepPed(0)}
+                style={{ width:"100%", background:"transparent", border:"none",
+                  color:P.textSoft, fontSize:12, cursor:"pointer", fontFamily:sans,
+                  marginTop:12, padding:"6px" }}>← Retour</button>
+            </>
+          )}
         </Modal>
       )}
 
@@ -2814,7 +3337,7 @@ function ModulePediatrique({ onBack }) {
             display:"flex", alignItems:"center", justifyContent:"center", gap:10,
             boxShadow:"0 8px 24px rgba(217,107,107,0.3)", marginBottom:20 }}>
           <span style={{ fontSize:20 }}>🫀</span>
-          Démarrer la RCP — {poids} kg
+          Début RCP médicalisée — {poids} kg
         </button>
 
       </div>
@@ -2832,33 +3355,58 @@ function ModulePediatrique({ onBack }) {
 
 // ── APP ────────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [pat, setPat]   = useState({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"" });
+  const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"" });
   const sf = k => v => setPat(p => ({ ...p, [k]: v }));
 
   // Durées manuelles no-flow / low-flow (en minutes)
-  const [acrTime,    setAcrTime]    = useState("");
-  const [noFlowMin,  setNoFlowMin]  = useState("");
-  const [lowFlowMin, setLowFlowMin] = useState("");
-  const [lowFlowStart, setLowFlowStart] = useState(""); // heure HH:MM
+  const [acrTime,    setAcrTime]    = useLocalState("acr_adulte_acrTime", "");
+  const [noFlowMin,  setNoFlowMin]  = useLocalState("acr_adulte_noFlow", "");
+  const [lowFlowMin, setLowFlowMin] = useLocalState("acr_adulte_lowFlow", "");
+  const [lowFlowStart, setLowFlowStart] = useLocalState("acr_adulte_lowFlowStart", "");
 
   // IOT data
-  const [iot, setIot] = useState({ cormack:"", sonde:"", repere:"", capno:"" });
+  const [iot, setIot] = useLocalState("acr_adulte_iot", { cormack:"", sonde:"", repere:"", capno:"" });
   const si = k => v => setIot(p => ({ ...p, [k]: v }));
 
-  const [started,  setStarted]  = useState(false);
-  const [running,  setRunning]  = useState(false);
-  const [sec,      setSec]      = useTimer(running);
-  const [events,   setEvents]   = useState([]);
-  const [alert,    setAlert]    = useState(null);
-  const [showPdf,  setShowPdf]  = useState(false);
-  const [showLog,  setShowLog]  = useState(false);
+  const [started,     setStarted]     = useLocalState("acr_adulte_started", false);
+  const [running,     setRunning]     = useState(false); // pas persisté : repart en pause
+  const [secStored,   setSecStored]   = useLocalState("acr_adulte_sec", 0);
+  const [sec,         setSec]         = useTimer(running);
+  // Restaurer le chrono au premier rendu
+  useEffect(() => { if (secStored > 0 && sec === 0) setSec(secStored); }, []);
+  useEffect(() => { setSecStored(sec); }, [sec]);
+
+  const [cycleOffset, setCycleOffset] = useLocalState("acr_adulte_cycleOffset", 0);
+  const [events,      setEvents]      = useLocalState("acr_adulte_events", []);
+  const [alert,       setAlert]       = useState(null);
+  const [showPdf,     setShowPdf]     = useState(false);
+  const [showLog,     setShowLog]     = useState(false);
 
   const [modalCord,   setModalCord]   = useState(false);
   const [modalDeces,  setModalDeces]  = useState(false);
+  const [omlStep,     setOmlStep]     = useState(0); // 0=choix, 1=oml
+
+  // Wake Lock — empêche le verrouillage écran pendant la réa
+  useWakeLock(started);
+  const [omlTxt,      setOmlTxt]      = useState("");
   const [modalIot,    setModalIot]    = useState(false);
   const [modalFast,   setModalFast]   = useState(false);
   const [modalNote,   setModalNote]   = useState(false);
   const [noteText,    setNoteText]    = useState("");
+  const [showNote,    setShowNote]    = useState(false);
+  // Transmission équipes pré-SMUR
+  const [modalTrans,  setModalTrans]  = useState(false);
+  const [trans, setTrans] = useLocalState("acr_adulte_trans", {
+    hEffondrement:"", temoin:"", mceTemoin:"",
+    hArriveePompiers:"", hPoseDSA:"", h1erChoc:"",
+    chocsPompiers:0, rythmeDSA:"",
+    note:"", saved:false,
+  });
+  const st = k => v => setTrans(p => ({ ...p, [k]: v }));
+
+  // Minuteur Adrénaline (timestamp absolu pour survivre aux navigations)
+  const [adrTimerStart, setAdrTimerStart] = useLocalState("acr_adulte_adrStart", 0);
+  const [adrInterval,   setAdrInterval]   = useLocalState("acr_adulte_adrInterval", 4);
   const [fastResult,  setFastResult]  = useState("");
   const [modalRythme, setModalRythme] = useState(false);
   const [modalVvp,    setModalVvp]    = useState(false);
@@ -2898,7 +3446,7 @@ export default function App() {
     setLowFlowStart(lf);
     setRunning(true);
     setStarted(true);
-    setEvents([{ id:"start", label:"Début MCE — Low-flow démarré", icon:"🫀", time:lf, sec:0 }]);
+    setEvents([{ id:"start", label:"Début RCP médicalisée", icon:"🫀", time:lf, sec:0 }]);
     setModalElectrodes(true);
   };
 
@@ -2922,10 +3470,16 @@ export default function App() {
   };
 
   const reset = () => {
-    setStarted(false); setRunning(false); setSec(0); setModule(null);
+    setStarted(false); setRunning(false); setSec(0); setSecStored(0); setModule(null);
     setAcrTime(""); setNoFlowMin(""); setLowFlowMin(""); setLowFlowStart("");
-    setEvents([]); setAlert(null);
+    setEvents([]); setAlert(null); setCycleOffset(0);
     setShowPdf(false); setShowLog(false);
+    setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"" });
+    setIot({ cormack:"", sonde:"", repere:"", capno:"" });
+    setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, rythmeDSA:"", note:"", saved:false });
+    setModalTrans(false);
+    setAdrTimerStart(0); setAdrInterval(4);
+    clearSession("acr_adulte_");
     setModalCord(false); setModalDeces(false); setModalIot(false); setModalFast(false);
     setModalRythme(false); setModalVvp(false); setModalElectrodes(false); setModalRacs(false); setModalChoc(false); setModalEcg(false); setModalRegul(false);
     setJoules("200"); setEcgText(""); setRegulText(""); setRegulDest("");
@@ -2936,13 +3490,24 @@ export default function App() {
     setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"" });
   };
 
-  const cp = sec % 120, pct = (cp/120)*100, rem = 120 - cp;
+  const cp = (sec - cycleOffset) % 120, pct = (cp/120)*100, rem = 120 - cp;
   const warn = rem <= 30, crit = rem <= 8;
   const bar = crit ? P.rose : warn ? P.amber : P.blue;
 
   // Pas de tableau ACTIONS_SIMPLE — tous les boutons sont gérés individuellement dans la grille
 
   const [module, setModule] = useState(null); // null | "adulte_extra" | "adulte_intra" | "pediatrique" | "traumatique"
+
+  // Détection sessions sauvegardées
+  const sessionAdulte = (events && events.length > 0) || sec > 0 || pat.nom;
+  const sessionPed = (() => {
+    try {
+      const ev = JSON.parse(localStorage.getItem("acr_ped_events") || "[]");
+      const s  = JSON.parse(localStorage.getItem("acr_ped_sec") || "0");
+      return ev.length > 0 || s > 0;
+    } catch { return false; }
+  })();
+  const aSessionEnCours = sessionAdulte || sessionPed;
 
   // ── PAGE D'ACCUEIL GLOBALE ────────────────────────────────────────────────
   if (!module) return (
@@ -2962,6 +3527,38 @@ export default function App() {
           Aide cognitive · Arrêt cardiaque
         </p>
       </div>
+
+      {/* Bandeau Reprendre session */}
+      {aSessionEnCours && (
+        <div style={{ width:"100%", maxWidth:380, marginBottom:16,
+          background:P.amberSoft, border:`1.5px solid ${P.amber}66`, borderRadius:14,
+          padding:"12px 14px", boxShadow:`0 4px 14px ${P.amber}22` }}>
+          <p style={{ margin:"0 0 4px", fontSize:11, color:P.amberText, fontWeight:600,
+            textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
+            ⚠ Session non clôturée
+          </p>
+          <p style={{ margin:"0 0 10px", fontSize:13, color:P.amberText }}>
+            Une réa {sessionAdulte ? "adulte" : "pédiatrique"} est en cours de saisie.
+          </p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+            <button onClick={() => setModule(sessionAdulte ? "adulte_extra" : "pediatrique")}
+              style={{ background:P.amber, border:"none", borderRadius:9, color:"#fff",
+                fontSize:12, fontWeight:600, padding:"9px 8px", cursor:"pointer", fontFamily:sans }}>
+              ↻ Reprendre
+            </button>
+            <button onClick={() => {
+              if (confirm("Effacer définitivement la session en cours ?")) {
+                clearSession("acr_adulte_"); clearSession("acr_ped_");
+                window.location.reload();
+              }
+            }} style={{ background:"transparent", border:`1.5px solid ${P.amber}`,
+              borderRadius:9, color:P.amberText, fontSize:12, fontWeight:600,
+              padding:"9px 8px", cursor:"pointer", fontFamily:sans }}>
+              🗑 Effacer
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 4 boutons modules */}
       <div style={{ width:"100%", maxWidth:380, display:"flex", flexDirection:"column", gap:12 }}>
@@ -3119,7 +3716,7 @@ export default function App() {
           padding:"20px", cursor:"pointer", fontFamily:sans,
           boxShadow:"0 8px 24px rgba(217,107,107,0.32)",
           display:"flex", alignItems:"center", justifyContent:"center", gap:12 }}>
-          <span style={{ fontSize:24 }}>🫀</span> Début MCE — Démarrer
+          <span style={{ fontSize:24 }}>🫀</span> Début RCP médicalisée
         </button>
 
       </div>
@@ -3182,13 +3779,26 @@ export default function App() {
             addEvent("patchs", "Changement de patchs — Position antéro-postérieure", "🔄");
             setModalChoc(false);
           }} style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-            borderRadius:12, padding:"14px 16px", cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+            borderRadius:12, padding:"14px 16px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+            marginBottom:8 }}>
             <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:600, color:P.text }}>
               🔄 Changement de patchs
             </p>
-            <p style={{ margin:0, fontSize:12, color:P.textSoft }}>
-              Position antéro-postérieure
-            </p>
+            <p style={{ margin:0, fontSize:12, color:P.textSoft }}>Position antéro-postérieure</p>
+          </button>
+
+          {/* Double défibrillation */}
+          <button onClick={() => {
+            addEvent("doublechoc", "Double défibrillation délivrée", "⚡⚡");
+            setModalChoc(false);
+          }} style={{ width:"100%", background:P.blueSoft, border:`1.5px solid ${P.blue}44`,
+            borderRadius:12, padding:"14px 16px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+            display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:32, height:32, color:P.blue, flexShrink:0 }}>{ICONS.doublechoc}</div>
+            <div>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:600, color:P.blueText }}>Double défibrillation</p>
+              <p style={{ margin:0, fontSize:12, color:P.textSoft }}>Deux chocs simultanés délivrés</p>
+            </div>
           </button>
         </Modal>
       )}
@@ -3384,13 +3994,58 @@ export default function App() {
 
       {/* Modal Décès */}
       {modalDeces && (
-        <Modal title="Constat de décès" icon="🕊️" soft={P.slateSoft} onClose={() => setModalDeces(false)}>
-          <ChoiceBtn label="Avec OML" sub="Obstacle médico-légal — signalement nécessaire"
-            accent={P.rose} soft={P.roseSoft} textC={P.roseText}
-            onClick={() => { addEvent("deces","Constat de décès — avec OML","🕊️"); setModalDeces(false); }} />
-          <ChoiceBtn label="Sans OML" sub="Pas d'obstacle médico-légal"
-            accent={P.slate} soft={P.slateSoft} textC={P.slateText}
-            onClick={() => { addEvent("deces","Constat de décès — sans OML","🕊️"); setModalDeces(false); }} />
+        <Modal title="Constat de décès" icon="🕊️" soft={P.slateSoft}
+          onClose={() => { setModalDeces(false); setOmlStep(0); setOmlTxt(""); }}>
+          {omlStep === 0 ? (
+            <>
+              <ChoiceBtn label="Avec OML" sub="Obstacle médico-légal — signalement nécessaire"
+                accent={P.rose} soft={P.roseSoft} textC={P.roseText}
+                onClick={() => setOmlStep(1)} />
+              <ChoiceBtn label="Sans OML" sub="Pas d'obstacle médico-légal"
+                accent={P.slate} soft={P.slateSoft} textC={P.slateText}
+                onClick={() => { addEvent("deces","Constat de décès — sans OML","🕊️"); setModalDeces(false); setOmlStep(0); }} />
+            </>
+          ) : (
+            <>
+              <p style={{ margin:"0 0 12px", fontSize:12, color:P.textSoft }}>
+                Autorité contactée pour l'OML :
+              </p>
+              {[
+                { label:"Gendarmerie", sub:"Gendarmerie nationale" },
+                { label:"Police", sub:"Police nationale" },
+                { label:"OPJ", sub:"Officier de police judiciaire" },
+              ].map(c => (
+                <ChoiceBtn key={c.label} label={c.label} sub={c.sub}
+                  accent={P.rose} soft={P.roseSoft} textC={P.roseText}
+                  onClick={() => {
+                    addEvent("deces", `Constat de décès — avec OML, remis à : ${c.label}`, "🕊️");
+                    setModalDeces(false); setOmlStep(0); setOmlTxt("");
+                  }} />
+              ))}
+              <div style={{ marginTop:6 }}>
+                <Lbl>Autre / préciser</Lbl>
+                <div style={{ display:"flex", gap:8 }}>
+                  <input value={omlTxt} onChange={e => setOmlTxt(e.target.value)}
+                    placeholder="Ex : parquet contacté..."
+                    style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                      borderRadius:9, padding:"10px 12px", fontSize:14, color:P.text,
+                      fontFamily:sans, outline:"none", boxSizing:"border-box" }}
+                    onFocus={e => e.target.style.borderColor = P.rose}
+                    onBlur={e  => e.target.style.borderColor = P.border} />
+                  <button onClick={() => {
+                    addEvent("deces", `Constat de décès — avec OML, remis à : ${omlTxt.trim() || "autre"}`, "🕊️");
+                    setModalDeces(false); setOmlStep(0); setOmlTxt("");
+                  }} style={{ background:P.rose, border:"none", borderRadius:9,
+                    color:"#fff", padding:"10px 14px", fontSize:13, fontWeight:600,
+                    cursor:"pointer", fontFamily:sans, flexShrink:0 }}>✓</button>
+                </div>
+              </div>
+              <button onClick={() => setOmlStep(0)}
+                style={{ width:"100%", background:"transparent", border:"none",
+                  color:P.textSoft, fontSize:12, cursor:"pointer", fontFamily:sans,
+                  marginTop:12, padding:"6px" }}>← Retour</button>
+            </>
+          )}
         </Modal>
       )}
 
@@ -3453,6 +4108,164 @@ export default function App() {
             padding:"16px", cursor:"pointer", fontFamily:sans,
             boxShadow:"0 6px 18px rgba(59,130,196,0.3)" }}>
             ✓ Valider le Fast-écho
+          </button>
+        </Modal>
+      )}
+
+      {/* ── Modal Transmission équipes en place ── */}
+      {modalTrans && (
+        <Modal title="Transmission équipes en place"
+          icon={<div style={{width:24,height:24,color:P.amber}}>{ICONS.transmission}</div>}
+          soft={P.amberSoft} onClose={() => setModalTrans(false)}>
+
+          <p style={{ margin:"0 0 14px", fontSize:12, color:P.textSoft, lineHeight:1.5 }}>
+            Recueil de ce qui a été fait avant l'arrivée SMUR (pompiers, témoins, SP).
+            <br/>Les heures saisies créeront des entrées horodatées dans la chronologie.
+          </p>
+
+          {/* Contexte témoin */}
+          <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px 12px", marginBottom:12 }}>
+            <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:600, color:P.textSoft,
+              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Contexte</p>
+            <Lbl>Témoin de l'effondrement</Lbl>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5, marginBottom:8 }}>
+              {["Oui","Non","Inconnu"].map(v => (
+                <button key={v} onClick={() => st("temoin")(v)}
+                  style={{ padding:"7px 4px", borderRadius:8, fontSize:11, fontWeight:600,
+                    border:`1.5px solid ${trans.temoin===v ? P.amber : P.border}`,
+                    background: trans.temoin===v ? P.amberSoft : P.surface,
+                    color: trans.temoin===v ? P.amberText : P.textMid,
+                    cursor:"pointer", fontFamily:sans }}>{v}</button>
+              ))}
+            </div>
+            <Lbl>MCE par témoin / avant pompiers</Lbl>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5 }}>
+              {["Oui","Non","Inconnu"].map(v => (
+                <button key={v} onClick={() => st("mceTemoin")(v)}
+                  style={{ padding:"7px 4px", borderRadius:8, fontSize:11, fontWeight:600,
+                    border:`1.5px solid ${trans.mceTemoin===v ? P.amber : P.border}`,
+                    background: trans.mceTemoin===v ? P.amberSoft : P.surface,
+                    color: trans.mceTemoin===v ? P.amberText : P.textMid,
+                    cursor:"pointer", fontFamily:sans }}>{v}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Horaires */}
+          <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px 12px", marginBottom:12 }}>
+            <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:600, color:P.textSoft,
+              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Horaires (HH:MM)</p>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+              <div>
+                <Lbl>Effondrement</Lbl>
+                <input type="time" value={trans.hEffondrement} onChange={e => st("hEffondrement")(e.target.value)}
+                  style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
+                    borderRadius:8, padding:"8px 6px", fontSize:14, fontFamily:mono,
+                    color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
+              </div>
+              <div>
+                <Lbl>Arrivée pompiers</Lbl>
+                <input type="time" value={trans.hArriveePompiers} onChange={e => st("hArriveePompiers")(e.target.value)}
+                  style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
+                    borderRadius:8, padding:"8px 6px", fontSize:14, fontFamily:mono,
+                    color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
+              </div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              <div>
+                <Lbl>Pose DSA</Lbl>
+                <input type="time" value={trans.hPoseDSA} onChange={e => st("hPoseDSA")(e.target.value)}
+                  style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
+                    borderRadius:8, padding:"8px 6px", fontSize:14, fontFamily:mono,
+                    color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
+              </div>
+              <div>
+                <Lbl>1er choc</Lbl>
+                <input type="time" value={trans.h1erChoc} onChange={e => st("h1erChoc")(e.target.value)}
+                  style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
+                    borderRadius:8, padding:"8px 6px", fontSize:14, fontFamily:mono,
+                    color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
+              </div>
+            </div>
+          </div>
+
+          {/* Chocs et rythme */}
+          <div style={{ background:P.blueSoft, border:`1px solid ${P.blue}44`,
+            borderRadius:10, padding:"10px 12px", marginBottom:12 }}>
+            <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:600, color:P.blueText,
+              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
+              Chocs délivrés par le DSA
+            </p>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:14, marginBottom:8 }}>
+              <button onClick={() => st("chocsPompiers")(Math.max(0, (parseInt(trans.chocsPompiers)||0) - 1))}
+                style={{ background:P.surface, border:`1.5px solid ${P.blue}`, borderRadius:"50%",
+                  width:40, height:40, fontSize:18, fontWeight:700, color:P.blueText,
+                  cursor:"pointer", fontFamily:sans }}>−</button>
+              <span style={{ fontSize:32, fontWeight:700, color:P.blueText, fontFamily:mono, minWidth:42, textAlign:"center" }}>
+                {trans.chocsPompiers || 0}
+              </span>
+              <button onClick={() => st("chocsPompiers")((parseInt(trans.chocsPompiers)||0) + 1)}
+                style={{ background:P.blue, border:"none", borderRadius:"50%",
+                  width:40, height:40, fontSize:18, fontWeight:700, color:"#fff",
+                  cursor:"pointer", fontFamily:sans }}>+</button>
+            </div>
+            <Lbl>Rythme initial</Lbl>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5 }}>
+              {[["choquable","Choquable"],["nonChoquable","Non choquable"],["nonAnalyse","Non analysé"]].map(([id,label]) => (
+                <button key={id} onClick={() => st("rythmeDSA")(id)}
+                  style={{ padding:"7px 4px", borderRadius:8, fontSize:10, fontWeight:600,
+                    border:`1.5px solid ${trans.rythmeDSA===id ? P.blue : P.border}`,
+                    background: trans.rythmeDSA===id ? P.blueSoft : P.surface,
+                    color: trans.rythmeDSA===id ? P.blueText : P.textMid,
+                    cursor:"pointer", fontFamily:sans }}>{label}</button>
+              ))}
+            </div>
+          </div>
+
+          <Lbl>Note libre (intox suspectée, position, etc.)</Lbl>
+          <TArea value={trans.note} onChange={st("note")} rows={2}
+            placeholder="Ex : trouvé au sol par épouse, suspicion intox..." />
+
+          <button onClick={() => {
+            // Génère plusieurs entrées chronologie avec heures exactes
+            const newEvents = [];
+            const fmtTime = h => h || getNow();
+            if (trans.hEffondrement) {
+              const detail = [
+                trans.temoin === "Oui" ? "témoigné" : trans.temoin === "Non" ? "non témoigné" : null,
+                trans.mceTemoin === "Oui" ? "MCE par témoin" : null,
+              ].filter(Boolean).join(", ");
+              newEvents.push({ id:"effondrement", time:trans.hEffondrement, sec:0,
+                label:`Effondrement${detail ? ` (${detail})` : ""}`, icon:"⏱️" });
+            }
+            if (trans.hArriveePompiers)
+              newEvents.push({ id:"pompiers", time:trans.hArriveePompiers, sec:0,
+                label:"Arrivée pompiers · début MCE secouriste", icon:"🚒" });
+            if (trans.hPoseDSA)
+              newEvents.push({ id:"dsa", time:trans.hPoseDSA, sec:0,
+                label:`Pose DSA${trans.rythmeDSA ? ` (${trans.rythmeDSA === "choquable" ? "rythme choquable" : trans.rythmeDSA === "nonChoquable" ? "non choquable" : "non analysé"})` : ""}`, icon:"⚡" });
+            const nbChocs = parseInt(trans.chocsPompiers) || 0;
+            if (nbChocs > 0) {
+              newEvents.push({ id:"chocs_pomp", time:trans.h1erChoc || getNow(), sec:0,
+                label:`${nbChocs} choc(s) DSA délivré(s) par pompiers`, icon:"⚡" });
+            }
+            if (trans.note.trim())
+              newEvents.push({ id:"trans_note", time:getNow(), sec:0,
+                label:`Pré-SMUR : ${trans.note.trim()}`, icon:"📝" });
+
+            // Trier par heure
+            const sorted = [...events, ...newEvents].sort((a,b) => {
+              const ta = a.time || "00:00", tb = b.time || "00:00";
+              return ta.localeCompare(tb);
+            });
+            setEvents(sorted);
+            st("saved")(true);
+            setModalTrans(false);
+          }} style={{ width:"100%", background:`linear-gradient(135deg,${P.amber},#D97706)`,
+            border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:600,
+            padding:"14px", cursor:"pointer", fontFamily:sans, marginTop:14,
+            boxShadow:`0 6px 18px ${P.amber}33` }}>
+            ✓ Enregistrer la transmission
           </button>
         </Modal>
       )}
@@ -3912,12 +4725,87 @@ export default function App() {
         {/* Grand timer */}
         <div style={{ textAlign:"center", marginBottom:14 }}>
           <p style={{ margin:"0 0 2px", fontSize:10, color:P.textSoft, letterSpacing:"0.1em",
-            textTransform:"uppercase", fontFamily:mono }}>Chrono RCP</p>
+            textTransform:"uppercase", fontFamily:mono }}>Début RCP médicalisé</p>
           <span style={{ fontSize:58, fontWeight:300, letterSpacing:"-0.03em",
             color: running ? P.text : P.textSoft, fontFamily:mono, lineHeight:1 }}>
             {fmtSec(sec)}
           </span>
         </div>
+
+        {/* Minuteur Adrénaline (option C : discret au repos, alerte si dépassé) */}
+        {adrTimerStart > 0 && running && !events.find(e => e.id === "rosc") && (
+          <AdrenalineTimer
+            startSec={adrTimerStart}
+            intervalMin={adrInterval}
+            setIntervalMin={setAdrInterval}
+            onAdminister={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }}
+            onCancel={() => setAdrTimerStart(0)}
+            running={running}
+            P={P} mono={mono} sans={sans} fmtSec={fmtSec}
+          />
+        )}
+
+        {/* Compteur chocs cumulés + rappel Cordarone */}
+        {(() => {
+          const chocsSmur = events.filter(e => e.id === "choc").length;
+          const chocsPomp = parseInt(trans.chocsPompiers) || 0;
+          const chocsTotal = chocsSmur + chocsPomp;
+          const adrCount = events.filter(e => e.id === "adr").length;
+          const cordCount = events.filter(e => e.id === "cord300" || e.id === "cord150").length;
+          if (chocsTotal === 0 && !started) return null;
+          const showCord300 = chocsTotal >= 3 && cordCount === 0;
+          const showCord150 = chocsTotal >= 5 && cordCount === 1;
+          return (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
+              <div style={{ background: chocsTotal > 0 ? P.blueSoft : P.surfaceAlt,
+                border:`1px solid ${chocsTotal > 0 ? P.blue+"44" : P.border}`,
+                borderRadius:10, padding:"7px 10px" }}>
+                <p style={{ margin:"0 0 2px", fontSize:9, color:P.textSoft, textTransform:"uppercase",
+                  letterSpacing:"0.09em", fontFamily:mono }}>Chocs cumulés</p>
+                <div style={{ display:"flex", alignItems:"baseline", gap:5 }}>
+                  <span style={{ fontSize:24, fontWeight:700, color: P.blueText, fontFamily:mono, lineHeight:1 }}>
+                    {chocsTotal}
+                  </span>
+                  {chocsPomp > 0 && (
+                    <span style={{ fontSize:10, color:P.textSoft, fontFamily:mono }}>
+                      ({chocsPomp} pomp. + {chocsSmur} SMUR)
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div style={{ background: adrCount > 0 ? P.roseSoft : P.surfaceAlt,
+                border:`1px solid ${adrCount > 0 ? P.rose+"44" : P.border}`,
+                borderRadius:10, padding:"7px 10px" }}>
+                <p style={{ margin:"0 0 2px", fontSize:9, color:P.textSoft, textTransform:"uppercase",
+                  letterSpacing:"0.09em", fontFamily:mono }}>Adré · Cord.</p>
+                <span style={{ fontSize:16, fontWeight:700, color:P.roseText, fontFamily:mono }}>
+                  {adrCount} × 1mg · {cordCount}
+                </span>
+              </div>
+              {(showCord300 || showCord150) && (
+                <div style={{ gridColumn:"1 / -1", background:"#FEF3C7",
+                  border:"1.5px solid #F59E0B", borderRadius:10, padding:"8px 12px",
+                  display:"flex", alignItems:"center", gap:8 }}>
+                  <span style={{ fontSize:18 }}>💊</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ margin:0, fontSize:11, fontWeight:700, color:"#92400E" }}>
+                      Rappel : Cordarone {showCord300 ? "300 mg" : "150 mg"}
+                    </p>
+                    <p style={{ margin:0, fontSize:10, color:"#B45309" }}>
+                      Après le {showCord300 ? "3ᵉ" : "5ᵉ"} choc cumulé
+                    </p>
+                  </div>
+                  <button onClick={() => setModalCord(true)}
+                    style={{ background:"#F59E0B", border:"none", borderRadius:7,
+                      color:"#fff", padding:"6px 10px", fontSize:11, fontWeight:600,
+                      cursor:"pointer", fontFamily:sans }}>
+                    Administrer
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* ── Encarts No-flow / Low-flow ── */}
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
@@ -3957,11 +4845,19 @@ export default function App() {
         </div>
 
         {/* Barre cycle */}
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:5 }}>
           <span style={{ fontSize:10, color:P.textSoft, fontFamily:mono }}>Cycle RCP · 2 min</span>
-          <span style={{ fontSize:10, fontWeight:500, color: warn ? bar : P.textSoft, fontFamily:mono }}>
-            {warn ? `⚠ ${rem}s` : `${rem}s`}
-          </span>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ fontSize:10, fontWeight:500, color: warn ? bar : P.textSoft, fontFamily:mono }}>
+              {warn ? `⚠ ${rem}s` : `${rem}s`}
+            </span>
+            <button onClick={() => { setCycleOffset(sec); addEvent("cycle","↺ Cycle remis à zéro","↺"); }}
+              style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:6,
+                padding:"2px 8px", fontSize:10, color:P.textMid, cursor:"pointer",
+                fontFamily:sans, lineHeight:1.4 }}>
+              ↺ Reset
+            </button>
+          </div>
         </div>
         <div style={{ background:P.surfaceAlt, borderRadius:99, height:5, overflow:"hidden" }}>
           <div style={{ width:`${pct}%`, height:5, borderRadius:99, background:bar,
@@ -4005,32 +4901,30 @@ export default function App() {
           {/* Grille d'actions */}
           <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <ActionBtn action={{ label: trans.saved ? "Transmission ✓" : "Transmission équipes", svg:ICONS.transmission, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
+                onClick={() => setModalTrans(true)} />
               <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                 onClick={() => setModalRythme(true)} />
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
                 onClick={() => setModalVvp(true)} />
+              <ActionBtn action={{ label:"Adrénaline 1 mg", svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText }}
+                onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-              <ActionBtn action={{ label:"Adrénaline 1 mg", svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText }}
-                onClick={() => addEvent("adr","Adrénaline 1 mg IV/IO","💉")} />
               <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                 onClick={() => setModalCord(true)} />
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Défibrillation", svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
                 onClick={() => setModalChoc(true)} />
-              <ActionBtn action={{ label:"Double défibrillation", svg:ICONS.doublechoc, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
-                onClick={() => addEvent("doublechoc","Double défibrillation délivrée","⚡⚡")} />
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Intubation IOT", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
                 onClick={() => setModalIot(true)} />
-              <ActionBtn action={{ label:"Note libre", svg:ICONS.note, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
-                onClick={() => setModalNote(true)} />
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Planche à masser", svg:ICONS.planche, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
                 onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
                 onClick={() => setModalFast(true)} />
             </div>
@@ -4041,7 +4935,49 @@ export default function App() {
                 onClick={() => setModalDeces(true)} />
             </div>
           </div>
+
         </>}
+
+        {/* Bandeau Note libre — adulte */}
+        <div style={{ marginBottom:10 }}>
+          {!showNote ? (
+            <button onClick={() => setShowNote(true)}
+              style={{ width:"100%", background:P.tealSoft, border:`1.5px solid #B2DADA`,
+                borderRadius:12, padding:"10px 14px", cursor:"pointer", fontFamily:sans,
+                display:"flex", alignItems:"center", gap:10 }}>
+              <div style={{ width:22, height:22, color:P.teal, flexShrink:0 }}>{ICONS.note}</div>
+              <span style={{ fontSize:12, fontWeight:500, color:P.tealText }}>Ajouter une note libre</span>
+              <span style={{ marginLeft:"auto", fontSize:16, color:P.teal, lineHeight:1 }}>+</span>
+            </button>
+          ) : (
+            <div style={{ background:P.tealSoft, border:`1.5px solid #B2DADA`, borderRadius:12, padding:"12px 14px" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+                <div style={{ width:20, height:20, color:P.teal, flexShrink:0 }}>{ICONS.note}</div>
+                <p style={{ margin:0, fontSize:12, fontWeight:600, color:P.tealText }}>Note libre</p>
+                <button onClick={() => { setShowNote(false); setNoteText(""); }}
+                  style={{ marginLeft:"auto", background:"transparent", border:"none",
+                    color:P.teal, fontSize:18, cursor:"pointer", lineHeight:1 }}>×</button>
+              </div>
+              <textarea value={noteText} onChange={e => setNoteText(e.target.value)}
+                placeholder="Ex : famille contactée, antécédents connus, circonstances..."
+                rows={3}
+                style={{ width:"100%", background:"rgba(255,255,255,0.7)",
+                  border:`1.5px solid #B2DADA`, borderRadius:8, padding:"10px 12px",
+                  fontSize:13, color:P.text, fontFamily:sans, outline:"none",
+                  resize:"none", boxSizing:"border-box", lineHeight:1.6, marginBottom:8 }}
+                onFocus={e => e.target.style.borderColor = P.teal}
+                onBlur={e  => e.target.style.borderColor = "#B2DADA"} />
+              <button onClick={() => {
+                if (noteText.trim()) addEvent("note", noteText.trim(), "📝");
+                setNoteText(""); setShowNote(false);
+              }} style={{ width:"100%", background:`linear-gradient(135deg,${P.teal},#1A6A6A)`,
+                border:"none", borderRadius:9, color:"#fff", fontSize:13, fontWeight:600,
+                padding:"10px", cursor:"pointer", fontFamily:sans }}>
+                ✓ Ajouter à la chronologie
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Chronologie */}
         <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
