@@ -384,13 +384,29 @@ const ICONS = {
     </svg>
   ),
   transmission: (
-    <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      {/* Casque de pompier stylisé / passage de relais */}
-      <path d="M8 28 Q8 14 20 14 Q32 14 32 28" />
-      <line x1="6" y1="28" x2="34" y2="28" strokeWidth="2.5" />
-      <line x1="20" y1="14" x2="20" y2="22" />
-      <circle cx="20" cy="24" r="2" fill="currentColor" stroke="none" />
-      <path d="M14 32 L26 32" strokeDasharray="2,2" />
+    <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      {/* Camion de pompier */}
+      {/* Cabine avant (gauche) */}
+      <path d="M4 18 L4 28 L14 28 L14 14 L9 14 L4 18 Z" />
+      {/* Caisse arrière */}
+      <rect x="14" y="14" width="20" height="14" rx="1" />
+      {/* Pare-brise cabine */}
+      <line x1="6" y1="19" x2="12" y2="19" />
+      <line x1="11" y1="14" x2="11" y2="19" />
+      {/* Lignes de séparation caisse */}
+      <line x1="22" y1="18" x2="22" y2="26" />
+      <line x1="28" y1="18" x2="28" y2="26" />
+      {/* Gyrophare sur le toit */}
+      <rect x="18" y="11" width="6" height="3" rx="0.5" />
+      {/* Échelle stylisée sur le toit */}
+      <line x1="14" y1="12" x2="18" y2="12" strokeWidth="1.2" />
+      <line x1="24" y1="12" x2="34" y2="12" strokeWidth="1.2" />
+      {/* Roues */}
+      <circle cx="9" cy="30" r="2.5" />
+      <circle cx="20" cy="30" r="2.5" />
+      <circle cx="29" cy="30" r="2.5" />
+      {/* Châssis */}
+      <line x1="4" y1="28" x2="34" y2="28" strokeWidth="1.5" />
     </svg>
   ),
 };
@@ -1005,208 +1021,6 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onC
   );
 }
 
-// ── ONGLET ÉTIOLOGIE ──────────────────────────────────────────────────────────
-
-const CAUSES_5H = [
-  { id:"hypoxie",      label:"Hypoxie",         icon:"💨", sub:"SpO2 basse · cyanose · VA compromise" },
-  { id:"hypovolemie",  label:"Hypovolémie",      icon:"🩸", sub:"Hémorragie · déshydratation · choc" },
-  { id:"hydrogene",    label:"Acidose (H⁺)",     icon:"⚗️", sub:"pH < 7,1 · sepsis · IRC · intox" },
-  { id:"hypok",        label:"Hypokaliémie",      icon:"⚡", sub:"ECG : onde U · troubles du rythme" },
-  { id:"hyperk",       label:"Hyperkaliémie",     icon:"⚡", sub:"ECG : QRS large · onde T ample · IRC" },
-  { id:"hypothermie",  label:"Hypothermie",       icon:"🧊", sub:"Tc < 30 °C · noyade · exposition" },
-];
-
-const CAUSES_5T = [
-  { id:"tension_pno",  label:"PNO compressif",   icon:"🫁", sub:"Asymétrie · déviation trachée · SpO2 chute" },
-  { id:"tamponnade",   label:"Tamponnade",        icon:"💜", sub:"JVD · muffled heart · trauma / néoplasie" },
-  { id:"thrombose_co", label:"Thrombose coronaire",icon:"🫀", sub:"SCA · sus-ST · douleur prémort" },
-  { id:"thrombose_ep", label:"Embolie pulmonaire", icon:"🫧", sub:"TVP · S1Q3T3 · VD dilaté à l'écho" },
-  { id:"toxiques",     label:"Toxiques",          icon:"☠️", sub:"Ingestion · toxidrome · ECG modifié" },
-];
-
-function EtiologieTab({ addEvent }) {
-  const [selected, setSelected] = useState([]);
-  const [autre,    setAutre]    = useState("");
-
-  const toggle = (id, label, icon) => {
-    if (selected.includes(id)) {
-      setSelected(p => p.filter(x => x !== id));
-    } else {
-      setSelected(p => [...p, id]);
-      addEvent("etio_" + id, `Étiologie suspectée : ${label}`, icon);
-    }
-  };
-
-  const logAutre = () => {
-    if (!autre.trim()) return;
-    addEvent("etio_autre", `Étiologie autre : ${autre.trim()}`, "📝");
-    setAutre("");
-  };
-
-  const CauseCard = ({ item }) => {
-    const active = selected.includes(item.id);
-    return (
-      <button onClick={() => toggle(item.id, item.label, item.icon)}
-        style={{ background: active ? P.amberSoft : P.surface,
-          border: `1.5px solid ${active ? P.amber : P.border}`,
-          borderRadius:12, padding:"12px 14px", cursor:"pointer", fontFamily:sans,
-          textAlign:"left", transition:"all 0.12s",
-          display:"flex", alignItems:"flex-start", gap:10 }}>
-        <span style={{ fontSize:20, marginTop:1 }}>{item.icon}</span>
-        <div style={{ flex:1 }}>
-          <p style={{ margin:0, fontSize:13, fontWeight:600,
-            color: active ? P.amberText : P.text }}>{item.label}</p>
-          <p style={{ margin:"2px 0 0", fontSize:11, color:P.textSoft, lineHeight:1.4 }}>{item.sub}</p>
-        </div>
-        {active && <span style={{ color:P.amber, fontSize:16, marginTop:2 }}>✓</span>}
-      </button>
-    );
-  };
-
-  return (
-    <div style={{ marginBottom:10 }}>
-      {/* 5H */}
-      <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
-        overflow:"hidden", marginBottom:10 }}>
-        <div style={{ padding:"12px 16px", borderBottom:`1px solid ${P.borderSoft}`,
-          display:"flex", alignItems:"center", gap:8 }}>
-          <span style={{ fontSize:16 }}>🅗</span>
-          <span style={{ fontSize:13, fontWeight:600, color:P.text }}>5 H</span>
-          <span style={{ fontSize:11, color:P.textSoft, marginLeft:4 }}>Causes métaboliques & volémiques</span>
-        </div>
-        <div style={{ padding:"12px", display:"grid", gap:8 }}>
-          {CAUSES_5H.map(c => <CauseCard key={c.id} item={c} />)}
-        </div>
-      </div>
-
-      {/* 5T */}
-      <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
-        overflow:"hidden", marginBottom:10 }}>
-        <div style={{ padding:"12px 16px", borderBottom:`1px solid ${P.borderSoft}`,
-          display:"flex", alignItems:"center", gap:8 }}>
-          <span style={{ fontSize:16 }}>🅣</span>
-          <span style={{ fontSize:13, fontWeight:600, color:P.text }}>5 T</span>
-          <span style={{ fontSize:11, color:P.textSoft, marginLeft:4 }}>Causes obstructives & toxiques</span>
-        </div>
-        <div style={{ padding:"12px", display:"grid", gap:8 }}>
-          {CAUSES_5T.map(c => <CauseCard key={c.id} item={c} />)}
-        </div>
-      </div>
-
-      {/* Autre */}
-      <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
-        padding:"14px", marginBottom:10 }}>
-        <Lbl>Autre étiologie suspectée</Lbl>
-        <div style={{ display:"flex", gap:8 }}>
-          <input value={autre} onChange={e => setAutre(e.target.value)}
-            placeholder="Ex : dissection aortique, sepsis..."
-            onKeyDown={e => e.key === "Enter" && logAutre()}
-            style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-              borderRadius:9, padding:"9px 12px", fontSize:13, color:P.text,
-              fontFamily:sans, outline:"none" }}
-            onFocus={e => e.target.style.borderColor = P.amber}
-            onBlur={e  => e.target.style.borderColor = P.border} />
-          <button onClick={logAutre}
-            style={{ background:P.amberSoft, border:`1.5px solid ${P.amber}`, borderRadius:9,
-              padding:"9px 16px", color:P.amberText, fontSize:13, fontWeight:600,
-              cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>
-            + Ajouter
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── ONGLET THÉRAPEUTIQUES ─────────────────────────────────────────────────────
-
-const THERAPEUTIQUES = [
-  { id:"bicarb",    label:"Bicarbonate 8,4%",       icon:"🧪", sub:"1 mmol/kg IV · acidose pH < 7,1 · hyperkaliémie", accent:P.violet, soft:P.violetSoft, textC:P.violetText },
-  { id:"calcium",   label:"Gluconate Ca²⁺ 10%",     icon:"💊", sub:"10 mL IV · hypocalcémie · hyperkaliémie · BB", accent:P.teal,   soft:P.tealSoft,   textC:P.tealText   },
-  { id:"atropine",  label:"Atropine 1 mg",           icon:"💉", sub:"IV/IO · bradycardie symptomatique", accent:P.rose,   soft:P.roseSoft,   textC:P.roseText   },
-  { id:"magnesium", label:"Sulfate de Mg²⁺ 2 g",    icon:"🧪", sub:"IV · FV réfractaire · torsades de pointe", accent:P.violet, soft:P.violetSoft, textC:P.violetText },
-  { id:"thrombo",   label:"Thrombolyse",             icon:"💊", sub:"Alteplase 50 mg · EP massive · STEMI perrésus", accent:P.amber,  soft:P.amberSoft,  textC:P.amberText  },
-  { id:"naloxone",  label:"Naloxone 0,4 mg",         icon:"💉", sub:"IV/IN · intoxication aux opioïdes", accent:P.green,  soft:P.greenSoft,  textC:P.greenText  },
-  { id:"fluimucil", label:"N-acétylcystéine",        icon:"🧪", sub:"Paracétamol · dose toxique", accent:P.teal,   soft:P.tealSoft,   textC:P.tealText   },
-  { id:"insulin",   label:"Insuline + G30%",         icon:"💉", sub:"Hyperkaliémie · intox BB / inhibiteurs calciques", accent:P.rose,   soft:P.roseSoft,   textC:P.roseText   },
-  { id:"exsufflation", label:"Exsufflation PNO",    icon:"🫁", sub:"2e EIC ligne médioclaviculaire · aiguille 14G", accent:P.blue,   soft:P.blueSoft,   textC:P.blueText   },
-  { id:"pericardio",label:"Péricardiocentèse",       icon:"🫀", sub:"Tamponnade · sous écho si possible", accent:P.blue,   soft:P.blueSoft,   textC:P.blueText   },
-  { id:"rechauff",  label:"Réchauffement actif",     icon:"🧊", sub:"Hypothermie · CEC si Tc < 28 °C + ACR", accent:P.teal,   soft:P.tealSoft,   textC:P.tealText   },
-  { id:"ecmo",      label:"ECMO / ECLS",             icon:"🔬", sub:"FV réfractaire · intox · hypothermie · centre expert", accent:P.slate,  soft:P.slateSoft,  textC:P.slateText  },
-];
-
-function TherapeutiquesTab({ addEvent }) {
-  const [autreThera, setAutreThera] = useState("");
-
-  const logAutreThera = () => {
-    if (!autreThera.trim()) return;
-    addEvent("thera_autre", `Thérapeutique : ${autreThera.trim()}`, "💊");
-    setAutreThera("");
-  };
-
-  return (
-    <div style={{ marginBottom:10 }}>
-      <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
-        overflow:"hidden", marginBottom:10 }}>
-        <div style={{ padding:"12px 16px", borderBottom:`1px solid ${P.borderSoft}` }}>
-          <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>💊 Thérapeutiques spécifiques</p>
-          <p style={{ margin:"2px 0 0", fontSize:11, color:P.textSoft }}>Toucher pour horodater dans la chronologie</p>
-        </div>
-        <div style={{ padding:"12px", display:"grid", gap:8 }}>
-          {THERAPEUTIQUES.map(t => (
-            <button key={t.id}
-              onClick={() => addEvent("thera_" + t.id, `${t.label} administré(e)`, t.icon)}
-              style={{ background:P.surface, border:`1.5px solid ${P.border}`,
-                borderRadius:12, padding:"12px 14px", cursor:"pointer", fontFamily:sans,
-                textAlign:"left", display:"flex", alignItems:"flex-start", gap:10,
-                transition:"all 0.12s" }}
-              onPointerDown={e => {
-                e.currentTarget.style.background = t.soft;
-                e.currentTarget.style.borderColor = t.accent;
-              }}
-              onPointerUp={e => {
-                e.currentTarget.style.background = P.surface;
-                e.currentTarget.style.borderColor = P.border;
-              }}
-              onPointerLeave={e => {
-                e.currentTarget.style.background = P.surface;
-                e.currentTarget.style.borderColor = P.border;
-              }}>
-              <span style={{ fontSize:20, marginTop:1 }}>{t.icon}</span>
-              <div style={{ flex:1 }}>
-                <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>{t.label}</p>
-                <p style={{ margin:"2px 0 0", fontSize:11, color:P.textSoft, lineHeight:1.4 }}>{t.sub}</p>
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Autre thérapeutique */}
-      <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
-        padding:"14px", marginBottom:10 }}>
-        <Lbl>Autre thérapeutique</Lbl>
-        <div style={{ display:"flex", gap:8 }}>
-          <input value={autreThera} onChange={e => setAutreThera(e.target.value)}
-            placeholder="Ex : vasopressine, lipidémulsion..."
-            onKeyDown={e => e.key === "Enter" && logAutreThera()}
-            style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-              borderRadius:9, padding:"9px 12px", fontSize:13, color:P.text,
-              fontFamily:sans, outline:"none" }}
-            onFocus={e => e.target.style.borderColor = P.violet}
-            onBlur={e  => e.target.style.borderColor = P.border} />
-          <button onClick={logAutreThera}
-            style={{ background:P.violetSoft, border:`1.5px solid ${P.violet}`, borderRadius:9,
-              padding:"9px 16px", color:P.violetText, fontSize:13, fontWeight:600,
-              cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>
-            + Ajouter
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── REMPLISSAGE VASCULAIRE ────────────────────────────────────────────────────
 
 const VOLUMES_RAPIDES = [100, 250, 500, 1000];
@@ -1322,25 +1136,25 @@ function RemplissageSection({ racs, setRacs }) {
 // Colonnes normes post-RACS : fc, pas, pamTC, pamHorsTC, vtRange, frRange, ie, peep, sng, fio2
 const PED_TABLE = [
   // Sédation : midPSE = vitesse PSE midazolam mL/h (0.1mg/kg/h) | sufBolus = bolus sufentanyl mL (0.2μg/kg) | sufPSE = PSE sufentanyl mL/h (0.2μg/kg/h)
-  { age:"NN",       p:3,  masque:"0-1",  aspi:"6",    lame:"Dte 0/1", mandrin:"6",      sonde:"3",   repere:9,  guedel:"0-0", fr:25, vt:18,  ezio:"E-ZIO 15mm",         adrMg:0.05, adrMl:0.5, amioMg:15,  amioMl:0.5, defib4:12,  defib6:18,  defib8:24,  fcN:135, pasN:60,  pamTC:45, pamHTC:35, vtR:"30-50",  frR:"40",  ie:"1/2", peep:5, sng:6,  fio2:"100% puis QSP 94-98%", midPSE:0.3, sufBolus:0.6, sufPSE:0.6 , nimbex1:0.9, nimbex2:0.45, rempliVol:30, rempliDebit:12, adrPSE1:1.8, adrPSE2:4.5, adrPSE3:9, adrPSE4:13.5 },
-  { age:"NN",       p:4,  masque:"0-1",  aspi:"6",    lame:"Dte 0/1", mandrin:"6",      sonde:"3",   repere:9,  guedel:"0-0", fr:25, vt:24,  ezio:"E-ZIO 15mm",         adrMg:0.05, adrMl:0.5, amioMg:20,  amioMl:0.5, defib4:16,  defib6:24,  defib8:32,  fcN:130, pasN:60,  pamTC:45, pamHTC:35, vtR:"30-50",  frR:"40",  ie:"1/2", peep:5, sng:6,  fio2:"100% puis QSP 94-98%", midPSE:0.4, sufBolus:0.8, sufPSE:0.8 , nimbex1:1.2, nimbex2:0.4, rempliVol:40, rempliDebit:16, adrPSE1:2.4, adrPSE2:6, adrPSE3:12, adrPSE4:18 },
-  { age:"3 mois",   p:5,  masque:"0-1",  aspi:"6-8",  lame:"Dte 0/1", mandrin:"6",      sonde:"3.5", repere:10, guedel:"0",   fr:25, vt:30,  ezio:"E-ZIO 15mm",         adrMg:0.05, adrMl:0.5, amioMg:25,  amioMl:0.5, defib4:20,  defib6:30,  defib8:40,  fcN:120, pasN:80,  pamTC:55, pamHTC:40, vtR:"30",     frR:"40",  ie:"1/2", peep:5, sng:6,  fio2:"100% puis QSP 94-98%", midPSE:0.5, sufBolus:1.0, sufPSE:1.0 , nimbex1:1.5, nimbex2:0.5, rempliVol:50, rempliDebit:20, adrPSE1:3, adrPSE2:7.5, adrPSE3:15, adrPSE4:22.5 },
-  { age:"4-5 mois", p:6,  masque:"0-1",  aspi:"6-8",  lame:"1",       mandrin:"6",      sonde:"3.5", repere:10, guedel:"0",   fr:25, vt:36,  ezio:"E-ZIO 25mm",         adrMg:0.1,  adrMl:1,   amioMg:30,  amioMl:1,   defib4:24,  defib6:36,  defib8:50,  fcN:120, pasN:80,  pamTC:55, pamHTC:40, vtR:"25-30",  frR:"25",  ie:"1/2", peep:5, sng:8,  fio2:"100% puis QSP 94-98%", midPSE:0.6, sufBolus:1.2, sufPSE:1.2 , nimbex1:1.8, nimbex2:0.6, rempliVol:60, rempliDebit:24, adrPSE1:3.6, adrPSE2:9, adrPSE3:18, adrPSE4:27 },
-  { age:"6 mois",   p:7,  masque:"0-1",  aspi:"6-8",  lame:"1",       mandrin:"6",      sonde:"3.5", repere:10, guedel:"0",   fr:25, vt:42,  ezio:"E-ZIO 25mm",         adrMg:0.1,  adrMl:1,   amioMg:35,  amioMl:1,   defib4:28,  defib6:42,  defib8:60,  fcN:120, pasN:80,  pamTC:55, pamHTC:40, vtR:"25-30",  frR:"25",  ie:"1/2", peep:5, sng:8,  fio2:"100% puis QSP 94-98%", midPSE:0.7, sufBolus:1.4, sufPSE:1.4 , nimbex1:2, nimbex2:0.7, rempliVol:70, rempliDebit:28, adrPSE1:4.2, adrPSE2:10.5, adrPSE3:21, adrPSE4:31.5 },
-  { age:"8 mois",   p:8,  masque:"1-2",  aspi:"6-8",  lame:"1",       mandrin:"6",      sonde:"3.5", repere:11, guedel:"0",   fr:25, vt:48,  ezio:"E-ZIO 25mm",         adrMg:0.1,  adrMl:1,   amioMg:40,  amioMl:1,   defib4:32,  defib6:48,  defib8:70,  fcN:115, pasN:80,  pamTC:55, pamHTC:40, vtR:"25-30",  frR:"25",  ie:"1/2", peep:5, sng:8,  fio2:"100% puis QSP 94-98%", midPSE:0.8, sufBolus:1.6, sufPSE:1.6 , nimbex1:2.4, nimbex2:0.8, rempliVol:80, rempliDebit:32, adrPSE1:4.8, adrPSE2:12, adrPSE3:24, adrPSE4:36 },
+  { age:"NN",       p:3,  masque:"00-0",  aspi:"6",    lame:"Dte 0/1", mandrin:"6",      sonde:"3",   repere:9,  guedel:"0-0", fr:25, vt:"BAVU",  ezio:"E-ZIO 15mm",         adrMg:0.05, adrMl:0.5, amioMg:15,  amioMl:0.5, defib4:12,  defib6:18,  defib8:24,  fcN:135, pasN:60,  pamTC:45, pamHTC:35, vtR:"30-50",  frR:"40",  ie:"1/2", peep:5, sng:6,  fio2:"100% puis QSP 94-98%", midPSE:0.3, sufBolus:0.6, sufPSE:0.6 , nimbex1:0.9, nimbex2:0.45, rempliVol:30, rempliDebit:12, adrPSE1:1.8, adrPSE2:4.5, adrPSE3:9, adrPSE4:13.5 },
+  { age:"NN",       p:4,  masque:"00-0",  aspi:"6",    lame:"Dte 0/1", mandrin:"6",      sonde:"3",   repere:9,  guedel:"0-0", fr:25, vt:"BAVU",  ezio:"E-ZIO 15mm",         adrMg:0.05, adrMl:0.5, amioMg:20,  amioMl:0.5, defib4:16,  defib6:24,  defib8:32,  fcN:130, pasN:60,  pamTC:45, pamHTC:35, vtR:"30-50",  frR:"40",  ie:"1/2", peep:5, sng:6,  fio2:"100% puis QSP 94-98%", midPSE:0.4, sufBolus:0.8, sufPSE:0.8 , nimbex1:1.2, nimbex2:0.4, rempliVol:40, rempliDebit:16, adrPSE1:2.4, adrPSE2:6, adrPSE3:12, adrPSE4:18 },
+  { age:"3 mois",   p:5,  masque:"0-1",  aspi:"6",  lame:"Dte 0/1", mandrin:"6",      sonde:"3.5", repere:10, guedel:"0",   fr:25, vt:"BAVU",  ezio:"E-ZIO 15mm",         adrMg:0.05, adrMl:0.5, amioMg:25,  amioMl:0.5, defib4:20,  defib6:30,  defib8:40,  fcN:120, pasN:80,  pamTC:55, pamHTC:40, vtR:"30",     frR:"40",  ie:"1/2", peep:5, sng:6,  fio2:"100% puis QSP 94-98%", midPSE:0.5, sufBolus:1.0, sufPSE:1.0 , nimbex1:1.5, nimbex2:0.5, rempliVol:50, rempliDebit:20, adrPSE1:3, adrPSE2:7.5, adrPSE3:15, adrPSE4:22.5 },
+  { age:"4-5 mois", p:6,  masque:"0-1",  aspi:"6-8",  lame:"1",       mandrin:"6",      sonde:"3.5", repere:10, guedel:"0",   fr:25, vt:50,  ezio:"E-ZIO 25mm",         adrMg:0.1,  adrMl:1,   amioMg:30,  amioMl:1,   defib4:25,  defib6:36,  defib8:50,  fcN:120, pasN:80,  pamTC:55, pamHTC:40, vtR:"25-30",  frR:"25",  ie:"1/2", peep:5, sng:8,  fio2:"100% puis QSP 94-98%", midPSE:0.6, sufBolus:1.2, sufPSE:1.2 , nimbex1:1.8, nimbex2:0.6, rempliVol:60, rempliDebit:24, adrPSE1:3.6, adrPSE2:9, adrPSE3:18, adrPSE4:27 },
+  { age:"6 mois",   p:7,  masque:"0-1",  aspi:"6-8",  lame:"1",       mandrin:"6",      sonde:"3.5", repere:10, guedel:"0",   fr:25, vt:50,  ezio:"E-ZIO 25mm",         adrMg:0.1,  adrMl:1,   amioMg:35,  amioMl:1,   defib4:30,  defib6:42,  defib8:60,  fcN:120, pasN:80,  pamTC:55, pamHTC:40, vtR:"25-30",  frR:"25",  ie:"1/2", peep:5, sng:8,  fio2:"100% puis QSP 94-98%", midPSE:0.7, sufBolus:1.4, sufPSE:1.4 , nimbex1:2, nimbex2:0.7, rempliVol:70, rempliDebit:28, adrPSE1:4.2, adrPSE2:10.5, adrPSE3:21, adrPSE4:31.5 },
+  { age:"8 mois",   p:8,  masque:"0-1",  aspi:"6-8",  lame:"1",       mandrin:"6",      sonde:"3.5", repere:11, guedel:"0",   fr:25, vt:50,  ezio:"E-ZIO 25mm",         adrMg:0.1,  adrMl:1,   amioMg:40,  amioMl:1,   defib4:35,  defib6:48,  defib8:70,  fcN:115, pasN:80,  pamTC:55, pamHTC:40, vtR:"25-30",  frR:"25",  ie:"1/2", peep:5, sng:8,  fio2:"100% puis QSP 94-98%", midPSE:0.8, sufBolus:1.6, sufPSE:1.6 , nimbex1:2.4, nimbex2:0.8, rempliVol:80, rempliDebit:32, adrPSE1:4.8, adrPSE2:12, adrPSE3:24, adrPSE4:36 },
   { age:"12 mois",  p:10, masque:"1-2",  aspi:"8",    lame:"1",       mandrin:"10",     sonde:"4",   repere:11, guedel:"1",   fr:20, vt:60,  ezio:"E-ZIO 25mm",         adrMg:0.1,  adrMl:1,   amioMg:50,  amioMl:1,   defib4:40,  defib6:60,  defib8:80,  fcN:110, pasN:90,  pamTC:55, pamHTC:40, vtR:"25-30",  frR:"25",  ie:"1/2", peep:5, sng:8,  fio2:"100% puis QSP 94-98%", midPSE:1.0, sufBolus:2.0, sufPSE:2.0 , nimbex1:3, nimbex2:1, rempliVol:100, rempliDebit:40, adrPSE1:6, adrPSE2:15, adrPSE3:30, adrPSE4:45 },
-  { age:"18 mois",  p:11, masque:"1-2",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:12, guedel:"1",   fr:20, vt:66,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:55,  amioMl:1.5, defib4:44,  defib6:66,  defib8:90,  fcN:110, pasN:90,  pamTC:57, pamHTC:42, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.1, sufBolus:2.2, sufPSE:2.2 , nimbex1:3.3, nimbex2:1.1, rempliVol:110, rempliDebit:40, adrPSE1:1.3, adrPSE2:3.3, adrPSE3:6.6, adrPSE4:9.9 },
-  { age:"2 ans",    p:12, masque:"1-2",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:12, guedel:"1",   fr:20, vt:72,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:60,  amioMl:1.5, defib4:48,  defib6:72,  defib8:100, fcN:110, pasN:100, pamTC:58, pamHTC:43, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.2, sufBolus:2.4, sufPSE:2.4 , nimbex1:3.6, nimbex2:1.2, rempliVol:120, rempliDebit:40, adrPSE1:1.4, adrPSE2:3.6, adrPSE3:7.2, adrPSE4:10.8 },
-  { age:"3 ans",    p:14, masque:"1-2",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:13, guedel:"1",   fr:20, vt:84,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:70,  amioMl:1.5, defib4:55,  defib6:84,  defib8:110, fcN:105, pasN:100, pamTC:60, pamHTC:45, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.4, sufBolus:2.8, sufPSE:2.8 , nimbex1:4.2, nimbex2:1.4, rempliVol:140, rempliDebit:40, adrPSE1:1.7, adrPSE2:4.2, adrPSE3:8.4, adrPSE4:12.6 },
-  { age:"4 ans",    p:15, masque:"2",    aspi:"8-10", lame:"1-2",     mandrin:"10",     sonde:"4.5", repere:14, guedel:"1",   fr:20, vt:90,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:75,  amioMl:1.5, defib4:60,  defib6:90,  defib8:120, fcN:105, pasN:100, pamTC:61, pamHTC:46, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.5, sufBolus:3.0, sufPSE:3.0 , nimbex1:4.5, nimbex2:1.5, rempliVol:150, rempliDebit:40, adrPSE1:1.8, adrPSE2:4.5, adrPSE3:9, adrPSE4:13.5 },
-  { age:"5 ans",    p:17, masque:"2",    aspi:"8-10", lame:"1-2",     mandrin:"10",     sonde:"4.5", repere:14, guedel:"1",   fr:20, vt:102, ezio:"E-ZIO 25mm",         adrMg:0.2,  adrMl:2,   amioMg:85,  amioMl:2,   defib4:70,  defib6:102, defib8:140, fcN:105, pasN:105, pamTC:63, pamHTC:48, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.7, sufBolus:3.4, sufPSE:3.4 , nimbex1:5, nimbex2:1.7, rempliVol:170, rempliDebit:40, adrPSE1:2, adrPSE2:5.1, adrPSE3:10.2, adrPSE4:15.3 },
-  { age:"6-7 ans",  p:20, masque:"2-3",  aspi:"10",   lame:"2-3",     mandrin:"10",     sonde:"5",   repere:15, guedel:"2",   fr:20, vt:120, ezio:"E-ZIO 25mm",         adrMg:0.2,  adrMl:2,   amioMg:100, amioMl:2,   defib4:80,  defib6:120, defib8:160, fcN:100, pasN:105, pamTC:66, pamHTC:51, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:12, fio2:"100% puis QSP 94-98%", midPSE:2.0, sufBolus:4.2, sufPSE:4.2 , nimbex1:1.5, nimbex2:2.1, rempliVol:200, rempliDebit:40, adrPSE1:2.5, adrPSE2:6.3, adrPSE3:12.6, adrPSE4:18.9 },
-  { age:"8 ans",    p:25, masque:"2-3",  aspi:"10",   lame:"2-3",     mandrin:"12",     sonde:"5.5", repere:16, guedel:"2",   fr:15, vt:150, ezio:"E-ZIO 25mm",         adrMg:0.25, adrMl:2.5, amioMg:125, amioMl:2.5, defib4:100, defib6:150, defib8:200, fcN:95,  pasN:105, pamTC:67, pamHTC:52, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:12, fio2:"100% puis QSP 94-98%", midPSE:2.5, sufBolus:5.0, sufPSE:5.0 , nimbex1:1.8, nimbex2:2.5, rempliVol:250, rempliDebit:40, adrPSE1:3, adrPSE2:7.5, adrPSE3:15, adrPSE4:22.5 },
-  { age:"9 ans",    p:28, masque:"2-3",  aspi:"12",   lame:"2-3",     mandrin:"12-14",  sonde:"6",   repere:16, guedel:"2",   fr:15, vt:168, ezio:"E-ZIO 25mm",         adrMg:0.3,  adrMl:3,   amioMg:160, amioMl:3,   defib4:112, defib6:168, defib8:224, fcN:95,  pasN:105, pamTC:69, pamHTC:54, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:12, fio2:"100% puis QSP 94-98%", midPSE:2.8, sufBolus:5.6, sufPSE:5.6 , nimbex1:2.1, nimbex2:2.8, rempliVol:280, rempliDebit:40, adrPSE1:3.3, adrPSE2:8.4, adrPSE3:16.8, adrPSE4:25.2 },
-  { age:"10 ans",   p:32, masque:"3",    aspi:"12",   lame:"3",       mandrin:"14-15",  sonde:"6.5", repere:17, guedel:"2",   fr:15, vt:192, ezio:"E-ZIO 25mm",         adrMg:0.3,  adrMl:3,   amioMg:160, amioMl:3,   defib4:128, defib6:192, defib8:256, fcN:95,  pasN:105, pamTC:70, pamHTC:55, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:12, fio2:"100% puis QSP 94-98%", midPSE:3.2, sufBolus:6.4, sufPSE:6.4 , nimbex1:2.4, nimbex2:3.2, rempliVol:320, rempliDebit:40, adrPSE1:3.8, adrPSE2:9.6, adrPSE3:19.2, adrPSE4:28.8 },
-  { age:"11 ans",   p:35, masque:"3",    aspi:"12",   lame:"3",       mandrin:"14-15",  sonde:"6.5", repere:17, guedel:"3",   fr:15, vt:210, ezio:"E-ZIO 25mm",         adrMg:0.35, adrMl:3.5, amioMg:175, amioMl:3.5, defib4:140, defib6:210, defib8:280, fcN:90,  pasN:105, pamTC:72, pamHTC:57, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:12, fio2:"100% puis QSP 94-98%", midPSE:3.5, sufBolus:7.0, sufPSE:7.0 , nimbex1:2.6, nimbex2:3.5, rempliVol:350, rempliDebit:40, adrPSE1:4.2, adrPSE2:10.5, adrPSE3:21, adrPSE4:31.5 },
-  { age:"12 ans",   p:40, masque:"3",    aspi:"12",   lame:"3",       mandrin:"14-15",  sonde:"6.5", repere:18, guedel:"3",   fr:10, vt:240, ezio:"E-ZIO 25mm ou 45mm", adrMg:0.4,  adrMl:4,   amioMg:200, amioMl:4,   defib4:160, defib6:240, defib8:300, fcN:80,  pasN:110, pamTC:80, pamHTC:65, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:14, fio2:"100% puis QSP 94-98%", midPSE:4.0, sufBolus:8.0, sufPSE:8.0 , nimbex1:3, nimbex2:4, rempliVol:400, rempliDebit:"Garde veine", adrPSE1:4.8, adrPSE2:12, adrPSE3:24, adrPSE4:36 },
-  { age:"15 ans",   p:50, masque:"3-4",  aspi:"12",   lame:"3",       mandrin:"14-15",  sonde:"7",   repere:19, guedel:"3",   fr:10, vt:300, ezio:"E-ZIO 25mm ou 45mm", adrMg:0.5,  adrMl:5,   amioMg:250, amioMl:5,   defib4:200, defib6:250, defib8:300, fcN:75,  pasN:120, pamTC:80, pamHTC:65, vtR:"12-20",  frR:"15",  ie:"1/2", peep:5, sng:14, fio2:"100% puis QSP 94-98%", midPSE:5.0, sufBolus:10.0, sufPSE:10.0 , nimbex1:3.7, nimbex2:5, rempliVol:500, rempliDebit:"Garde veine", adrPSE1:6, adrPSE2:15, adrPSE3:30, adrPSE4:45 },
+  { age:"18 mois",  p:11, masque:"1-2",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:12, guedel:"1",   fr:20, vt:66,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:55,  amioMl:1.5, defib4:45,  defib6:66,  defib8:90,  fcN:110, pasN:90,  pamTC:57, pamHTC:42, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.1, sufBolus:2.2, sufPSE:2.2 , nimbex1:3.3, nimbex2:1.1, rempliVol:110, rempliDebit:40, adrPSE1:1.3, adrPSE2:3.3, adrPSE3:6.6, adrPSE4:9.9 },
+  { age:"2 ans",    p:12, masque:"1-2",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:12, guedel:"1",   fr:20, vt:72,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:60,  amioMl:1.5, defib4:50,  defib6:72,  defib8:100, fcN:110, pasN:100, pamTC:58, pamHTC:43, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.2, sufBolus:2.4, sufPSE:2.4 , nimbex1:3.6, nimbex2:1.2, rempliVol:120, rempliDebit:40, adrPSE1:1.4, adrPSE2:3.6, adrPSE3:7.2, adrPSE4:10.8 },
+  { age:"3 ans",    p:14, masque:"3",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:13, guedel:"1",   fr:20, vt:84,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:70,  amioMl:1.5, defib4:55,  defib6:84,  defib8:110, fcN:105, pasN:100, pamTC:60, pamHTC:45, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.4, sufBolus:2.8, sufPSE:2.8 , nimbex1:4.2, nimbex2:1.4, rempliVol:140, rempliDebit:40, adrPSE1:1.7, adrPSE2:4.2, adrPSE3:8.4, adrPSE4:12.6 },
+  { age:"4 ans",    p:15, masque:"3",    aspi:"8-10", lame:"1-2",     mandrin:"10",     sonde:"4.5", repere:14, guedel:"1",   fr:20, vt:90,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:75,  amioMl:1.5, defib4:60,  defib6:90,  defib8:120, fcN:105, pasN:100, pamTC:61, pamHTC:46, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.5, sufBolus:3.0, sufPSE:3.0 , nimbex1:4.5, nimbex2:1.5, rempliVol:150, rempliDebit:40, adrPSE1:1.8, adrPSE2:4.5, adrPSE3:9, adrPSE4:13.5 },
+  { age:"5 ans",    p:17, masque:"3",    aspi:"8-10", lame:"1-2",     mandrin:"10",     sonde:"4.5", repere:14, guedel:"1",   fr:20, vt:102, ezio:"E-ZIO 25mm",         adrMg:0.2,  adrMl:2,   amioMg:85,  amioMl:2,   defib4:70,  defib6:102, defib8:140, fcN:105, pasN:105, pamTC:63, pamHTC:48, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.7, sufBolus:3.4, sufPSE:3.4 , nimbex1:5, nimbex2:1.7, rempliVol:170, rempliDebit:40, adrPSE1:2, adrPSE2:5.1, adrPSE3:10.2, adrPSE4:15.3 },
+  { age:"6-7 ans",  p:20, masque:"3",  aspi:"10",   lame:"2-3",     mandrin:"10",     sonde:"5",   repere:15, guedel:"2",   fr:20, vt:120, ezio:"E-ZIO 25mm",         adrMg:0.2,  adrMl:2,   amioMg:100, amioMl:2,   defib4:80,  defib6:120, defib8:160, fcN:100, pasN:105, pamTC:66, pamHTC:51, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:12, fio2:"100% puis QSP 94-98%", midPSE:2.0, sufBolus:4.2, sufPSE:4.2 , nimbex1:1.5, nimbex2:2.1, rempliVol:200, rempliDebit:40, adrPSE1:2.5, adrPSE2:6.3, adrPSE3:12.6, adrPSE4:18.9 },
+  { age:"8 ans",    p:25, masque:"3-4",  aspi:"10",   lame:"2-3",     mandrin:"12",     sonde:"5.5", repere:16, guedel:"2",   fr:15, vt:150, ezio:"E-ZIO 25mm",         adrMg:0.25, adrMl:2.5, amioMg:125, amioMl:2.5, defib4:100, defib6:150, defib8:200, fcN:95,  pasN:105, pamTC:67, pamHTC:52, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:12, fio2:"100% puis QSP 94-98%", midPSE:2.5, sufBolus:5.0, sufPSE:5.0 , nimbex1:1.8, nimbex2:2.5, rempliVol:250, rempliDebit:40, adrPSE1:3, adrPSE2:7.5, adrPSE3:15, adrPSE4:22.5 },
+  { age:"9 ans",    p:28, masque:"3-4",  aspi:"12",   lame:"2-3",     mandrin:"12-14",  sonde:"6",   repere:"16-17", guedel:"2",   fr:15, vt:168, ezio:"E-ZIO 25mm",         adrMg:0.3,  adrMl:3,   amioMg:160, amioMl:3,   defib4:150, defib6:150, defib8:300, fcN:95,  pasN:105, pamTC:69, pamHTC:54, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:12, fio2:"100% puis QSP 94-98%", midPSE:2.8, sufBolus:5.6, sufPSE:5.6 , nimbex1:2.1, nimbex2:2.8, rempliVol:280, rempliDebit:40, adrPSE1:3.3, adrPSE2:8.4, adrPSE3:16.8, adrPSE4:25.2 },
+  { age:"10 ans",   p:32, masque:"3-4",    aspi:"12",   lame:"3",       mandrin:"14-15",  sonde:"6.5", repere:17, guedel:"2",   fr:15, vt:192, ezio:"E-ZIO 25mm",         adrMg:0.3,  adrMl:3,   amioMg:160, amioMl:3,   defib4:150, defib6:200, defib8:300, fcN:95,  pasN:105, pamTC:70, pamHTC:55, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:12, fio2:"100% puis QSP 94-98%", midPSE:3.2, sufBolus:6.4, sufPSE:6.4 , nimbex1:2.4, nimbex2:3.2, rempliVol:320, rempliDebit:40, adrPSE1:3.8, adrPSE2:9.6, adrPSE3:19.2, adrPSE4:28.8 },
+  { age:"11 ans",   p:35, masque:"4",    aspi:"12",   lame:"3",       mandrin:"14-15",  sonde:"6.5", repere:"17-18", guedel:"3",   fr:15, vt:210, ezio:"E-ZIO 25mm",         adrMg:0.35, adrMl:3.5, amioMg:175, amioMl:3.5, defib4:150, defib6:200, defib8:300, fcN:90,  pasN:105, pamTC:72, pamHTC:57, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:12, fio2:"100% puis QSP 94-98%", midPSE:3.5, sufBolus:7.0, sufPSE:7.0 , nimbex1:2.6, nimbex2:3.5, rempliVol:350, rempliDebit:40, adrPSE1:4.2, adrPSE2:10.5, adrPSE3:21, adrPSE4:31.5 },
+  { age:"12 ans",   p:40, masque:"4",    aspi:"12",   lame:"3",       mandrin:"14-15",  sonde:"6.5", repere:18, guedel:"2-3",   fr:10, vt:240, ezio:"E-ZIO 25mm ou 45mm", adrMg:0.4,  adrMl:4,   amioMg:200, amioMl:4,   defib4:175, defib6:250, defib8:300, fcN:80,  pasN:110, pamTC:80, pamHTC:65, vtR:"15-25",  frR:"18",  ie:"1/2", peep:5, sng:14, fio2:"100% puis QSP 94-98%", midPSE:4.0, sufBolus:8.0, sufPSE:8.0 , nimbex1:3, nimbex2:4, rempliVol:400, rempliDebit:"Garde veine", adrPSE1:4.8, adrPSE2:12, adrPSE3:24, adrPSE4:36 },
+  { age:"15 ans",   p:50, masque:"4-5",  aspi:"12",   lame:"3",       mandrin:"14-15",  sonde:"7",   repere:"19-20", guedel:"2-3",   fr:10, vt:300, ezio:"E-ZIO 25mm ou 45mm", adrMg:0.5,  adrMl:5,   amioMg:250, amioMl:5,   defib4:200, defib6:250, defib8:300, fcN:75,  pasN:120, pamTC:80, pamHTC:65, vtR:"12-20",  frR:"15",  ie:"1/2", peep:5, sng:14, fio2:"100% puis QSP 94-98%", midPSE:5.0, sufBolus:10.0, sufPSE:10.0 , nimbex1:3.7, nimbex2:5, rempliVol:500, rempliDebit:"Garde veine", adrPSE1:6, adrPSE2:15, adrPSE3:30, adrPSE4:45 },
 ];
 
 // Trouver la ligne la plus proche par poids
@@ -1410,6 +1224,14 @@ function calcMateriel(poids) {
     adrPSE2: row.adrPSE2,
     adrPSE3: row.adrPSE3,
     adrPSE4: row.adrPSE4,
+    // Thérapeutiques spécifiques pédiatriques (calculées au poids)
+    bicarMl:     Math.round(p * 1 * 10) / 10,         // 1 mEq/kg = 1 mL/kg de 8,4 %
+    calciumMl:   Math.min(Math.round(p * 0.5 * 10) / 10, 20),  // 0,5 mL/kg, max 20 mL
+    magnesiumMg: Math.min(Math.round(p * 50), 2000),  // 50 mg/kg, max 2 g
+    naloxoneMg:  Math.min(Math.round(p * 0.1 * 100) / 100, 2), // 0,1 mg/kg, max 2 mg
+    glucoseMl:   Math.round(p * 2),                    // G10 % : 2 mL/kg
+    intralipMl:  Math.round(p * 1.5),                  // 1,5 mL/kg bolus
+    alteplaseMg: Math.min(Math.round(p * 0.6), 50),    // 0,6 mg/kg max 50 mg
   };
 }
 
@@ -1568,6 +1390,10 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
   // Minuteur Adrénaline pédiatrique
   const [adrTimerStartPed, setAdrTimerStartPed] = useLocalState("acr_ped_adrStart", 0);
   const [adrIntervalPed,   setAdrIntervalPed]   = useLocalState("acr_ped_adrInterval", 4);
+  // Onglets pédiatrique
+  const [mainTabPed,       setMainTabPed]       = useLocalState("acr_ped_mainTab", "actions");
+  const [suspectedPed,     setSuspectedPed]     = useLocalState("acr_ped_suspected", []);
+  const [modalEcmoPed,     setModalEcmoPed]     = useState(false);
   const stp = k => v => setTransPed(p => ({ ...p, [k]: v }));
 
   const [noFlowMin,    setNoFlowMin]    = useLocalState("acr_ped_noFlow", "");
@@ -2399,7 +2225,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
               <p style={{margin:0,fontSize:13,fontWeight:600,color:P.text}}>ACR Pédiatrique</p>
               <div style={{display:"flex",alignItems:"center",gap:5,marginTop:2}}>
                 <span style={{fontSize:11,color:P.textSoft}}>ACR =</span>
-                <input type="time" value={localAcrTime} onChange={e=>setLocalAcrTime(e.target.value)}
+                <input type="time" value={localAcrTime} onChange={e=>{setLocalAcrTime(e.target.value);stp("hEffondrement")(e.target.value);}}
                   style={{background:"transparent",border:"none",borderBottom:`1px solid ${P.border}`,
                     fontSize:11,color:P.text,fontFamily:mono,fontWeight:600,
                     outline:"none",padding:"0 2px",width:52,cursor:"pointer",textAlign:"center"}}
@@ -2630,10 +2456,12 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                 </div>
               ))}
             </div>
+            <p style={{margin:"8px 0 0",fontSize:9,color:"#9B2C2C",fontWeight:600,
+              lineHeight:1.4,borderTop:"1px solid #F5C99E",paddingTop:6}}>
+              ⚠️ Doses à recalculer et vérifier avant administration — le praticien demeure seul responsable.
+            </p>
           </div>
         )}
-
-        {/* Dossier patient */}
         <Collapsible icon="🪪"
           title={patPed.nom ? `${patPed.nom} ${patPed.prenom}${patPed.ddn ? ` · ${calcAge(patPed.ddn)||patPed.ddn}` : ""}` : "Dossier patient"}
           badge="éditable">
@@ -2661,10 +2489,49 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
           </div>
         </Collapsible>
 
-        {/* Grille actions */}
+        {/* Bandeau Transmission équipes en place — pédiatrique */}
+        <button onClick={() => setModalTransPed(true)}
+          style={{ width:"100%", background: transPed.saved ? P.greenSoft : P.amberSoft,
+            border:`1.5px solid ${transPed.saved ? "#A6D6B0" : "#F5C99E"}`,
+            borderRadius:12, padding:"10px 14px", cursor:"pointer", fontFamily:sans,
+            display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+          <div style={{ width:24, height:24, color: transPed.saved ? P.greenText : P.amberText, flexShrink:0 }}>{ICONS.transmission}</div>
+          <div style={{ flex:1, minWidth:0, textAlign:"left" }}>
+            <p style={{ margin:0, fontSize:12, fontWeight:600, color: transPed.saved ? P.greenText : P.amberText }}>
+              {transPed.saved ? "Transmission équipes enregistrée" : "Transmission équipes en place"}
+            </p>
+            <p style={{ margin:"1px 0 0", fontSize:10, color: transPed.saved ? P.greenText : P.amberText, opacity:0.85 }}>
+              {transPed.saved ? "Cliquer pour modifier" : "Recueil pré-SMUR (pompiers, témoin, DSA…)"}
+            </p>
+          </div>
+          <span style={{ fontSize:16, color: transPed.saved ? P.greenText : P.amberText }}>
+            {transPed.saved ? "✓" : "→"}
+          </span>
+        </button>
+
+        {/* ── Tab bar Actions / Étiologie / Thérapeutiques ── */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,
+          background:P.surfaceAlt,borderRadius:12,padding:4,marginBottom:10}}>
+          {[
+            { id:"actions", label:"Actions",       icon:"⚡" },
+            { id:"etio",    label:"Étiologie",     icon:"🔍" },
+            { id:"ther",    label:"Thérapeutiques", icon:"💊" },
+          ].map(t => (
+            <button key={t.id} onClick={() => setMainTabPed(t.id)}
+              style={{ padding:"8px 4px", borderRadius:9, border:"none",
+                background: mainTabPed===t.id ? P.surface : "transparent",
+                color: mainTabPed===t.id ? P.text : P.textSoft,
+                fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:sans,
+                boxShadow: mainTabPed===t.id ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
+                display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
+              <span>{t.icon}</span>{t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Contenu Actions (grille pédiatrique) ── */}
+        {mainTabPed === "actions" && (
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:10}}>
-          <ActionBtn action={{label: transPed.saved ? "Transmission ✓" : "Transmission équipes", svg:ICONS.transmission, accent:P.amber, soft:P.amberSoft, textC:P.amberText}}
-            onClick={()=>setModalTransPed(true)}/>
           <ActionBtn action={{label:"Analyse de rythme",svg:ICONS.rythme,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
             onClick={()=>setModalRythme(true)}/>
           <ActionBtn action={{label:"Voie d'abord",svg:ICONS.vvp,accent:P.green,soft:P.greenSoft,textC:P.greenText}}
@@ -2686,6 +2553,53 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
           <ActionBtn action={{label:"Constat de décès",svg:ICONS.deces,accent:P.slate,soft:P.slateSoft,textC:P.slateText}}
             onClick={()=>setModalDecesPed(true)}/>
         </div>
+        )}
+
+        {/* ── Contenu Étiologie pédiatrique ── */}
+        {mainTabPed === "etio" && (
+          <>
+            <EtiologieTab title="Causes pédiatriques spécifiques" causes={CAUSES_PED}
+              suspected={suspectedPed}
+              onToggle={(id, label) => {
+                if (suspectedPed.includes(id)) {
+                  setSuspectedPed(suspectedPed.filter(x => x !== id));
+                } else {
+                  setSuspectedPed([...suspectedPed, id]);
+                  addEvent("etio", `Étiologie suspectée : ${label}`, "🔍");
+                }
+              }}
+              P={P} mono={mono} sans={sans} />
+            <EtiologieTab title="5H — Causes métaboliques" causes={CAUSES_5H}
+              suspected={suspectedPed}
+              onToggle={(id, label) => {
+                if (suspectedPed.includes(id)) {
+                  setSuspectedPed(suspectedPed.filter(x => x !== id));
+                } else {
+                  setSuspectedPed([...suspectedPed, id]);
+                  addEvent("etio", `Étiologie suspectée : ${label}`, "🔍");
+                }
+              }}
+              P={P} mono={mono} sans={sans} />
+            <EtiologieTab title="5T — Causes mécaniques" causes={CAUSES_5T}
+              suspected={suspectedPed}
+              onToggle={(id, label) => {
+                if (suspectedPed.includes(id)) {
+                  setSuspectedPed(suspectedPed.filter(x => x !== id));
+                } else {
+                  setSuspectedPed([...suspectedPed, id]);
+                  addEvent("etio", `Étiologie suspectée : ${label}`, "🔍");
+                }
+              }}
+              P={P} mono={mono} sans={sans} />
+          </>
+        )}
+
+        {/* ── Contenu Thérapeutiques spécifiques pédiatrique (doses au poids) ── */}
+        {mainTabPed === "ther" && (
+          <TherapeutiquesTab list={THERAPEUTIQUES_ADULTE} addEvent={addEvent}
+            localMat={localMat} onOpenEcmo={() => setModalEcmoPed(true)}
+            P={P} mono={mono} sans={sans} />
+        )}
 
         {/* Bandeau Note libre */}
         <div style={{marginBottom:10}}>
@@ -2745,16 +2659,30 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
               {events.length === 0 && (
                 <p style={{padding:"14px 16px",margin:0,fontSize:12,color:P.textSoft}}>Aucun événement</p>
               )}
-              {[...events].reverse().map((e, i) => {
-                const realIdx = events.length - 1 - i;
+              {[...events].sort((a,b) => {
+                const ta = a.time || "00:00", tb = b.time || "00:00";
+                return tb.localeCompare(ta); // décroissant (les plus récents en haut)
+              }).map((e, i) => {
+                const realIdx = events.findIndex(it => it === e);
                 return (
-                  <div key={i} style={{display:"flex",gap:6,padding:"7px 10px",
+                  <div key={realIdx} style={{display:"flex",gap:6,padding:"7px 10px",
                     background:i%2===0?P.surface:P.surfaceAlt,alignItems:"center",
                     overflow:"hidden"}}>
                     <input type="time" value={e.time}
-                      onChange={ev => setEvents(prev => prev.map((item,idx) =>
-                        idx===realIdx ? {...item, time:ev.target.value} : item
-                      ))}
+                      onChange={ev => {
+                        const newTime = ev.target.value;
+                        setEvents(prev => {
+                          // Modifier le time
+                          const updated = prev.map((item,idx) =>
+                            idx===realIdx ? {...item, time:newTime} : item
+                          );
+                          // Trier par heure croissante (ordre chronologique réel)
+                          return updated.sort((a,b) => {
+                            const ta = a.time || "00:00", tb = b.time || "00:00";
+                            return ta.localeCompare(tb);
+                          });
+                        });
+                      }}
                       style={{background:"transparent",border:"1px solid transparent",
                         borderRadius:6,padding:"2px 2px",fontSize:10,color:P.blue,
                         fontFamily:mono,fontWeight:600,cursor:"pointer",width:48,
@@ -2797,6 +2725,14 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
       </div>
 
       {/* Modal Constat de décès pédiatrique */}
+      {/* ── Modal ECMO pédiatrique ── */}
+      <EcmoModal open={modalEcmoPed} onClose={() => setModalEcmoPed(false)}
+        onConfirm={({ decision, verdict, note }) => {
+          const msg = `ECMO ${decision} (${verdict})${note ? " — " + note : ""}`;
+          addEvent("ecmo", msg, "🫀");
+        }}
+        P={P} mono={mono} sans={sans} Modal={Modal} Lbl={Lbl} TArea={TArea} isPediatrique={true} />
+
       {/* ── Modal Transmission équipes en place — pédiatrique ── */}
       {modalTransPed && (
         <Modal title="Transmission équipes en place"
@@ -2842,8 +2778,8 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
               textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Horaires (HH:MM)</p>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
               <div>
-                <Lbl>Effondrement</Lbl>
-                <input type="time" value={transPed.hEffondrement} onChange={e=>stp("hEffondrement")(e.target.value)}
+                <Lbl>Heure de l'ACR</Lbl>
+                <input type="time" value={transPed.hEffondrement} onChange={e=>{stp("hEffondrement")(e.target.value);setLocalAcrTime(e.target.value);}}
                   style={{width:"100%",background:P.surface,border:`1.5px solid ${P.border}`,
                     borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
                     color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box"}}/>
@@ -2919,7 +2855,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                 transPed.mceTemoin === "Oui" ? "MCE par témoin" : null,
               ].filter(Boolean).join(", ");
               newEvents.push({ id:"effondrement", time:transPed.hEffondrement, sec:0,
-                label:`Effondrement${detail ? ` (${detail})` : ""}`, icon:"⏱️" });
+                label:`Heure de l'ACR${detail ? ` (${detail})` : ""}`, icon:"⏱️" });
             }
             if (transPed.hArriveePompiers)
               newEvents.push({ id:"pompiers", time:transPed.hArriveePompiers, sec:0,
@@ -3188,6 +3124,23 @@ function ModulePediatrique({ onBack }) {
         {/* Résultats matériel */}
         {mat && (<>
 
+          {/* ── DISCLAIMER RENFORCÉ — doses pédiatriques ── */}
+          <div style={{ background:"#FEF2F2", border:"1.5px solid #E53E3E", borderRadius:12,
+            padding:"11px 13px", marginBottom:12, display:"flex", gap:9, alignItems:"flex-start" }}>
+            <span style={{ fontSize:18, flexShrink:0, lineHeight:1.2 }}>⚠️</span>
+            <div>
+              <p style={{ margin:"0 0 3px", fontSize:11.5, fontWeight:700, color:"#9B2C2C", lineHeight:1.4 }}>
+                Doses et tailles à vérifier systématiquement
+              </p>
+              <p style={{ margin:0, fontSize:10.5, color:"#9B2C2C", lineHeight:1.5 }}>
+                Outil d'aide cognitive — il ne remplace pas le contrôle indépendant.
+                Toute posologie et tout matériel doivent être recalculés et confirmés
+                par le praticien avant administration. En cas de doute, se référer au
+                protocole de service. Le professionnel de santé demeure seul responsable.
+              </p>
+            </div>
+          </div>
+
           {/* Voies aériennes */}
           <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:12,
             padding:"12px 14px", marginBottom:10 }}>
@@ -3217,7 +3170,7 @@ function ModulePediatrique({ onBack }) {
               </div>
               <div style={{ background:P.blueSoft, borderRadius:8, padding:"8px 10px" }}>
                 <p style={{ margin:"0 0 2px", fontSize:9, color:P.textSoft, textTransform:"uppercase", letterSpacing:"0.07em", fontFamily:mono }}>Vt</p>
-                <p style={{ margin:0, fontSize:18, fontWeight:700, color:P.blueText, fontFamily:mono }}>{mat.vt} mL</p>
+                <p style={{ margin:0, fontSize:18, fontWeight:700, color:P.blueText, fontFamily:mono }}>{typeof mat.vt === "number" ? `${mat.vt} mL` : mat.vt}</p>
               </div>
             </div>
           </div>
@@ -3353,6 +3306,324 @@ function ModulePediatrique({ onBack }) {
     </div>
   );
 
+// ── ONGLET ÉTIOLOGIE ──────────────────────────────────────────────────────────
+
+function EtiologieTab({ causes, suspected, onToggle, P, mono, sans, title }) {
+  return (
+    <div style={{ marginBottom:10 }}>
+      <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:500, color:P.textSoft,
+        textTransform:"uppercase", letterSpacing:"0.09em", fontFamily:mono }}>{title}</p>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr", gap:6 }}>
+        {causes.map(c => {
+          const isSuspected = suspected.includes(c.id);
+          return (
+            <button key={c.id} onClick={() => onToggle(c.id, c.label)}
+              style={{
+                background: isSuspected ? P.amberSoft : P.surface,
+                border: `1.5px solid ${isSuspected ? P.amber : P.border}`,
+                borderRadius:11, padding:"10px 12px", cursor:"pointer", fontFamily:sans,
+                display:"flex", alignItems:"center", gap:10, textAlign:"left",
+                transition:"all 0.15s"
+              }}>
+              <span style={{ fontSize:20, flexShrink:0 }}>{c.icon}</span>
+              <div style={{ flex:1, minWidth:0 }}>
+                <p style={{ margin:0, fontSize:13, fontWeight:600,
+                  color: isSuspected ? P.amberText : P.text }}>{c.label}</p>
+                <p style={{ margin:"1px 0 0", fontSize:10,
+                  color: isSuspected ? P.amberText : P.textSoft, opacity:0.85 }}>{c.sub}</p>
+              </div>
+              <span style={{ fontSize:11, fontWeight:600, color: isSuspected ? P.amberText : P.textSoft,
+                fontFamily:mono, flexShrink:0 }}>
+                {isSuspected ? "✓ Suspectée" : "+"}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── ONGLET THÉRAPEUTIQUES SPÉCIFIQUES ─────────────────────────────────────────
+
+function TherapeutiqueCard({ t, doseCalc, onAdminister, P, mono, sans }) {
+  const [open, setOpen] = useState(false);
+  const accentMap = { amber:P.amber, rose:P.rose, violet:P.violet, blue:P.blue, green:P.green, teal:P.teal };
+  const textMap   = { amber:P.amberText, rose:P.roseText, violet:P.violetText, blue:P.blueText, green:P.greenText, teal:P.tealText };
+  const softMap   = { amber:P.amberSoft, rose:P.roseSoft, violet:P.violetSoft, blue:P.blueSoft, green:P.greenSoft, teal:P.tealSoft };
+  const ac  = accentMap[t.color] || P.amber;
+  const txt = textMap[t.color]   || P.amberText;
+  const sft = softMap[t.color]   || P.amberSoft;
+
+  return (
+    <div style={{ background:P.surface, border:`1.5px solid ${open ? ac : P.border}`,
+      borderRadius:11, marginBottom:8, overflow:"hidden", transition:"border 0.15s" }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ width:"100%", background:"transparent", border:"none",
+          padding:"10px 12px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+          display:"flex", alignItems:"center", gap:10 }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>{t.label}</p>
+          <p style={{ margin:"1px 0 0", fontSize:10, color:P.textSoft, lineHeight:1.4 }}>{t.indic}</p>
+        </div>
+        <span style={{ fontSize:12, color:P.textSoft, flexShrink:0 }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{ padding:"0 12px 12px", borderTop:`1px solid ${P.borderSoft}` }}>
+          <p style={{ margin:"10px 0 4px", fontSize:9, fontWeight:600, color:P.textSoft,
+            textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Dose / Geste</p>
+          <p style={{ margin:"0 0 10px", fontSize:13, color:P.text, fontFamily:mono, lineHeight:1.5,
+            background:sft, padding:"8px 10px", borderRadius:8 }}>
+            {doseCalc || t.dose}
+          </p>
+          <button onClick={() => onAdminister(t, doseCalc)}
+            style={{ width:"100%", background:`linear-gradient(135deg,${ac},${txt})`,
+              border:"none", borderRadius:9, color:"#fff",
+              fontSize:13, fontWeight:600, padding:"10px", cursor:"pointer",
+              fontFamily:sans, boxShadow:`0 3px 10px ${ac}33` }}>
+            {t.geste ? "✓ Marquer comme réalisé" : "✓ Administrer"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TherapeutiquesTab({ list, addEvent, localMat, onOpenEcmo, P, mono, sans }) {
+  // Pour pédiatrique : remplace les doses par les calculs au poids
+  const therapWithDoses = list.map(t => {
+    let calc = null;
+    if (localMat) {
+      if (t.id === "bicar")        calc = `${localMat.bicarMl} mL IV (8,4 %) — 1 mEq/kg`;
+      else if (t.id === "calcium") calc = `${localMat.calciumMl} mL IV (10 %) — 0,5 mL/kg`;
+      else if (t.id === "magnesium") calc = `${localMat.magnesiumMg} mg IV — 50 mg/kg (max 2 g)`;
+      else if (t.id === "naloxone") calc = `${localMat.naloxoneMg} mg IV — 0,1 mg/kg`;
+      else if (t.id === "intralipide") calc = `${localMat.intralipMl} mL IV bolus — 1,5 mL/kg`;
+      else if (t.id === "thrombolyse") calc = `${localMat.alteplaseMg} mg IVD — 0,6 mg/kg (max 50 mg)`;
+    }
+    return { ...t, calcDose: calc };
+  });
+
+  return (
+    <div style={{ marginBottom:10 }}>
+      <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:500, color:P.textSoft,
+        textTransform:"uppercase", letterSpacing:"0.09em", fontFamily:mono }}>
+        Thérapeutiques spécifiques
+      </p>
+      {therapWithDoses.map(t => (
+        <TherapeutiqueCard key={t.id} t={t} doseCalc={t.calcDose}
+          onAdminister={(t, dose) => {
+            if (t.modal === "ecmo" && onOpenEcmo) { onOpenEcmo(); return; }
+            const log = dose || t.logDose;
+            addEvent("therap", `${t.label} — ${log}`, t.geste ? "✚" : "💉");
+          }}
+          P={P} mono={mono} sans={sans} />
+      ))}
+    </div>
+  );
+}
+
+// ── MODAL ECMO (checklist éligibilité) ────────────────────────────────────────
+
+function EcmoModal({ open, onClose, onConfirm, P, mono, sans, Modal, Lbl, TArea, isPediatrique = false }) {
+  const [criteres, setCriteres] = useState({
+    age: null,       // bool
+    lowFlow: null,   // < 60 min
+    noFlow: null,    // < 5 min
+    cause: null,     // réversible
+    comorb: null,    // pas de comorbidité majeure
+    note: "",
+  });
+  const [confirmed, setConfirmed] = useState(false);
+
+  if (!open) return null;
+
+  const Yes = ({k}) => (
+    <button onClick={() => setCriteres(p => ({...p, [k]: true}))}
+      style={{
+        flex:1, padding:"7px 4px", borderRadius:8, fontSize:11, fontWeight:600,
+        border:`1.5px solid ${criteres[k]===true ? P.green : P.border}`,
+        background: criteres[k]===true ? P.greenSoft : P.surface,
+        color: criteres[k]===true ? P.greenText : P.textMid,
+        cursor:"pointer", fontFamily:sans
+      }}>Oui</button>
+  );
+  const No = ({k}) => (
+    <button onClick={() => setCriteres(p => ({...p, [k]: false}))}
+      style={{
+        flex:1, padding:"7px 4px", borderRadius:8, fontSize:11, fontWeight:600,
+        border:`1.5px solid ${criteres[k]===false ? P.rose : P.border}`,
+        background: criteres[k]===false ? P.roseSoft : P.surface,
+        color: criteres[k]===false ? P.roseText : P.textMid,
+        cursor:"pointer", fontFamily:sans
+      }}>Non</button>
+  );
+
+  const items = isPediatrique ? [
+    { k:"age",     label:"Âge éligible",            sub:"En général ≥ 1 mois, à discuter" },
+    { k:"lowFlow", label:"Low-flow < 60 min",        sub:"Délai RCP de qualité depuis effondrement" },
+    { k:"noFlow",  label:"No-flow < 5 min",          sub:"ACR témoigné avec MCE rapide" },
+    { k:"cause",   label:"Cause réversible suspectée", sub:"Cardiaque · pulmonaire · toxique · hypothermie" },
+    { k:"comorb",  label:"Pas de comorbidité majeure", sub:"Pronostic neurologique acceptable" },
+  ] : [
+    { k:"age",     label:"Âge < 70-75 ans",          sub:"À ajuster selon le terrain" },
+    { k:"lowFlow", label:"Low-flow < 60 min",        sub:"Délai RCP de qualité depuis effondrement" },
+    { k:"noFlow",  label:"No-flow < 5 min",          sub:"ACR témoigné avec MCE rapide" },
+    { k:"cause",   label:"Cause potentiellement réversible", sub:"Choc cardiogénique · EP · intox · hypothermie" },
+    { k:"comorb",  label:"Pas de comorbidité majeure", sub:"Autonomie préservée · espérance de vie satisfaisante" },
+  ];
+
+  const greenCount  = items.filter(i => criteres[i.k] === true).length;
+  const redCount    = items.filter(i => criteres[i.k] === false).length;
+  const total       = items.length;
+  const eligible    = greenCount === total;
+  const nonEligible = redCount > 0;
+
+  return (
+    <Modal title="Décision ECMO (E-CPR)" icon="🫀" soft={P.violetSoft} onClose={onClose}>
+      <p style={{ margin:"0 0 14px", fontSize:12, color:P.textSoft, lineHeight:1.5 }}>
+        Checklist d'éligibilité — à discuter en équipe et avec le centre receveur.
+      </p>
+
+      {items.map(item => (
+        <div key={item.k} style={{ marginBottom:11 }}>
+          <p style={{ margin:"0 0 4px", fontSize:12, fontWeight:600, color:P.text }}>{item.label}</p>
+          <p style={{ margin:"0 0 6px", fontSize:10, color:P.textSoft, fontStyle:"italic" }}>{item.sub}</p>
+          <div style={{ display:"flex", gap:6 }}>
+            <Yes k={item.k} />
+            <No k={item.k} />
+          </div>
+        </div>
+      ))}
+
+      {/* Verdict */}
+      {(greenCount > 0 || redCount > 0) && (
+        <div style={{
+          background: eligible ? P.greenSoft : nonEligible ? P.roseSoft : P.amberSoft,
+          border:`1.5px solid ${eligible ? P.green : nonEligible ? P.rose : P.amber}`,
+          borderRadius:10, padding:"10px 12px", marginBottom:10,
+          display:"flex", alignItems:"center", gap:10
+        }}>
+          <span style={{ fontSize:22 }}>{eligible ? "✅" : nonEligible ? "⚠️" : "❓"}</span>
+          <div>
+            <p style={{ margin:0, fontSize:12, fontWeight:700,
+              color: eligible ? P.greenText : nonEligible ? P.roseText : P.amberText }}>
+              {eligible ? "Critères favorables" : nonEligible ? "Critère(s) défavorable(s)" : "Évaluation en cours"}
+            </p>
+            <p style={{ margin:"1px 0 0", fontSize:10,
+              color: eligible ? P.greenText : nonEligible ? P.roseText : P.amberText, opacity:0.85 }}>
+              {greenCount}/{total} favorables · {redCount}/{total} défavorables
+            </p>
+          </div>
+        </div>
+      )}
+
+      <Lbl>Note</Lbl>
+      <TArea value={criteres.note} onChange={v => setCriteres(p => ({...p, note:v}))}
+        placeholder="Centre receveur contacté, délai estimé..." rows={2} />
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:14 }}>
+        <button onClick={() => {
+          onConfirm({ decision:"non-éligible", verdict:`${greenCount}/${total} favorables`, note:criteres.note });
+          onClose();
+        }} style={{
+          background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:11,
+          color:P.textMid, fontSize:12, fontWeight:600, padding:"11px",
+          cursor:"pointer", fontFamily:sans
+        }}>
+          Non éligible
+        </button>
+        <button onClick={() => {
+          onConfirm({ decision:"envisagée", verdict:`${greenCount}/${total} favorables`, note:criteres.note });
+          onClose();
+        }} style={{
+          background:`linear-gradient(135deg,${P.violet},#5A4E8A)`,
+          border:"none", borderRadius:11, color:"#fff",
+          fontSize:12, fontWeight:600, padding:"11px",
+          cursor:"pointer", fontFamily:sans,
+          boxShadow:`0 4px 12px ${P.violet}33`
+        }}>
+          ECMO envisagée
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// ── ÉTIOLOGIES & THÉRAPEUTIQUES ────────────────────────────────────────────────
+
+const CAUSES_5H = [
+  { id:"hypoxie",      label:"Hypoxie",          icon:"💨", sub:"SpO₂ basse · cyanose · VA compromise" },
+  { id:"hypovolemie",  label:"Hypovolémie",      icon:"🩸", sub:"Hémorragie · déshydratation · choc" },
+  { id:"hydrogene",    label:"Acidose (H⁺)",     icon:"⚗️", sub:"pH < 7,1 · sepsis · IRC · intox" },
+  { id:"hypok",        label:"Hypokaliémie",     icon:"⚡", sub:"ECG : onde U · troubles du rythme" },
+  { id:"hyperk",       label:"Hyperkaliémie",    icon:"⚡", sub:"ECG : QRS large · onde T ample · IRC" },
+  { id:"hypothermie",  label:"Hypothermie",      icon:"🧊", sub:"Tc < 30 °C · noyade · exposition" },
+];
+
+const CAUSES_5T = [
+  { id:"thrombose_c",  label:"Thrombose coronaire", icon:"❤️", sub:"SCA · douleur thoracique précédente" },
+  { id:"thrombose_p",  label:"Embolie pulmonaire",  icon:"🫁", sub:"TVP · alitement · post-op · chirurgie" },
+  { id:"tamponnade",   label:"Tamponnade",          icon:"🫀", sub:"FAST · turgescence jugulaire" },
+  { id:"tension_pno",  label:"Pneumothorax suffocant", icon:"💨", sub:"Asymétrie auscultation · trauma" },
+  { id:"toxiques",     label:"Toxiques",            icon:"☠️", sub:"Médic · drogues · CO · cyanure" },
+  { id:"trauma",       label:"Traumatisme",         icon:"🚑", sub:"AVP · hémorragie · TC" },
+];
+
+// Causes pédiatriques spécifiques (en plus des 5H/5T)
+const CAUSES_PED = [
+  { id:"hypoglycemie", label:"Hypoglycémie",    icon:"🍬", sub:"NN · diabétique · jeûne prolongé" },
+  { id:"sepsis",       label:"Sepsis sévère",   icon:"🦠", sub:"Fièvre · choc · purpura" },
+  { id:"intox",        label:"Intoxication",    icon:"💊", sub:"Médicaments parents · ingestion accidentelle" },
+  { id:"mim",          label:"Mort inexpliquée nourrisson", icon:"👶", sub:"MIN · MSIN · < 2 ans" },
+  { id:"obstruction",  label:"Obstruction VAS", icon:"🫁", sub:"Corps étranger · fausse route" },
+  { id:"noyade",       label:"Noyade",          icon:"💧", sub:"Hypoxie + hypothermie" },
+];
+
+// Thérapeutiques spécifiques adulte
+const THERAPEUTIQUES_ADULTE = [
+  { id:"bicar",       label:"Bicarbonate de sodium 8,4 %",
+    indic:"Hyperkaliémie sévère · intox tricycliques · acidose métabolique sévère",
+    dose:"1 mEq/kg IV (≈ 1 mL/kg de 8,4 %)", logDose:"1 mEq/kg IV", color:"amber" },
+  { id:"calcium",     label:"Gluconate de calcium 10 %",
+    indic:"Hyperkaliémie · intox inhibiteurs calciques · hypocalcémie",
+    dose:"1 g IV (10 mL de 10 %)", logDose:"1 g IV", color:"amber" },
+  { id:"magnesium",   label:"Sulfate de magnésium 15 %",
+    indic:"Torsade de pointes · hypomagnésémie · asthme aigu grave",
+    dose:"2 g IV (1,5 g/10 mL → 14 mL)", logDose:"2 g IV", color:"amber" },
+  { id:"insuline_g30",label:"Insuline + G30 %",
+    indic:"Hyperkaliémie sévère",
+    dose:"10 UI insuline rapide IV + 250 mL G30 %", logDose:"Insuline 10 UI + G30 % 250 mL", color:"violet" },
+  { id:"thrombolyse", label:"Altéplase (Actilyse®)",
+    indic:"Embolie pulmonaire massive · SCA thrombotique",
+    dose:"50 mg IVD, renouveler à 15 min si pas de RACS. Poursuivre RCP 1 h après",
+    logDose:"Bolus 50 mg IVD", color:"rose" },
+  { id:"naloxone",    label:"Naloxone (Narcan®)",
+    indic:"Intoxication opioïdes (jeune · ACR brutal hypoxique)",
+    dose:"0,4 mg IV (à répéter)", logDose:"0,4 mg IV", color:"green" },
+  { id:"intralipide", label:"Émulsion lipidique 20 %",
+    indic:"Intoxication anesthésiques locaux · bêta-bloquants",
+    dose:"1,5 mL/kg IV bolus puis 0,25 mL/kg/min", logDose:"Bolus 1,5 mL/kg", color:"violet" },
+  { id:"glucagon",    label:"Glucagon",
+    indic:"Intoxication β-bloquants · inhibiteurs calciques",
+    dose:"5-10 mg IV bolus puis 5 mg/h", logDose:"Bolus 5-10 mg IV", color:"violet" },
+  { id:"cyanokit",    label:"Cyanokit® (Hydroxocobalamine)",
+    indic:"Intoxication cyanure · fumées d'incendie",
+    dose:"5 g IV sur 15 min (renouvelable à 5 g)", logDose:"5 g IV / 15 min", color:"rose" },
+  { id:"exsuf",       label:"Exsufflation pneumothorax",
+    indic:"Pneumothorax suffocant",
+    dose:"Aiguille 14 G · 2ᵉ EIC LMC ou 4ᵉ-5ᵉ EIC ligne axillaire ant.",
+    logDose:"Exsufflation à l'aiguille", color:"blue", geste:true },
+  { id:"drainage",    label:"Drainage péricardique",
+    indic:"Tamponnade péricardique",
+    dose:"Sous écho · voie sous-xiphoïdienne",
+    logDose:"Drainage péricardique", color:"blue", geste:true },
+  { id:"ecmo",        label:"ECMO (E-CPR)",
+    indic:"ACR réfractaire · low-flow < 60 min · cause potentiellement réversible",
+    dose:"Décision pluridisciplinaire — voir checklist",
+    logDose:"Décision ECMO envisagée", color:"violet", geste:true, modal:"ecmo" },
+];
+
 // ── APP ────────────────────────────────────────────────────────────────────────
 export default function App() {
   const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"" });
@@ -3407,6 +3678,12 @@ export default function App() {
   // Minuteur Adrénaline (timestamp absolu pour survivre aux navigations)
   const [adrTimerStart, setAdrTimerStart] = useLocalState("acr_adulte_adrStart", 0);
   const [adrInterval,   setAdrInterval]   = useLocalState("acr_adulte_adrInterval", 4);
+
+  // Onglets : "actions" | "etiologie" | "therap"
+  const [mainTab,        setMainTab]        = useLocalState("acr_adulte_mainTab", "actions");
+  const [suspectedAd,    setSuspectedAd]    = useLocalState("acr_adulte_suspected", []);
+  const [modalEcmo,      setModalEcmo]      = useState(false);
+
   const [fastResult,  setFastResult]  = useState("");
   const [modalRythme, setModalRythme] = useState(false);
   const [modalVvp,    setModalVvp]    = useState(false);
@@ -3479,6 +3756,7 @@ export default function App() {
     setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, rythmeDSA:"", note:"", saved:false });
     setModalTrans(false);
     setAdrTimerStart(0); setAdrInterval(4);
+    setMainTab("actions"); setSuspectedAd([]); setModalEcmo(false);
     clearSession("acr_adulte_");
     setModalCord(false); setModalDeces(false); setModalIot(false); setModalFast(false);
     setModalRythme(false); setModalVvp(false); setModalElectrodes(false); setModalRacs(false); setModalChoc(false); setModalEcg(false); setModalRegul(false);
@@ -3696,7 +3974,7 @@ export default function App() {
             textAlign:"center" }}>Heure de l'arrêt cardiaque</p>
           <div style={{ display:"flex", justifyContent:"center", alignItems:"center" }}>
             <input type="time" value={acrTime}
-              onChange={e => setAcrTime(e.target.value)}
+              onChange={e => { setAcrTime(e.target.value); st("hEffondrement")(e.target.value); }}
               style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
                 borderRadius:12, color:P.text, fontSize:32, padding:"12px 20px",
                 fontFamily:mono, textAlign:"center", fontWeight:700,
@@ -4112,6 +4390,14 @@ export default function App() {
         </Modal>
       )}
 
+      {/* ── Modal ECMO ── */}
+      <EcmoModal open={modalEcmo} onClose={() => setModalEcmo(false)}
+        onConfirm={({ decision, verdict, note }) => {
+          const msg = `ECMO ${decision} (${verdict})${note ? " — " + note : ""}`;
+          addEvent("ecmo", msg, "🫀");
+        }}
+        P={P} mono={mono} sans={sans} Modal={Modal} Lbl={Lbl} TArea={TArea} />
+
       {/* ── Modal Transmission équipes en place ── */}
       {modalTrans && (
         <Modal title="Transmission équipes en place"
@@ -4157,8 +4443,8 @@ export default function App() {
               textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Horaires (HH:MM)</p>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
               <div>
-                <Lbl>Effondrement</Lbl>
-                <input type="time" value={trans.hEffondrement} onChange={e => st("hEffondrement")(e.target.value)}
+                <Lbl>Heure de l'ACR</Lbl>
+                <input type="time" value={trans.hEffondrement} onChange={e => { st("hEffondrement")(e.target.value); setAcrTime(e.target.value); }}
                   style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
                     borderRadius:8, padding:"8px 6px", fontSize:14, fontFamily:mono,
                     color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
@@ -4236,7 +4522,7 @@ export default function App() {
                 trans.mceTemoin === "Oui" ? "MCE par témoin" : null,
               ].filter(Boolean).join(", ");
               newEvents.push({ id:"effondrement", time:trans.hEffondrement, sec:0,
-                label:`Effondrement${detail ? ` (${detail})` : ""}`, icon:"⏱️" });
+                label:`Heure de l'ACR${detail ? ` (${detail})` : ""}`, icon:"⏱️" });
             }
             if (trans.hArriveePompiers)
               newEvents.push({ id:"pompiers", time:trans.hArriveePompiers, sec:0,
@@ -4711,7 +4997,7 @@ export default function App() {
                 {pat.age && noFlowMin !== undefined && <span style={{ fontSize:11, color:P.textSoft }}>·</span>}
                 <span style={{ fontSize:11, color:P.textSoft }}>ACR =</span>
                 <input type="time" value={acrTime}
-                  onChange={e => setAcrTime(e.target.value)}
+                  onChange={e => { setAcrTime(e.target.value); st("hEffondrement")(e.target.value); }}
                   style={{ background:"transparent", border:"none", borderBottom:`1px solid ${P.border}`,
                     fontSize:11, color:P.text, fontFamily:mono, fontWeight:600,
                     outline:"none", padding:"0 2px", width:52, cursor:"pointer" }}
@@ -4795,7 +5081,10 @@ export default function App() {
                       Après le {showCord300 ? "3ᵉ" : "5ᵉ"} choc cumulé
                     </p>
                   </div>
-                  <button onClick={() => setModalCord(true)}
+                  <button onClick={() => {
+                    if (showCord300) addEvent("cord300", "Cordarone 300 mg IV (après 3ᵉ choc)", "💊");
+                    else             addEvent("cord150", "Cordarone 150 mg IV (après 5ᵉ choc)", "💊");
+                  }}
                     style={{ background:"#F59E0B", border:"none", borderRadius:7,
                       color:"#fff", padding:"6px 10px", fontSize:11, fontWeight:600,
                       cursor:"pointer", fontFamily:sans }}>
@@ -4898,33 +5187,70 @@ export default function App() {
             </div>
           </Collapsible>
 
-          {/* Grille d'actions */}
+          {/* Bandeau Transmission équipes en place — adulte */}
+          <button onClick={() => setModalTrans(true)}
+            style={{ width:"100%", background: trans.saved ? P.greenSoft : P.amberSoft,
+              border:`1.5px solid ${trans.saved ? "#A6D6B0" : "#F5C99E"}`,
+              borderRadius:12, padding:"10px 14px", cursor:"pointer", fontFamily:sans,
+              display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+            <div style={{ width:24, height:24, color: trans.saved ? P.greenText : P.amberText, flexShrink:0 }}>{ICONS.transmission}</div>
+            <div style={{ flex:1, minWidth:0, textAlign:"left" }}>
+              <p style={{ margin:0, fontSize:12, fontWeight:600, color: trans.saved ? P.greenText : P.amberText }}>
+                {trans.saved ? "Transmission équipes enregistrée" : "Transmission équipes en place"}
+              </p>
+              <p style={{ margin:"1px 0 0", fontSize:10, color: trans.saved ? P.greenText : P.amberText, opacity:0.85 }}>
+                {trans.saved ? "Cliquer pour modifier" : "Recueil pré-SMUR (pompiers, témoin, DSA…)"}
+              </p>
+            </div>
+            <span style={{ fontSize:16, color: trans.saved ? P.greenText : P.amberText }}>
+              {trans.saved ? "✓" : "→"}
+            </span>
+          </button>
+
+          {/* ── Tab bar Actions / Étiologie / Thérapeutiques ── */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5,
+            background:P.surfaceAlt, borderRadius:12, padding:4, marginBottom:10 }}>
+            {[
+              { id:"actions", label:"Actions",       icon:"⚡" },
+              { id:"etio",    label:"Étiologie",     icon:"🔍" },
+              { id:"ther",    label:"Thérapeutiques", icon:"💊" },
+            ].map(t => (
+              <button key={t.id} onClick={() => setMainTab(t.id)}
+                style={{ padding:"8px 4px", borderRadius:9, border:"none",
+                  background: mainTab===t.id ? P.surface : "transparent",
+                  color: mainTab===t.id ? P.text : P.textSoft,
+                  fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:sans,
+                  boxShadow: mainTab===t.id ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
+                  display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
+                <span>{t.icon}</span>{t.label}
+              </button>
+            ))}
+          </div>
+
+          {/* ── Contenu Actions (grille existante) ── */}
+          {mainTab === "actions" && (
           <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-              <ActionBtn action={{ label: trans.saved ? "Transmission ✓" : "Transmission équipes", svg:ICONS.transmission, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
-                onClick={() => setModalTrans(true)} />
               <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                 onClick={() => setModalRythme(true)} />
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
                 onClick={() => setModalVvp(true)} />
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Adrénaline 1 mg", svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText }}
                 onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                 onClick={() => setModalCord(true)} />
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Défibrillation", svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
                 onClick={() => setModalChoc(true)} />
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Intubation IOT", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
                 onClick={() => setModalIot(true)} />
-              <ActionBtn action={{ label:"Planche à masser", svg:ICONS.planche, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
-                onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <ActionBtn action={{ label:"Planche à masser", svg:ICONS.planche, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
+                onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
               <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
                 onClick={() => setModalFast(true)} />
             </div>
@@ -4935,6 +5261,42 @@ export default function App() {
                 onClick={() => setModalDeces(true)} />
             </div>
           </div>
+          )}
+
+          {/* ── Contenu Étiologie ── */}
+          {mainTab === "etio" && (
+            <>
+              <EtiologieTab title="5H — Causes métaboliques" causes={CAUSES_5H}
+                suspected={suspectedAd}
+                onToggle={(id, label) => {
+                  if (suspectedAd.includes(id)) {
+                    setSuspectedAd(suspectedAd.filter(x => x !== id));
+                  } else {
+                    setSuspectedAd([...suspectedAd, id]);
+                    addEvent("etio", `Étiologie suspectée : ${label}`, "🔍");
+                  }
+                }}
+                P={P} mono={mono} sans={sans} />
+              <EtiologieTab title="5T — Causes mécaniques" causes={CAUSES_5T}
+                suspected={suspectedAd}
+                onToggle={(id, label) => {
+                  if (suspectedAd.includes(id)) {
+                    setSuspectedAd(suspectedAd.filter(x => x !== id));
+                  } else {
+                    setSuspectedAd([...suspectedAd, id]);
+                    addEvent("etio", `Étiologie suspectée : ${label}`, "🔍");
+                  }
+                }}
+                P={P} mono={mono} sans={sans} />
+            </>
+          )}
+
+          {/* ── Contenu Thérapeutiques spécifiques ── */}
+          {mainTab === "ther" && (
+            <TherapeutiquesTab list={THERAPEUTIQUES_ADULTE} addEvent={addEvent}
+              localMat={null} onOpenEcmo={() => setModalEcmo(true)}
+              P={P} mono={mono} sans={sans} />
+          )}
 
         </>}
 
@@ -4998,19 +5360,31 @@ export default function App() {
               {events.length === 0 && (
                 <p style={{ padding:"14px 16px", margin:0, fontSize:12, color:P.textSoft }}>Aucun événement</p>
               )}
-              {[...events].reverse().map((e, i) => {
-                // index réel dans le tableau original
-                const realIdx = events.length - 1 - i;
+              {[...events].sort((a,b) => {
+                const ta = a.time || "00:00", tb = b.time || "00:00";
+                return tb.localeCompare(ta); // décroissant (récents en haut)
+              }).map((e, i) => {
+                const realIdx = events.findIndex(it => it === e);
                 return (
-                  <div key={i} style={{ display:"flex", gap:8, padding:"7px 14px",
+                  <div key={realIdx} style={{ display:"flex", gap:8, padding:"7px 14px",
                     background: i%2===0 ? P.surface : P.surfaceAlt, alignItems:"center" }}>
                     {/* Heure éditable */}
                     <input
                       type="time"
                       value={e.time}
-                      onChange={ev => setEvents(prev => prev.map((item, idx) =>
-                        idx === realIdx ? { ...item, time: ev.target.value } : item
-                      ))}
+                      onChange={ev => {
+                        const newTime = ev.target.value;
+                        setEvents(prev => {
+                          const updated = prev.map((item, idx) =>
+                            idx === realIdx ? { ...item, time: newTime } : item
+                          );
+                          // Tri chronologique croissant
+                          return updated.sort((a,b) => {
+                            const ta = a.time || "00:00", tb = b.time || "00:00";
+                            return ta.localeCompare(tb);
+                          });
+                        });
+                      }}
                       style={{ background:"transparent", border:`1px solid transparent`,
                         borderRadius:6, padding:"2px 4px", fontSize:11, color:P.blue,
                         fontFamily:mono, fontWeight:600, cursor:"pointer", width:52, outline:"none",
