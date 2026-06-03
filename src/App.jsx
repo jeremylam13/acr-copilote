@@ -571,7 +571,7 @@ function ChoiceBtn({ label, sub, accent, soft, textC, onClick }) {
 }
 
 // ── PDF ────────────────────────────────────────────────────────────────────────
-function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onClose }) {
+function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, trans, onClose }) {
   const chocs = events.filter(e => e.id === "choc").length;
   const adrs  = events.filter(e => e.id === "adr").length;
   const rosc  = events.find(e => e.id === "rosc");
@@ -601,6 +601,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onC
 
     lines.push("── DONNÉES RCP ─────────────────────");
     lines.push(`Heure ACR      : ${acrTime || "Inconnue"}`);
+    if (patient?.temp) lines.push(`Température     : ${patient.temp} °C`);
     lines.push(`No-flow        : ${noFlow  ? noFlow + " min" : "Inconnu"}`);
     lines.push(`Low-flow       : ${lowFlow ? lowFlow + " min" : "—"}`);
     lines.push(`Durée RCP      : ${fmtSec(totalSec)}`);
@@ -615,6 +616,25 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onC
       lines.push(`Sonde    : ${iot.sonde} mm`);
       if (iot.repere)  lines.push(`Repère   : ${iot.repere} cm`);
       if (iot.capno)   lines.push(`EtCO₂    : ${iot.capno} mmHg`);
+      lines.push("");
+    }
+
+    // Phase pré-SMUR (transmission des équipes en place)
+    const t = trans;
+    const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
+      t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.note);
+    if (hasTrans) {
+      const rythmeLabel = { choquable:"choquable", nonChoquable:"non choquable", nonAnalyse:"non analysé" };
+      lines.push("── PHASE PRÉ-SMUR ──────────────────");
+      if (t.hEffondrement)    lines.push(`Heure de l'ACR    : ${t.hEffondrement}`);
+      if (t.temoin)           lines.push(`Témoin            : ${t.temoin}`);
+      if (t.mceTemoin)        lines.push(`MCE par témoin    : ${t.mceTemoin}`);
+      if (t.hArriveePompiers) lines.push(`Arrivée pompiers  : ${t.hArriveePompiers}`);
+      if (t.hPoseDSA)         lines.push(`Pose DSA          : ${t.hPoseDSA}`);
+      if (t.rythmeDSA)        lines.push(`Rythme initial    : ${rythmeLabel[t.rythmeDSA] || t.rythmeDSA}`);
+      if (t.h1erChoc)         lines.push(`1er choc          : ${t.h1erChoc}`);
+      if ((parseInt(t.chocsPompiers)||0) > 0) lines.push(`Chocs DSA pompiers: ${t.chocsPompiers}`);
+      if (t.note)             lines.push(`Note pré-SMUR     : ${t.note}`);
       lines.push("");
     }
 
@@ -787,6 +807,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onC
           <div style={{ background:P.surface, border:`1px solid ${P.border}`,
             borderRadius:12, padding:"4px 14px" }}>
             <Field label="Heure ACR"         value={acrTime || "Inconnue"} />
+            <Field label="Température"        value={patient?.temp ? `${patient.temp} °C` : null} />
             <Field label="No-flow"           value={noFlow  ? `${noFlow} min` : "Inconnu"} />
             <Field label="Low-flow"          value={lowFlow ? `${lowFlow} min` : null} />
             <Field label="Durée RCP"         value={fmtSec(totalSec)} />
@@ -821,6 +842,30 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onC
               borderRadius:9, padding:"9px 12px", lineHeight:1.6 }}>{patient.histoire}</p>
           </Section>
         )}
+
+        {/* Phase pré-SMUR — transmission équipes */}
+        {(() => {
+          const t = trans;
+          const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
+            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.note);
+          if (!hasTrans) return null;
+          const rythmeLabel = { choquable:"Choquable", nonChoquable:"Non choquable", nonAnalyse:"Non analysé" };
+          return (
+            <Section title="Phase pré-SMUR (équipes en place)">
+              <div style={{ background:P.amberSoft, border:`1px solid #F5C99E`, borderRadius:12, padding:"4px 14px" }}>
+                {t.hEffondrement    && <Field label="Heure de l'ACR"     value={t.hEffondrement} />}
+                {t.temoin           && <Field label="Témoin"             value={t.temoin} />}
+                {t.mceTemoin        && <Field label="MCE par témoin"     value={t.mceTemoin} />}
+                {t.hArriveePompiers && <Field label="Arrivée pompiers"   value={t.hArriveePompiers} />}
+                {t.hPoseDSA         && <Field label="Pose DSA"           value={t.hPoseDSA} />}
+                {t.rythmeDSA        && <Field label="Rythme initial"     value={rythmeLabel[t.rythmeDSA] || t.rythmeDSA} />}
+                {t.h1erChoc         && <Field label="1er choc"           value={t.h1erChoc} />}
+                {(parseInt(t.chocsPompiers)||0) > 0 && <Field label="Chocs DSA pompiers" value={String(t.chocsPompiers)} />}
+                {t.note             && <Field label="Note pré-SMUR"      value={t.note} />}
+              </div>
+            </Section>
+          );
+        })()}
 
         {/* Chronologie */}
         <Section title={`Chronologie (${events.length} événements)`}>
@@ -970,6 +1015,30 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, onC
               borderRadius:9, padding:"9px 12px", lineHeight:1.6 }}>{patient.histoire}</p>
           </Section>
         )}
+
+        {/* Phase pré-SMUR — transmission équipes */}
+        {(() => {
+          const t = trans;
+          const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
+            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.note);
+          if (!hasTrans) return null;
+          const rythmeLabel = { choquable:"Choquable", nonChoquable:"Non choquable", nonAnalyse:"Non analysé" };
+          return (
+            <Section title="Phase pré-SMUR (équipes en place)">
+              <div style={{ background:P.amberSoft, border:`1px solid #F5C99E`, borderRadius:12, padding:"4px 14px" }}>
+                {t.hEffondrement    && <Field label="Heure de l'ACR"     value={t.hEffondrement} />}
+                {t.temoin           && <Field label="Témoin"             value={t.temoin} />}
+                {t.mceTemoin        && <Field label="MCE par témoin"     value={t.mceTemoin} />}
+                {t.hArriveePompiers && <Field label="Arrivée pompiers"   value={t.hArriveePompiers} />}
+                {t.hPoseDSA         && <Field label="Pose DSA"           value={t.hPoseDSA} />}
+                {t.rythmeDSA        && <Field label="Rythme initial"     value={rythmeLabel[t.rythmeDSA] || t.rythmeDSA} />}
+                {t.h1erChoc         && <Field label="1er choc"           value={t.h1erChoc} />}
+                {(parseInt(t.chocsPompiers)||0) > 0 && <Field label="Chocs DSA pompiers" value={String(t.chocsPompiers)} />}
+                {t.note             && <Field label="Note pré-SMUR"      value={t.note} />}
+              </div>
+            </Section>
+          );
+        })()}
 
         {/* Chronologie */}
         <Section title={`Chronologie (${events.length} événements)`}>
@@ -1375,7 +1444,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
   const [omlStepPed,    setOmlStepPed]    = useState(0);
   const [omlTxtPed,     setOmlTxtPed]     = useState("");
   const [showPatPed,    setShowPatPed]    = useState(false);
-  const [patPed, setPatPed] = useLocalState("acr_ped_pat", { nom:"", prenom:"", ddn:"", age:"", poids:"", atcd:"", traitement:"", histoire:"" });
+  const [patPed, setPatPed] = useLocalState("acr_ped_pat", { nom:"", prenom:"", ddn:"", age:"", poids:"", temp:"", atcd:"", traitement:"", histoire:"" });
   const spf = k => v => setPatPed(p => ({ ...p, [k]: v }));
   const [showNotePed,  setShowNotePed]   = useState(false);
   const [noteTextPed,  setNoteTextPed]   = useState("");
@@ -2482,6 +2551,8 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
               </div>
               <div><Lbl>Poids</Lbl><TInput value={patPed.poids} onChange={spf("poids")} placeholder={`${localPoids} kg`} /></div>
             </div>
+            <div><Lbl>Température (°C)</Lbl>
+              <TInput value={patPed.temp} onChange={spf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
             <div><Lbl>Antécédents</Lbl>
               <TArea value={patPed.atcd} onChange={spf("atcd")} placeholder="Cardiopathie, allergie..." rows={2} /></div>
             <div><Lbl>Histoire de la maladie</Lbl>
@@ -2596,7 +2667,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
 
         {/* ── Contenu Thérapeutiques spécifiques pédiatrique (doses au poids) ── */}
         {mainTabPed === "ther" && (
-          <TherapeutiquesTab list={THERAPEUTIQUES_ADULTE} addEvent={addEvent}
+          <TherapeutiquesTab list={THERAPEUTIQUES_ADULTE.filter(t => t.id !== "ddac")} addEvent={addEvent}
             localMat={localMat} onOpenEcmo={() => setModalEcmoPed(true)}
             P={P} mono={mono} sans={sans} />
         )}
@@ -2974,6 +3045,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
             ddn:     patPed.ddn,
             age:     patPed.age || calcAge(patPed.ddn) || localRow?.age || "",
             sexe:    "",
+            temp:    patPed.temp,
             atcd:    patPed.atcd,
             histoire:patPed.histoire,
           }}
@@ -2983,6 +3055,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
           iot={{ cormack:"", sonde:localMat?.sondeAvecBallonnet||"", repere:localMat?.repereLab||"", capno:"" }}
           events={events}
           totalSec={sec}
+          trans={transPed}
           onClose={() => setShowPdf(false)}
         />
       )}
@@ -3389,7 +3462,7 @@ function TherapeutiqueCard({ t, doseCalc, onAdminister, P, mono, sans }) {
   );
 }
 
-function TherapeutiquesTab({ list, addEvent, localMat, onOpenEcmo, P, mono, sans }) {
+function TherapeutiquesTab({ list, addEvent, localMat, onOpenEcmo, onOpenDdac, P, mono, sans }) {
   // Pour pédiatrique : remplace les doses par les calculs au poids
   const therapWithDoses = list.map(t => {
     let calc = null;
@@ -3414,6 +3487,7 @@ function TherapeutiquesTab({ list, addEvent, localMat, onOpenEcmo, P, mono, sans
         <TherapeutiqueCard key={t.id} t={t} doseCalc={t.calcDose}
           onAdminister={(t, dose) => {
             if (t.modal === "ecmo" && onOpenEcmo) { onOpenEcmo(); return; }
+            if (t.modal === "ddac" && onOpenDdac) { onOpenDdac(); return; }
             const log = dose || t.logDose;
             addEvent("therap", `${t.label} — ${log}`, t.geste ? "✚" : "💉");
           }}
@@ -3550,6 +3624,119 @@ function EcmoModal({ open, onClose, onConfirm, P, mono, sans, Modal, Lbl, TArea,
   );
 }
 
+// ── MODAL DON D'ORGANES (DDAC Maastricht II) ──────────────────────────────────
+
+function DdacModal({ open, onClose, onConfirm, P, mono, sans, Modal, Lbl, TArea }) {
+  const [crit, setCrit] = useState({ age:null, ci:null, noflow:null, delai:null, note:"" });
+  if (!open) return null;
+
+  const items = [
+    { k:"age",    label:"Âge < 55 ans",            sub:"Critère d'inclusion" },
+    { k:"ci",     label:"Absence de contre-indication", sub:"HTA, diabète, path. rénale/coronaire, cancer, toxicomanie IV" },
+    { k:"noflow", label:"No-flow < 15 min",        sub:"Délai effondrement → début RCP" },
+    { k:"delai",  label:"Arrivée CH < 120 min",    sub:"Depuis l'effondrement (< 90 min si pas de planche à masser)" },
+  ];
+
+  const Yes = ({k}) => (
+    <button onClick={() => setCrit(p => ({...p, [k]: true}))}
+      style={{ flex:1, padding:"7px 4px", borderRadius:8, fontSize:11, fontWeight:600,
+        border:`1.5px solid ${crit[k]===true ? P.green : P.border}`,
+        background: crit[k]===true ? P.greenSoft : P.surface,
+        color: crit[k]===true ? P.greenText : P.textMid,
+        cursor:"pointer", fontFamily:sans }}>Oui</button>
+  );
+  const No = ({k}) => (
+    <button onClick={() => setCrit(p => ({...p, [k]: false}))}
+      style={{ flex:1, padding:"7px 4px", borderRadius:8, fontSize:11, fontWeight:600,
+        border:`1.5px solid ${crit[k]===false ? P.rose : P.border}`,
+        background: crit[k]===false ? P.roseSoft : P.surface,
+        color: crit[k]===false ? P.roseText : P.textMid,
+        cursor:"pointer", fontFamily:sans }}>Non</button>
+  );
+
+  const green = items.filter(i => crit[i.k] === true).length;
+  const red   = items.filter(i => crit[i.k] === false).length;
+  const total = items.length;
+  const eligible = green === total;
+  const nonEligible = red > 0;
+
+  return (
+    <Modal title="Don d'organes — DDAC Maastricht II" icon="🤝" soft={P.tealSoft} onClose={onClose}>
+      <p style={{ margin:"0 0 12px", fontSize:12, color:P.textSoft, lineHeight:1.5 }}>
+        ACR réfractaire sans recours ECMO et après échec de la réanimation spécialisée :
+        penser au don d'organes. Évaluation indicative — la décision relève du protocole et
+        de la coordination.
+      </p>
+
+      {items.map(item => (
+        <div key={item.k} style={{ marginBottom:11 }}>
+          <p style={{ margin:"0 0 4px", fontSize:12, fontWeight:600, color:P.text }}>{item.label}</p>
+          <p style={{ margin:"0 0 6px", fontSize:10, color:P.textSoft, fontStyle:"italic" }}>{item.sub}</p>
+          <div style={{ display:"flex", gap:6 }}>
+            <Yes k={item.k} /><No k={item.k} />
+          </div>
+        </div>
+      ))}
+
+      {(green > 0 || red > 0) && (
+        <div style={{
+          background: eligible ? P.greenSoft : nonEligible ? P.roseSoft : P.amberSoft,
+          border:`1.5px solid ${eligible ? P.green : nonEligible ? P.rose : P.amber}`,
+          borderRadius:10, padding:"10px 12px", marginBottom:10,
+          display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:22 }}>{eligible ? "✅" : nonEligible ? "⚠️" : "❓"}</span>
+          <div>
+            <p style={{ margin:0, fontSize:12, fontWeight:700,
+              color: eligible ? P.greenText : nonEligible ? P.roseText : P.amberText }}>
+              {eligible ? "Donneur potentiel — contacter la régulation SAMU" :
+               nonEligible ? "Critère(s) défavorable(s)" : "Évaluation en cours"}
+            </p>
+            <p style={{ margin:"1px 0 0", fontSize:10,
+              color: eligible ? P.greenText : nonEligible ? P.roseText : P.amberText, opacity:0.85 }}>
+              {green}/{total} favorables · {red}/{total} défavorables
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Rappel contact */}
+      <div style={{ background:P.tealSoft, border:`1px solid #B2DADA`, borderRadius:10,
+        padding:"9px 12px", marginBottom:10, display:"flex", alignItems:"center", gap:8 }}>
+        <span style={{ fontSize:16 }}>📞</span>
+        <p style={{ margin:0, fontSize:11, color:P.tealText, fontWeight:600 }}>
+          Contact : régulation du SAMU
+        </p>
+      </div>
+
+      <Lbl>Note</Lbl>
+      <TArea value={crit.note} onChange={v => setCrit(p => ({...p, note:v}))}
+        placeholder="Coordination contactée, heure, précisions..." rows={2} />
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:14 }}>
+        <button onClick={() => {
+          onConfirm({ decision:"non retenu", verdict:`${green}/${total} favorables`, note:crit.note });
+          onClose();
+        }} style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:11,
+          color:P.textMid, fontSize:12, fontWeight:600, padding:"11px", cursor:"pointer", fontFamily:sans }}>
+          Non retenu
+        </button>
+        <button onClick={() => {
+          onConfirm({ decision:"envisagé — régulation SAMU contactée", verdict:`${green}/${total} favorables`, note:crit.note });
+          onClose();
+        }} style={{ background:`linear-gradient(135deg,${P.teal},#1A6A6A)`,
+          border:"none", borderRadius:11, color:"#fff", fontSize:12, fontWeight:600,
+          padding:"11px", cursor:"pointer", fontFamily:sans, boxShadow:`0 4px 12px ${P.teal}33` }}>
+          Don envisagé
+        </button>
+      </div>
+
+      <p style={{ margin:"12px 0 0", fontSize:9, color:P.textSoft, fontStyle:"italic", textAlign:"center", lineHeight:1.4 }}>
+        Aide à la décision — ne remplace pas le protocole local ni l'avis de la coordination hospitalière de don d'organes.
+      </p>
+    </Modal>
+  );
+}
+
 // ── ÉTIOLOGIES & THÉRAPEUTIQUES ────────────────────────────────────────────────
 
 const CAUSES_5H = [
@@ -3622,11 +3809,15 @@ const THERAPEUTIQUES_ADULTE = [
     indic:"ACR réfractaire · low-flow < 60 min · cause potentiellement réversible",
     dose:"Décision pluridisciplinaire — voir checklist",
     logDose:"Décision ECMO envisagée", color:"violet", geste:true, modal:"ecmo" },
+  { id:"ddac",        label:"Don d'organes (Maastricht II)",
+    indic:"ACR réfractaire · pas de recours ECMO · échec de la réanimation spécialisée",
+    dose:"Évaluer l'éligibilité — voir checklist · contacter la régulation SAMU",
+    logDose:"Éligibilité don d'organes évaluée", color:"teal", geste:true, modal:"ddac" },
 ];
 
 // ── APP ────────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"" });
+  const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"" });
   const sf = k => v => setPat(p => ({ ...p, [k]: v }));
 
   // Durées manuelles no-flow / low-flow (en minutes)
@@ -3683,6 +3874,7 @@ export default function App() {
   const [mainTab,        setMainTab]        = useLocalState("acr_adulte_mainTab", "actions");
   const [suspectedAd,    setSuspectedAd]    = useLocalState("acr_adulte_suspected", []);
   const [modalEcmo,      setModalEcmo]      = useState(false);
+  const [modalDdac,      setModalDdac]      = useState(false);
 
   const [fastResult,  setFastResult]  = useState("");
   const [modalRythme, setModalRythme] = useState(false);
@@ -3700,7 +3892,7 @@ export default function App() {
   const [racs, setRacs] = useState({
     fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"",
     hypnovelV:"", sufentaV:"", curare:"", autresDrogues:"",
-    tas:"", tad:"", fc:"", noradrV:"", dobut:"", autresHemo:"",
+    tas:"", tad:"", fc:"", tempRacs:"", noradrV:"", dobut:"", autresHemo:"",
     remplissages:[]
   });
   const sr = k => v => setRacs(p => ({ ...p, [k]: v }));
@@ -3756,12 +3948,12 @@ export default function App() {
     setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, rythmeDSA:"", note:"", saved:false });
     setModalTrans(false);
     setAdrTimerStart(0); setAdrInterval(4);
-    setMainTab("actions"); setSuspectedAd([]); setModalEcmo(false);
+    setMainTab("actions"); setSuspectedAd([]); setModalEcmo(false); setModalDdac(false);
     clearSession("acr_adulte_");
     setModalCord(false); setModalDeces(false); setModalIot(false); setModalFast(false);
     setModalRythme(false); setModalVvp(false); setModalElectrodes(false); setModalRacs(false); setModalChoc(false); setModalEcg(false); setModalRegul(false);
     setJoules("200"); setEcgText(""); setRegulText(""); setRegulDest("");
-    setRacs({ fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"", hypnovelV:"", sufentaV:"", curare:"", autresDrogues:"", tas:"", tad:"", fc:"", noradrV:"", dobut:"", autresHemo:"", remplissages:[] });
+    setRacs({ fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"", hypnovelV:"", sufentaV:"", curare:"", autresDrogues:"", tas:"", tad:"", fc:"", tempRacs:"", noradrV:"", dobut:"", autresHemo:"", remplissages:[] });
     setActiveTab("actions");
     setFastResult("");
     setIot({ cormack:"", sonde:"", repere:"", capno:"" });
@@ -4398,6 +4590,14 @@ export default function App() {
         }}
         P={P} mono={mono} sans={sans} Modal={Modal} Lbl={Lbl} TArea={TArea} />
 
+      {/* ── Modal Don d'organes (DDAC) ── */}
+      <DdacModal open={modalDdac} onClose={() => setModalDdac(false)}
+        onConfirm={({ decision, verdict, note }) => {
+          const msg = `Don d'organes ${decision} (${verdict})${note ? " — " + note : ""}`;
+          addEvent("ddac", msg, "🤝");
+        }}
+        P={P} mono={mono} sans={sans} Modal={Modal} Lbl={Lbl} TArea={TArea} />
+
       {/* ── Modal Transmission équipes en place ── */}
       {modalTrans && (
         <Modal title="Transmission équipes en place"
@@ -4607,6 +4807,7 @@ export default function App() {
             p.push(`Remplissage total : ${total} mL (${racs.remplissages.map(r=>`${r.vol}mL ${r.sol}`).join(", ")})`);
           }
           if (racs.fc)            p.push(`FC ${racs.fc}/min`);
+          if (racs.tempRacs)      p.push(`T° ${racs.tempRacs} °C`);
           if (racs.noradrV)       p.push(`Noradrénaline ${racs.noradrV} mL/h → ${noradrDose} mg/h (8mg/40cc)`);
           if (racs.dobut)         p.push(`Dobutamine ${racs.dobut} μg/kg/min`);
           if (racs.autresHemo)    p.push(racs.autresHemo);
@@ -4895,6 +5096,22 @@ export default function App() {
                       );
                     })()}
 
+                    {/* Température — contrôle ciblé */}
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
+                      background:"#FFF7ED", border:"1px solid #FDBA74", borderRadius:9, padding:"7px 10px" }}>
+                      <span style={{ fontSize:13, flexShrink:0 }}>🌡️</span>
+                      <input type="number" inputMode="decimal" step="0.1" value={racs.tempRacs}
+                        onChange={e => sr("tempRacs")(e.target.value)} placeholder="36,5"
+                        style={{ width:62, background:P.surface, border:`1px solid #FDBA74`,
+                          borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
+                          fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
+                          boxSizing:"border-box", flexShrink:0 }}
+                        onFocus={e => e.target.style.borderColor = "#EA580C"}
+                        onBlur={e  => e.target.style.borderColor = "#FDBA74"} />
+                      <span style={{ fontSize:12, color:"#9A3412", fontWeight:600, flexShrink:0 }}>°C</span>
+                      <span style={{ fontSize:10, color:"#9A3412", lineHeight:1.3 }}>Éviter l'hyperthermie</span>
+                    </div>
+
                     {/* Noradrénaline */}
                     <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px", marginBottom:10 }}>
                       <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:500, color:P.textSoft,
@@ -5178,6 +5395,8 @@ export default function App() {
                 <div><Lbl>Date de naissance</Lbl><TInput type="date" value={pat.ddn} onChange={v => { sf("ddn")(v); sf("age")(calcAge(v)); }} /></div>
                 <div><Lbl>Âge</Lbl><TInput value={pat.age} onChange={sf("age")} placeholder="67 ans" /></div>
               </div>
+              <div><Lbl>Température (°C)</Lbl>
+                <TInput value={pat.temp} onChange={sf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
               <div><Lbl>Antécédents médicaux</Lbl>
                 <TArea value={pat.atcd} onChange={sf("atcd")} placeholder="HTA, diabète, ACFA..." rows={2} /></div>
               <div><Lbl>Traitements habituels</Lbl>
@@ -5294,7 +5513,7 @@ export default function App() {
           {/* ── Contenu Thérapeutiques spécifiques ── */}
           {mainTab === "ther" && (
             <TherapeutiquesTab list={THERAPEUTIQUES_ADULTE} addEvent={addEvent}
-              localMat={null} onOpenEcmo={() => setModalEcmo(true)}
+              localMat={null} onOpenEcmo={() => setModalEcmo(true)} onOpenDdac={() => setModalDdac(true)}
               P={P} mono={mono} sans={sans} />
           )}
 
@@ -5544,7 +5763,7 @@ export default function App() {
       {/* PDF adulte — overlay */}
       {showPdf && (
         <PdfView patient={pat} noFlow={noFlowMin} lowFlow={lowFlowMin} acrTime={acrTime}
-          iot={iot} events={events} totalSec={sec} onClose={() => setShowPdf(false)} />
+          iot={iot} events={events} totalSec={sec} trans={trans} onClose={() => setShowPdf(false)} />
       )}
 
     </div>
