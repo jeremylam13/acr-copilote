@@ -150,10 +150,9 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
   // intervalMin = 3 / 4 / 5
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    if (!running) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [running]);
+  }, []);
   // recalcule à chaque tick : combien de secondes depuis la dose
   // mais on ne dispose pas de `sec` ici directement — donc on utilise un timestamp absolu
   // → on calcule différemment : `secAtStart` = timestamp absolu de la dose
@@ -571,7 +570,7 @@ function ChoiceBtn({ label, sub, accent, soft, textC, onClick }) {
 }
 
 // ── PDF ────────────────────────────────────────────────────────────────────────
-function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, trans, onClose }) {
+function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, trans, hemocue, onClose }) {
   const chocs = events.filter(e => e.id === "choc").length;
   const adrs  = events.filter(e => e.id === "adr").length;
   const rosc  = events.find(e => e.id === "rosc");
@@ -619,10 +618,30 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       lines.push("");
     }
 
+    // Hemocue — suivi + tendance
+    if (hemocue && hemocue.length > 0) {
+      lines.push("── HEMOCUE (Hb) ────────────────────");
+      hemocue.forEach(h => lines.push(`${h.time}  :  ${h.val} g/dL`));
+      if (hemocue.length >= 2) {
+        const last = parseFloat(String(hemocue[hemocue.length-1].val).replace(",", "."));
+        const first = parseFloat(String(hemocue[0].val).replace(",", "."));
+        const prev = parseFloat(String(hemocue[hemocue.length-2].val).replace(",", "."));
+        if (!isNaN(last) && !isNaN(prev)) {
+          const d = Math.round((last - prev) * 10) / 10;
+          lines.push(`Écart 2 dern.  : ${d > 0 ? "+" : ""}${String(d).replace(".", ",")} g/dL`);
+        }
+        if (!isNaN(last) && !isNaN(first)) {
+          const dg = Math.round((last - first) * 10) / 10;
+          lines.push(`Tendance glob. : ${dg > 0 ? "+" : ""}${String(dg).replace(".", ",")} g/dL (${hemocue.length} mesures)`);
+        }
+      }
+      lines.push("");
+    }
+
     // Phase pré-SMUR (transmission des équipes en place)
     const t = trans;
     const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
-      t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.note);
+      t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
     if (hasTrans) {
       const rythmeLabel = { choquable:"choquable", nonChoquable:"non choquable", nonAnalyse:"non analysé" };
       lines.push("── PHASE PRÉ-SMUR ──────────────────");
@@ -634,6 +653,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       if (t.rythmeDSA)        lines.push(`Rythme initial    : ${rythmeLabel[t.rythmeDSA] || t.rythmeDSA}`);
       if (t.h1erChoc)         lines.push(`1er choc          : ${t.h1erChoc}`);
       if ((parseInt(t.chocsPompiers)||0) > 0) lines.push(`Chocs DSA pompiers: ${t.chocsPompiers}`);
+      if (t.gestesSecouristes) lines.push(`Gestes secouristes: ${t.gestesSecouristes}`);
       if (t.note)             lines.push(`Note pré-SMUR     : ${t.note}`);
       lines.push("");
     }
@@ -847,7 +867,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         {(() => {
           const t = trans;
           const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
-            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.note);
+            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
           if (!hasTrans) return null;
           const rythmeLabel = { choquable:"Choquable", nonChoquable:"Non choquable", nonAnalyse:"Non analysé" };
           return (
@@ -866,6 +886,42 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
             </Section>
           );
         })()}
+
+        {/* Hemocue — suivi Hb */}
+        {hemocue && hemocue.length > 0 && (
+          <Section title="Hemocue (Hb)">
+            <div style={{ border:`1px solid ${P.border}`, borderRadius:12, overflow:"hidden" }}>
+              {hemocue.map((h, i) => (
+                <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                  padding:"7px 14px", background: i%2===0 ? P.surface : P.surfaceAlt }}>
+                  <span style={{ fontSize:12, color:P.textSoft, fontFamily:mono }}>{h.time}</span>
+                  <span style={{ fontSize:13, fontWeight:700, color:P.text, fontFamily:mono }}>{h.val} g/dL</span>
+                </div>
+              ))}
+              {hemocue.length >= 2 && (() => {
+                const last = parseFloat(String(hemocue[hemocue.length-1].val).replace(",", "."));
+                const prev = parseFloat(String(hemocue[hemocue.length-2].val).replace(",", "."));
+                const first = parseFloat(String(hemocue[0].val).replace(",", "."));
+                if (isNaN(last) || isNaN(prev)) return null;
+                const d = Math.round((last - prev) * 10) / 10;
+                const dg = !isNaN(first) ? Math.round((last - first) * 10) / 10 : null;
+                return (
+                  <div style={{ padding:"8px 14px", background:P.violetSoft,
+                    borderTop:`1px solid ${P.border}` }}>
+                    <p style={{ margin:0, fontSize:12, fontWeight:700, color: d < 0 ? P.roseText : P.greenText }}>
+                      Écart 2 dernières : {d > 0 ? "+" : ""}{String(d).replace(".", ",")} g/dL {d < 0 ? "↓" : d > 0 ? "↑" : "→"}
+                    </p>
+                    {dg !== null && (
+                      <p style={{ margin:"2px 0 0", fontSize:11, color:P.textMid }}>
+                        Tendance globale : {dg > 0 ? "+" : ""}{String(dg).replace(".", ",")} g/dL sur {hemocue.length} mesures
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </Section>
+        )}
 
         {/* Chronologie */}
         <Section title={`Chronologie (${events.length} événements)`}>
@@ -1020,7 +1076,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         {(() => {
           const t = trans;
           const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
-            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.note);
+            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
           if (!hasTrans) return null;
           const rythmeLabel = { choquable:"Choquable", nonChoquable:"Non choquable", nonAnalyse:"Non analysé" };
           return (
@@ -1039,6 +1095,42 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
             </Section>
           );
         })()}
+
+        {/* Hemocue — suivi Hb */}
+        {hemocue && hemocue.length > 0 && (
+          <Section title="Hemocue (Hb)">
+            <div style={{ border:`1px solid ${P.border}`, borderRadius:12, overflow:"hidden" }}>
+              {hemocue.map((h, i) => (
+                <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                  padding:"7px 14px", background: i%2===0 ? P.surface : P.surfaceAlt }}>
+                  <span style={{ fontSize:12, color:P.textSoft, fontFamily:mono }}>{h.time}</span>
+                  <span style={{ fontSize:13, fontWeight:700, color:P.text, fontFamily:mono }}>{h.val} g/dL</span>
+                </div>
+              ))}
+              {hemocue.length >= 2 && (() => {
+                const last = parseFloat(String(hemocue[hemocue.length-1].val).replace(",", "."));
+                const prev = parseFloat(String(hemocue[hemocue.length-2].val).replace(",", "."));
+                const first = parseFloat(String(hemocue[0].val).replace(",", "."));
+                if (isNaN(last) || isNaN(prev)) return null;
+                const d = Math.round((last - prev) * 10) / 10;
+                const dg = !isNaN(first) ? Math.round((last - first) * 10) / 10 : null;
+                return (
+                  <div style={{ padding:"8px 14px", background:P.violetSoft,
+                    borderTop:`1px solid ${P.border}` }}>
+                    <p style={{ margin:0, fontSize:12, fontWeight:700, color: d < 0 ? P.roseText : P.greenText }}>
+                      Écart 2 dernières : {d > 0 ? "+" : ""}{String(d).replace(".", ",")} g/dL {d < 0 ? "↓" : d > 0 ? "↑" : "→"}
+                    </p>
+                    {dg !== null && (
+                      <p style={{ margin:"2px 0 0", fontSize:11, color:P.textMid }}>
+                        Tendance globale : {dg > 0 ? "+" : ""}{String(dg).replace(".", ",")} g/dL sur {hemocue.length} mesures
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </Section>
+        )}
 
         {/* Chronologie */}
         <Section title={`Chronologie (${events.length} événements)`}>
@@ -1516,8 +1608,8 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
     alertRef.current = setTimeout(() => setAlert(null), 7000);
   }, [sec, running]);
 
-  const addEvent = (id, label, icon) =>
-    setEvents(p => [...p, { id, label, icon, time: getNow(), sec }]);
+  const addEvent = (id, label, icon, customTime) =>
+    setEvents(p => [...p, { id, label, icon, time: customTime || getNow(), sec }]);
 
   const start = () => {
     const lf = getNow();
@@ -3056,6 +3148,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
           events={events}
           totalSec={sec}
           trans={transPed}
+          hemocue={[]}
           onClose={() => setShowPdf(false)}
         />
       )}
@@ -3462,7 +3555,7 @@ function TherapeutiqueCard({ t, doseCalc, onAdminister, P, mono, sans }) {
   );
 }
 
-function TherapeutiquesTab({ list, addEvent, localMat, onOpenEcmo, onOpenDdac, P, mono, sans }) {
+function TherapeutiquesTab({ list, addEvent, localMat, onOpenEcmo, onOpenDdac, onOpenModal, P, mono, sans }) {
   // Pour pédiatrique : remplace les doses par les calculs au poids
   const therapWithDoses = list.map(t => {
     let calc = null;
@@ -3488,6 +3581,9 @@ function TherapeutiquesTab({ list, addEvent, localMat, onOpenEcmo, onOpenDdac, P
           onAdminister={(t, dose) => {
             if (t.modal === "ecmo" && onOpenEcmo) { onOpenEcmo(); return; }
             if (t.modal === "ddac" && onOpenDdac) { onOpenDdac(); return; }
+            if (t.modal && onOpenModal && ["fast_trauma","thoraco_d","thoraco_g","hemocue","transfusion","exacyl","hemo_ext"].includes(t.modal)) {
+              onOpenModal(t.modal); return;
+            }
             const log = dose || t.logDose;
             addEvent("therap", `${t.label} — ${log}`, t.geste ? "✚" : "💉");
           }}
@@ -3815,6 +3911,68 @@ const THERAPEUTIQUES_ADULTE = [
     logDose:"Éligibilité don d'organes évaluée", color:"teal", geste:true, modal:"ddac" },
 ];
 
+// ── ACR TRAUMATIQUE (TCA) ──────────────────────────────────────────────────────
+
+// Causes réversibles traumatiques — algorithme HOTT
+const CAUSES_HOTT = [
+  { id:"hypovolemie", label:"Hypovolémie (hémorragie)", icon:"🩸", sub:"Contrôle hémorragie + produits sanguins · hypotension permissive" },
+  { id:"hypoxie",     label:"Hypoxie (oxygénation)",    icon:"💨", sub:"Contrôle des voies aériennes · ventilation" },
+  { id:"pno",         label:"Pneumothorax suffocant",    icon:"🫁", sub:"Thoracostomies bilatérales (geste salvateur)" },
+  { id:"tamponnade",  label:"Tamponnade",                icon:"🫀", sub:"FAST · thoracotomie / drainage péricardique" },
+];
+
+// Thérapeutiques spécifiques du TCA
+const THERAPEUTIQUES_TRAUMA = [
+  { id:"thoraco_d",   label:"Thoracostomie droite",
+    indic:"Pneumothorax suffocant droit",
+    dose:"Résultat : rien / air / sang",
+    logDose:"Thoracostomie droite", color:"blue", geste:true, modal:"thoraco_d" },
+  { id:"thoraco_g",   label:"Thoracostomie gauche",
+    indic:"Pneumothorax suffocant gauche",
+    dose:"Résultat : rien / air / sang",
+    logDose:"Thoracostomie gauche", color:"blue", geste:true, modal:"thoraco_g" },
+  { id:"hemo_ext",    label:"Contrôle hémorragies externes",
+    indic:"Hémorragie compressible",
+    dose:"Garrot · packing · QuickClot · Celox · pansement compressif · agrafes · Bivona...",
+    logDose:"Contrôle hémorragie externe", color:"rose", geste:true, modal:"hemo_ext" },
+  { id:"ceinture",    label:"Ceinture pelvienne",
+    indic:"Suspicion fracture du bassin · hémorragie rétropéritonéale",
+    dose:"Pose au niveau des grands trochanters",
+    logDose:"Ceinture pelvienne posée", color:"amber", geste:true },
+  { id:"exacyl",      label:"Acide tranexamique (Exacyl®)",
+    indic:"Hémorragie traumatique — dans les 3 h",
+    dose:"1 g IVL sur 10 min, puis 1 g sur 8 h. ⚠️ Inutile/délétère après 3 h",
+    logDose:"Exacyl", color:"green", geste:true, modal:"exacyl" },
+  { id:"hemocue",     label:"Hemocue (Hb)",
+    indic:"Évaluation rapide de l'hémoglobine",
+    dose:"Mesure capillaire — noter la valeur",
+    logDose:"Hemocue réalisé", color:"violet", geste:true, modal:"hemocue" },
+  { id:"transfusion", label:"Transfusion préhospitalière",
+    indic:"Choc hémorragique",
+    dose:"CGR · PFC · ratio 1:1:1 en transfusion massive",
+    logDose:"Transfusion préhospitalière", color:"rose", geste:true, modal:"transfusion" },
+  { id:"octaplas",    label:"Octaplas (PFC)",
+    indic:"Coagulopathie · transfusion massive",
+    dose:"Plasma frais congelé — ratio 1:1 avec CGR",
+    logDose:"Octaplas administré", color:"rose", geste:true },
+  { id:"calcium_tr",  label:"Gluconate de calcium 10 %",
+    indic:"Transfusion massive (hypocalcémie du citrate) · hyperkaliémie",
+    dose:"1 g IV (10 mL de 10 %) — contrôler la calcémie",
+    logDose:"Calcium 1 g IV", color:"amber" },
+  { id:"cristalloides", label:"⚠️ Restriction cristalloïdes",
+    indic:"Damage control resuscitation",
+    dose:"Limiter les cristalloïdes — privilégier les produits sanguins · hypotension permissive (PAS ~80-90) tant que l'hémorragie n'est pas contrôlée",
+    logDose:"Restriction cristalloïdes — produits sanguins privilégiés", color:"amber" },
+  { id:"thoracotomie", label:"Thoracotomie de sauvetage",
+    indic:"Plaie pénétrante thoracique avec tamponnade · centre équipé",
+    dose:"Geste de dernier recours — équipe entraînée",
+    logDose:"Thoracotomie de sauvetage", color:"rose", geste:true },
+  { id:"reboa",       label:"REBOA",
+    indic:"Hémorragie sous-diaphragmatique non contrôlable · si disponible",
+    dose:"Ballon d'occlusion aortique endovasculaire",
+    logDose:"REBOA envisagé", color:"violet", geste:true },
+];
+
 // ── APP ────────────────────────────────────────────────────────────────────────
 export default function App() {
   const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"" });
@@ -3861,7 +4019,7 @@ export default function App() {
   const [trans, setTrans] = useLocalState("acr_adulte_trans", {
     hEffondrement:"", temoin:"", mceTemoin:"",
     hArriveePompiers:"", hPoseDSA:"", h1erChoc:"",
-    chocsPompiers:0, rythmeDSA:"",
+    chocsPompiers:0, rythmeDSA:"", gestesSecouristes:"",
     note:"", saved:false,
   });
   const st = k => v => setTrans(p => ({ ...p, [k]: v }));
@@ -3907,8 +4065,8 @@ export default function App() {
     alertRef.current = setTimeout(() => setAlert(null), 7000);
   }, [sec, running]);
 
-  const addEvent = (id, label, icon) =>
-    setEvents(p => [...p, { id, label, icon, time: getNow(), sec }]);
+  const addEvent = (id, label, icon, customTime) =>
+    setEvents(p => [...p, { id, label, icon, time: customTime || getNow(), sec }]);
 
   const start = () => {
     const lf = getNow();
@@ -3945,10 +4103,13 @@ export default function App() {
     setShowPdf(false); setShowLog(false);
     setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"" });
     setIot({ cormack:"", sonde:"", repere:"", capno:"" });
-    setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, rythmeDSA:"", note:"", saved:false });
+    setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, rythmeDSA:"", gestesSecouristes:"", note:"", saved:false });
     setModalTrans(false);
     setAdrTimerStart(0); setAdrInterval(4);
     setMainTab("actions"); setSuspectedAd([]); setModalEcmo(false); setModalDdac(false);
+    setModalFastTrauma(false); setFastTr({ morrison:"", kohler:"", douglas:"", pleureD:"", pleureG:"", pericarde:"" });
+    setModalThoraco(null); setModalHemocue(false); setHemocueVal(""); setModalTransfu(false); setTransfu({ cgr:"", pfc:"", plaq:"" });
+    setModalExacyl(false); setModalHemoExt(false); setGarrotSite(""); setGarrotHeure(""); setHemocueHist([]);
     clearSession("acr_adulte_");
     setModalCord(false); setModalDeces(false); setModalIot(false); setModalFast(false);
     setModalRythme(false); setModalVvp(false); setModalElectrodes(false); setModalRacs(false); setModalChoc(false); setModalEcg(false); setModalRegul(false);
@@ -3967,6 +4128,22 @@ export default function App() {
   // Pas de tableau ACTIONS_SIMPLE — tous les boutons sont gérés individuellement dans la grille
 
   const [module, setModule] = useState(null); // null | "adulte_extra" | "adulte_intra" | "pediatrique" | "traumatique"
+  const isTrauma = module === "traumatique";
+
+  // États spécifiques trauma (FAST, thoracostomies, hemocue, transfusion)
+  const [modalFastTrauma, setModalFastTrauma] = useState(false);
+  const [fastTr, setFastTr] = useLocalState("acr_adulte_fastTr", { morrison:"", kohler:"", douglas:"", pleureD:"", pleureG:"", pericarde:"" });
+  const sft = k => v => setFastTr(p => ({ ...p, [k]: v }));
+  const [modalThoraco, setModalThoraco] = useState(null); // null | "d" | "g"
+  const [modalHemocue, setModalHemocue] = useState(false);
+  const [hemocueVal, setHemocueVal] = useState("");
+  const [hemocueHist, setHemocueHist] = useLocalState("acr_adulte_hemocueHist", []); // [{val, time}]
+  const [modalTransfu, setModalTransfu] = useState(false);
+  const [transfu, setTransfu] = useState({ cgr:"", pfc:"", plaq:"" });
+  const [modalExacyl, setModalExacyl] = useState(false);
+  const [modalHemoExt, setModalHemoExt] = useState(false);
+  const [garrotSite, setGarrotSite] = useState("");
+  const [garrotHeure, setGarrotHeure] = useState("");
 
   // Détection sessions sauvegardées
   const sessionAdulte = (events && events.length > 0) || sec > 0 || pat.nom;
@@ -4091,17 +4268,16 @@ export default function App() {
           background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
           padding:"18px 20px", cursor:"pointer", fontFamily:sans, textAlign:"left",
           display:"flex", alignItems:"center", gap:16,
-          boxShadow:"0 2px 10px rgba(0,0,0,0.05)", opacity:0.7 }}
-          onPointerEnter={e => { e.currentTarget.style.borderColor = P.slate; e.currentTarget.style.opacity = "1"; }}
-          onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.opacity = "0.7"; }}>
+          boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}
+          onPointerEnter={e => { e.currentTarget.style.borderColor = P.slate; }}
+          onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; }}>
           <div style={{ width:48, height:48, borderRadius:14, background:P.slateSoft,
             display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🩻</div>
           <div>
             <p style={{ margin:0, fontSize:15, fontWeight:600, color:P.text }}>ACR Traumatique</p>
-            <p style={{ margin:"2px 0 0", fontSize:12, color:P.textSoft }}>Trauma · Polytraumatisé</p>
+            <p style={{ margin:"2px 0 0", fontSize:12, color:P.textSoft }}>Trauma · Polytraumatisé · HOTT</p>
           </div>
-          <span style={{ marginLeft:"auto", fontSize:10, background:P.surfaceAlt,
-            color:P.textSoft, padding:"3px 10px", borderRadius:20, whiteSpace:"nowrap" }}>Bientôt</span>
+          <span style={{ marginLeft:"auto", fontSize:18, color:P.textSoft }}>›</span>
         </button>
 
       </div>
@@ -4115,8 +4291,8 @@ export default function App() {
   // Module pédiatrique
   if (module === "pediatrique") return <ModulePediatrique onBack={() => setModule(null)} />;
 
-  // Modules non encore développés
-  if (module && module !== "adulte_extra") return (
+  // Modules non encore développés (intra-hospitalier uniquement)
+  if (module && module !== "adulte_extra" && module !== "traumatique") return (
     <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans,
       display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
       padding:"0 24px" }}>
@@ -4148,10 +4324,10 @@ export default function App() {
         <button onClick={() => setModule(null)}
           style={{ background:"transparent", border:"none", color:P.textMid,
             fontSize:22, cursor:"pointer", padding:"0 6px", lineHeight:1, fontFamily:sans }}>‹</button>
-        <div style={{ width:38, height:38, borderRadius:12, background:P.roseSoft,
-          display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>🚑</div>
+        <div style={{ width:38, height:38, borderRadius:12, background:isTrauma?P.slateSoft:P.roseSoft,
+          display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>{isTrauma?"🩻":"🚑"}</div>
         <div>
-          <p style={{ margin:0, fontSize:14, fontWeight:600, color:P.text }}>ACR Adulte — Extra-hospitalier</p>
+          <p style={{ margin:0, fontSize:14, fontWeight:600, color:P.text }}>{isTrauma?"ACR Traumatique":"ACR Adulte — Extra-hospitalier"}</p>
           <p style={{ margin:0, fontSize:11, color:P.textSoft }}>Copilote ACR · SMUR</p>
         </div>
       </div>
@@ -4598,6 +4774,274 @@ export default function App() {
         }}
         P={P} mono={mono} sans={sans} Modal={Modal} Lbl={Lbl} TArea={TArea} />
 
+      {/* ── Modal FAST écho (trauma) ── */}
+      {modalFastTrauma && (
+        <Modal title="FAST écho" icon={<div style={{width:24,height:24,color:P.blue}}>{ICONS.fast}</div>}
+          soft={P.blueSoft} onClose={() => setModalFastTrauma(false)}>
+          {/* Bouton Normal rapide */}
+          <button onClick={() => {
+            addEvent("fast", "FAST normale", "🔊");
+            setModalFastTrauma(false);
+          }} style={{ width:"100%", background:`linear-gradient(135deg,${P.green},#2F7A4F)`,
+            border:"none", borderRadius:12, color:"#fff", fontSize:15, fontWeight:700,
+            padding:"15px", cursor:"pointer", fontFamily:sans, marginBottom:14,
+            boxShadow:`0 4px 14px ${P.green}44` }}>
+            ✓ FAST normale (rapide)
+          </button>
+
+          <p style={{ margin:"0 0 10px", fontSize:11, color:P.textSoft, textAlign:"center" }}>
+            ou décrire par site :
+          </p>
+
+          {[
+            { k:"morrison", label:"Espace de Morrison",  ph:"hépato-rénal" },
+            { k:"kohler",   label:"Espace de Köhler",    ph:"spléno-rénal" },
+            { k:"douglas",  label:"Cul-de-sac de Douglas", ph:"pelvien" },
+            { k:"pleureD",  label:"Plèvre droite",        ph:"épanchement ?" },
+            { k:"pleureG",  label:"Plèvre gauche",        ph:"épanchement ?" },
+            { k:"pericarde",label:"Péricarde",            ph:"épanchement / tamponnade ?" },
+          ].map(s => (
+            <div key={s.k} style={{ marginBottom:8 }}>
+              <Lbl>{s.label}</Lbl>
+              <TInput value={fastTr[s.k]} onChange={sft(s.k)} placeholder={s.ph} />
+            </div>
+          ))}
+
+          <button onClick={() => {
+            const parts = [];
+            const map = { morrison:"Morrison", kohler:"Köhler", douglas:"Douglas", pleureD:"Plèvre D", pleureG:"Plèvre G", pericarde:"Péricarde" };
+            Object.keys(map).forEach(k => { if (fastTr[k]?.trim()) parts.push(`${map[k]} : ${fastTr[k].trim()}`); });
+            addEvent("fast", parts.length ? `FAST — ${parts.join(" · ")}` : "FAST réalisée", "🔊");
+            setModalFastTrauma(false);
+          }} style={{ width:"100%", background:P.blue, border:"none", borderRadius:12,
+            color:"#fff", fontSize:14, fontWeight:600, padding:"13px", cursor:"pointer",
+            fontFamily:sans, marginTop:8 }}>
+            ✓ Enregistrer la description
+          </button>
+        </Modal>
+      )}
+
+      {/* ── Modal Thoracostomie (D/G) ── */}
+      {modalThoraco && (
+        <Modal title={`Thoracostomie ${modalThoraco === "d" ? "droite" : "gauche"}`}
+          icon="🫁" soft={P.blueSoft} onClose={() => setModalThoraco(null)}>
+          <p style={{ margin:"0 0 12px", fontSize:12, color:P.textSoft }}>
+            Résultat à l'ouverture de la plèvre :
+          </p>
+          {[
+            { v:"rien", label:"Rien",  c:P.slate,  cs:P.slateSoft,  ct:P.slateText },
+            { v:"air",  label:"Air",   c:P.blue,   cs:P.blueSoft,   ct:P.blueText },
+            { v:"sang", label:"Sang",  c:P.rose,   cs:P.roseSoft,   ct:P.roseText },
+          ].map(o => (
+            <button key={o.v} onClick={() => {
+              const cote = modalThoraco === "d" ? "droite" : "gauche";
+              addEvent("thoraco", `Thoracostomie ${cote} — ${o.label}`, "✚");
+              setModalThoraco(null);
+            }} style={{ width:"100%", background:o.cs, border:`1.5px solid ${o.c}`,
+              borderRadius:12, padding:"14px", marginBottom:8, cursor:"pointer",
+              fontFamily:sans, fontSize:15, fontWeight:600, color:o.ct, textAlign:"left" }}>
+              {o.label}
+            </button>
+          ))}
+        </Modal>
+      )}
+
+      {/* ── Modal Hemocue ── */}
+      {modalHemocue && (
+        <Modal title="Hemocue" icon="🩸" soft={P.violetSoft} onClose={() => { setModalHemocue(false); setHemocueVal(""); }}>
+          {/* Historique + écart */}
+          {hemocueHist.length > 0 && (
+            <div style={{ background:P.violetSoft, border:`1px solid ${P.violet}33`, borderRadius:10,
+              padding:"10px 12px", marginBottom:14 }}>
+              <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:600, color:P.violetText,
+                textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Mesures précédentes</p>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                {hemocueHist.map((h, i) => (
+                  <span key={i} style={{ fontSize:12, fontFamily:mono, fontWeight:700, color:P.violetText,
+                    background:P.surface, borderRadius:7, padding:"3px 8px" }}>
+                    {h.time} · {h.val} g/dL
+                  </span>
+                ))}
+              </div>
+              {hemocueHist.length >= 2 && (() => {
+                const last = parseFloat(String(hemocueHist[hemocueHist.length-1].val).replace(",", "."));
+                const prev = parseFloat(String(hemocueHist[hemocueHist.length-2].val).replace(",", "."));
+                if (isNaN(last) || isNaN(prev)) return null;
+                const d = Math.round((last - prev) * 10) / 10;
+                const up = d > 0;
+                return (
+                  <p style={{ margin:"8px 0 0", fontSize:12, fontWeight:700,
+                    color: d < 0 ? P.roseText : P.greenText }}>
+                    Écart 2 dernières : {up ? "+" : ""}{String(d).replace(".", ",")} g/dL {d < 0 ? "↓" : d > 0 ? "↑" : "→"}
+                  </p>
+                );
+              })()}
+            </div>
+          )}
+
+          <Lbl>Nouvelle mesure — Hémoglobine (g/dL)</Lbl>
+          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+            <input type="number" inputMode="decimal" step="0.1" value={hemocueVal}
+              onChange={e => setHemocueVal(e.target.value)} placeholder="Ex : 8,5"
+              style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                borderRadius:9, padding:"12px", fontSize:18, color:P.text, fontFamily:mono,
+                outline:"none", textAlign:"center", fontWeight:700, boxSizing:"border-box" }}
+              onFocus={e => e.target.style.borderColor = P.violet}
+              onBlur={e  => e.target.style.borderColor = P.border} />
+            <span style={{ fontSize:14, color:P.textMid, fontWeight:600 }}>g/dL</span>
+          </div>
+          <button onClick={() => {
+            const v = hemocueVal.trim();
+            if (!v) { addEvent("hemocue", "Hemocue réalisé", "🩸"); setModalHemocue(false); return; }
+            const h = getNow();
+            const newHist = [...hemocueHist, { val: v, time: h }];
+            setHemocueHist(newHist);
+            // écart avec la mesure précédente
+            let ecartTxt = "";
+            if (newHist.length >= 2) {
+              const last = parseFloat(v.replace(",", "."));
+              const prev = parseFloat(String(newHist[newHist.length-2].val).replace(",", "."));
+              if (!isNaN(last) && !isNaN(prev)) {
+                const d = Math.round((last - prev) * 10) / 10;
+                ecartTxt = ` (écart ${d > 0 ? "+" : ""}${String(d).replace(".", ",")} g/dL)`;
+              }
+            }
+            addEvent("hemocue", `Hemocue : ${v} g/dL${ecartTxt}`, "🩸");
+            setHemocueVal(""); setModalHemocue(false);
+          }} style={{ width:"100%", background:P.violet, border:"none", borderRadius:12,
+            color:"#fff", fontSize:14, fontWeight:600, padding:"13px", cursor:"pointer",
+            fontFamily:sans, marginTop:14 }}>
+            ✓ Enregistrer
+          </button>
+        </Modal>
+      )}
+
+      {/* ── Modal Transfusion préhospitalière ── */}
+      {modalTransfu && (
+        <Modal title="Transfusion préhospitalière" icon="🩸" soft={P.roseSoft}
+          onClose={() => setModalTransfu(false)}>
+          <p style={{ margin:"0 0 12px", fontSize:11, color:P.textSoft }}>
+            Ratio 1:1:1 recommandé en transfusion massive (CGR : PFC : plaquettes).
+          </p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:14 }}>
+            <div>
+              <Lbl>CGR</Lbl>
+              <input type="number" value={transfu.cgr} onChange={e => setTransfu(p => ({...p, cgr:e.target.value}))}
+                placeholder="0" style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                  borderRadius:9, padding:"10px 4px", fontSize:16, color:P.text, fontFamily:mono,
+                  outline:"none", textAlign:"center", fontWeight:700, boxSizing:"border-box" }} />
+            </div>
+            <div>
+              <Lbl>PFC</Lbl>
+              <input type="number" value={transfu.pfc} onChange={e => setTransfu(p => ({...p, pfc:e.target.value}))}
+                placeholder="0" style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                  borderRadius:9, padding:"10px 4px", fontSize:16, color:P.text, fontFamily:mono,
+                  outline:"none", textAlign:"center", fontWeight:700, boxSizing:"border-box" }} />
+            </div>
+            <div>
+              <Lbl>Plaq.</Lbl>
+              <input type="number" value={transfu.plaq} onChange={e => setTransfu(p => ({...p, plaq:e.target.value}))}
+                placeholder="0" style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                  borderRadius:9, padding:"10px 4px", fontSize:16, color:P.text, fontFamily:mono,
+                  outline:"none", textAlign:"center", fontWeight:700, boxSizing:"border-box" }} />
+            </div>
+          </div>
+          <button onClick={() => {
+            const parts = [];
+            if (parseInt(transfu.cgr)) parts.push(`${transfu.cgr} CGR`);
+            if (parseInt(transfu.pfc)) parts.push(`${transfu.pfc} PFC`);
+            if (parseInt(transfu.plaq)) parts.push(`${transfu.plaq} CP`);
+            addEvent("transfusion", parts.length ? `Transfusion : ${parts.join(" · ")}` : "Transfusion préhospitalière", "🩸");
+            setModalTransfu(false);
+          }} style={{ width:"100%", background:`linear-gradient(135deg,${P.rose},#B94A4A)`,
+            border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:600,
+            padding:"13px", cursor:"pointer", fontFamily:sans }}>
+            ✓ Enregistrer la transfusion
+          </button>
+        </Modal>
+      )}
+
+      {/* ── Modal Exacyl ── */}
+      {modalExacyl && (
+        <Modal title="Acide tranexamique (Exacyl®)" icon="💉" soft={P.greenSoft}
+          onClose={() => setModalExacyl(false)}>
+          <p style={{ margin:"0 0 14px", fontSize:11, color:P.roseText, fontWeight:600,
+            background:P.roseSoft, borderRadius:9, padding:"8px 10px" }}>
+            ⚠️ Dans les 3 h après le traumatisme — inutile/délétère au-delà
+          </p>
+          <button onClick={() => { addEvent("exacyl", "Exacyl 1 g IVL sur 10 min", "💉"); setModalExacyl(false); }}
+            style={{ width:"100%", background:`linear-gradient(135deg,${P.green},#2F7A4F)`,
+              border:"none", borderRadius:12, color:"#fff", fontSize:15, fontWeight:700,
+              padding:"15px", cursor:"pointer", fontFamily:sans, marginBottom:10,
+              boxShadow:`0 4px 14px ${P.green}44` }}>
+            1 g IVL sur 10 min<br/><span style={{fontSize:11,fontWeight:500,opacity:0.9}}>Dose de charge</span>
+          </button>
+          <button onClick={() => { addEvent("exacyl", "Exacyl 1 g IVSE sur 8 h", "💉"); setModalExacyl(false); }}
+            style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.green}`,
+              borderRadius:12, color:P.greenText, fontSize:15, fontWeight:700,
+              padding:"15px", cursor:"pointer", fontFamily:sans }}>
+            1 g sur 8 h<br/><span style={{fontSize:11,fontWeight:500,opacity:0.8}}>Dose d'entretien (relais IVSE)</span>
+          </button>
+        </Modal>
+      )}
+
+      {/* ── Modal Contrôle des hémorragies externes ── */}
+      {modalHemoExt && (
+        <Modal title="Contrôle des hémorragies externes" icon="🩸" soft={P.roseSoft}
+          onClose={() => { setModalHemoExt(false); setGarrotSite(""); }}>
+
+          {/* Garrot — avec site + heure de pose */}
+          <div style={{ background:P.roseSoft, border:`1.5px solid ${P.rose}`, borderRadius:12,
+            padding:"12px", marginBottom:12 }}>
+            <p style={{ margin:"0 0 8px", fontSize:13, fontWeight:700, color:P.roseText }}>🪢 Garrot</p>
+            <Lbl>Site de pose</Lbl>
+            <input value={garrotSite} onChange={e => setGarrotSite(e.target.value)}
+              placeholder="Ex : cuisse droite, racine du membre..."
+              style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
+                borderRadius:9, padding:"10px", fontSize:13, color:P.text, fontFamily:sans,
+                outline:"none", boxSizing:"border-box", marginBottom:8 }}
+              onFocus={e => e.target.style.borderColor = P.rose}
+              onBlur={e  => e.target.style.borderColor = P.border} />
+            <Lbl>Heure de pose (modifiable)</Lbl>
+            <input type="time" value={garrotHeure || getNow()} onChange={e => setGarrotHeure(e.target.value)}
+              style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
+                borderRadius:9, padding:"10px", fontSize:14, color:P.text, fontFamily:mono,
+                outline:"none", boxSizing:"border-box", marginBottom:10, textAlign:"center" }}
+              onFocus={e => e.target.style.borderColor = P.rose}
+              onBlur={e  => e.target.style.borderColor = P.border} />
+            <button onClick={() => {
+              const h = garrotHeure || getNow();
+              const site = garrotSite.trim() ? ` (${garrotSite.trim()})` : "";
+              addEvent("hemo", `Garrot posé${site}`, "🩸", h);
+              setGarrotSite(""); setGarrotHeure(""); setModalHemoExt(false);
+            }} style={{ width:"100%", background:`linear-gradient(135deg,${P.rose},#B94A4A)`,
+              border:"none", borderRadius:10, color:"#fff", fontSize:13, fontWeight:600,
+              padding:"11px", cursor:"pointer", fontFamily:sans }}>
+              ✓ Poser le garrot
+            </button>
+          </div>
+
+          {/* Autres techniques — log direct */}
+          <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:600, color:P.textSoft,
+            textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Autres techniques</p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            {[
+              "Pansement compressif", "Packing (tamponnement)", "QuickClot",
+              "Celox", "Agrafes", "Bivona (sonde nasale double ballonnet)", "iTClamp", "Point de compression",
+            ].map(tech => (
+              <button key={tech} onClick={() => { addEvent("hemo", tech, "🩸"); setModalHemoExt(false); }}
+                style={{ background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:10,
+                  padding:"11px 8px", cursor:"pointer", fontFamily:sans, fontSize:12, fontWeight:600,
+                  color:P.text, textAlign:"center", lineHeight:1.3 }}
+                onPointerEnter={e => e.currentTarget.style.borderColor = P.rose}
+                onPointerLeave={e => e.currentTarget.style.borderColor = P.border}>
+                {tech}
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
+
       {/* ── Modal Transmission équipes en place ── */}
       {modalTrans && (
         <Modal title="Transmission équipes en place"
@@ -4643,21 +5087,12 @@ export default function App() {
               textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Horaires (HH:MM)</p>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
               <div>
-                <Lbl>Heure de l'ACR</Lbl>
-                <input type="time" value={trans.hEffondrement} onChange={e => { st("hEffondrement")(e.target.value); setAcrTime(e.target.value); }}
-                  style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
-                    borderRadius:8, padding:"8px 6px", fontSize:14, fontFamily:mono,
-                    color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
-              </div>
-              <div>
                 <Lbl>Arrivée pompiers</Lbl>
                 <input type="time" value={trans.hArriveePompiers} onChange={e => st("hArriveePompiers")(e.target.value)}
                   style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
                     borderRadius:8, padding:"8px 6px", fontSize:14, fontFamily:mono,
                     color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
               </div>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
               <div>
                 <Lbl>Pose DSA</Lbl>
                 <input type="time" value={trans.hPoseDSA} onChange={e => st("hPoseDSA")(e.target.value)}
@@ -4665,6 +5100,8 @@ export default function App() {
                     borderRadius:8, padding:"8px 6px", fontSize:14, fontFamily:mono,
                     color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
               </div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
               <div>
                 <Lbl>1er choc</Lbl>
                 <input type="time" value={trans.h1erChoc} onChange={e => st("h1erChoc")(e.target.value)}
@@ -4673,6 +5110,13 @@ export default function App() {
                     color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
               </div>
             </div>
+          </div>
+
+          {/* Gestes entrepris par les secouristes */}
+          <div style={{ marginBottom:12 }}>
+            <Lbl>Gestes entrepris par les secouristes</Lbl>
+            <TArea value={trans.gestesSecouristes || ""} onChange={st("gestesSecouristes")}
+              placeholder="MCE, DSA, O₂, garrot, immobilisation, position latérale..." rows={2} />
           </div>
 
           {/* Chocs et rythme */}
@@ -5206,9 +5650,9 @@ export default function App() {
 
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <span style={{ fontSize:20 }}>❤️‍🩹</span>
+            <span style={{ fontSize:20 }}>{isTrauma ? "🩻" : "❤️‍🩹"}</span>
             <div>
-              <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>{pat.nom ? `${pat.nom} ${pat.prenom}` : "Copilote ACR"}</p>
+              <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>{pat.nom ? `${pat.nom} ${pat.prenom}` : (isTrauma ? "ACR Traumatique" : "Copilote ACR")}</p>
               <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:2 }}>
                 {pat.age && <span style={{ fontSize:11, color:P.textSoft }}>{pat.age} ans{pat.sexe ? ` · ${pat.sexe}` : ""}</span>}
                 {pat.age && noFlowMin !== undefined && <span style={{ fontSize:11, color:P.textSoft }}>·</span>}
@@ -5236,7 +5680,7 @@ export default function App() {
         </div>
 
         {/* Minuteur Adrénaline (option C : discret au repos, alerte si dépassé) */}
-        {adrTimerStart > 0 && running && !events.find(e => e.id === "rosc") && (
+        {adrTimerStart > 0 && started && !events.find(e => e.id === "rosc") && (
           <AdrenalineTimer
             startSec={adrTimerStart}
             intervalMin={adrInterval}
@@ -5471,7 +5915,7 @@ export default function App() {
               <ActionBtn action={{ label:"Planche à masser", svg:ICONS.planche, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
                 onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
               <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
-                onClick={() => setModalFast(true)} />
+                onClick={() => isTrauma ? setModalFastTrauma(true) : setModalFast(true)} />
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Soins post-RACS", icon:"🫀", accent:P.green, soft:P.greenSoft, textC:P.greenText }}
@@ -5485,6 +5929,20 @@ export default function App() {
           {/* ── Contenu Étiologie ── */}
           {mainTab === "etio" && (
             <>
+              {isTrauma ? (
+                <EtiologieTab title="HOTT — Causes réversibles traumatiques" causes={CAUSES_HOTT}
+                  suspected={suspectedAd}
+                  onToggle={(id, label) => {
+                    if (suspectedAd.includes(id)) {
+                      setSuspectedAd(suspectedAd.filter(x => x !== id));
+                    } else {
+                      setSuspectedAd([...suspectedAd, id]);
+                      addEvent("etio", `Cause suspectée : ${label}`, "🔍");
+                    }
+                  }}
+                  P={P} mono={mono} sans={sans} />
+              ) : (
+              <>
               <EtiologieTab title="5H — Causes métaboliques" causes={CAUSES_5H}
                 suspected={suspectedAd}
                 onToggle={(id, label) => {
@@ -5507,13 +5965,24 @@ export default function App() {
                   }
                 }}
                 P={P} mono={mono} sans={sans} />
+              </>
+              )}
             </>
           )}
 
           {/* ── Contenu Thérapeutiques spécifiques ── */}
           {mainTab === "ther" && (
-            <TherapeutiquesTab list={THERAPEUTIQUES_ADULTE} addEvent={addEvent}
+            <TherapeutiquesTab list={isTrauma ? THERAPEUTIQUES_TRAUMA : THERAPEUTIQUES_ADULTE} addEvent={addEvent}
               localMat={null} onOpenEcmo={() => setModalEcmo(true)} onOpenDdac={() => setModalDdac(true)}
+              onOpenModal={(id) => {
+                if (id === "fast_trauma") setModalFastTrauma(true);
+                else if (id === "thoraco_d") setModalThoraco("d");
+                else if (id === "thoraco_g") setModalThoraco("g");
+                else if (id === "hemocue") setModalHemocue(true);
+                else if (id === "transfusion") setModalTransfu(true);
+                else if (id === "exacyl") setModalExacyl(true);
+                else if (id === "hemo_ext") setModalHemoExt(true);
+              }}
               P={P} mono={mono} sans={sans} />
           )}
 
@@ -5763,7 +6232,7 @@ export default function App() {
       {/* PDF adulte — overlay */}
       {showPdf && (
         <PdfView patient={pat} noFlow={noFlowMin} lowFlow={lowFlowMin} acrTime={acrTime}
-          iot={iot} events={events} totalSec={sec} trans={trans} onClose={() => setShowPdf(false)} />
+          iot={iot} events={events} totalSec={sec} trans={trans} hemocue={hemocueHist} onClose={() => setShowPdf(false)} />
       )}
 
     </div>
