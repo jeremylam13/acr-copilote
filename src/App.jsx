@@ -510,50 +510,58 @@ function Collapsible({ icon, title, children, badge }) {
 function ActionBtn({ action, onClick }) {
   const [press, setPress] = useState(false);
   const [flash, setFlash] = useState(false);
-  const active = flash || press;
+  const vital = action.vital;
   return (
     <button
       onPointerDown={() => setPress(true)}
       onPointerUp={() => setPress(false)}
       onPointerLeave={() => setPress(false)}
-      onClick={() => { setFlash(true); setTimeout(() => setFlash(false), 600); onClick(); }}
-      style={{
-        background: active ? action.soft : P.surface,
-        border: `1.5px solid ${active ? action.accent : P.border}`,
-        borderRadius:14, padding:"14px 10px", cursor:"pointer", fontFamily:sans,
-        display:"flex", flexDirection:"column", alignItems:"center", gap:6,
-        transform: press ? "scale(0.95)" : "scale(1)",
-        transition:"all 0.12s",
-        boxShadow: flash ? `0 0 0 3px ${action.soft}` : "0 1px 4px rgba(0,0,0,0.05)",
-        minWidth:0, boxSizing:"border-box", width:"100%",
+      onClick={() => { setFlash(true); setTimeout(() => setFlash(false), 500); onClick(); }}
+      style={vital ? {
+        // ── Bouton VITAL : aplat saturé ──
+        background:`linear-gradient(135deg, ${action.accent}, ${action.textC})`,
+        border:"none", borderRadius:16, padding:"15px 14px", cursor:"pointer", fontFamily:sans,
+        display:"flex", flexDirection:"column", alignItems:"flex-start", gap:7,
+        transform: press ? "scale(0.96)" : "scale(1)",
+        transition:"transform 0.08s, filter 0.15s",
+        filter: flash ? "brightness(1.4)" : "brightness(1)",
+        boxShadow:`0 5px 16px ${action.accent}55`,
+        minWidth:0, boxSizing:"border-box", width:"100%", minHeight:90, color:"#fff",
+      } : {
+        // ── Bouton standard : carte + pastille colorée ──
+        background: P.surface,
+        border: `1.5px solid ${flash ? action.accent : P.border}`,
+        borderRadius:15, padding:"13px 12px", cursor:"pointer", fontFamily:sans,
+        display:"flex", alignItems:"center", gap:11, textAlign:"left",
+        transform: press ? "scale(0.96)" : "scale(1)",
+        transition:"transform 0.08s, border-color 0.15s, box-shadow 0.15s",
+        boxShadow: flash ? `0 0 0 3px ${action.soft}, 0 4px 14px ${action.accent}33` : "0 1px 4px rgba(0,0,0,0.05)",
+        minWidth:0, boxSizing:"border-box", width:"100%", minHeight:64,
       }}>
-      {/* Icône : SVG ou emoji */}
-      {action.svg
-        ? <div style={{
-            width:34, height:34,
-            color: action.accent,
-            opacity: active ? 1 : 0.6,
-            transform: active ? "scale(1.12)" : "scale(1)",
-            transition:"all 0.12s",
-          }}>
-            {action.svg}
-          </div>
-        : <span style={{
-            fontSize: active ? 28 : 24,
-            transition:"font-size 0.12s",
-            filter: active ? `drop-shadow(0 0 4px ${action.accent})` : "none",
-          }}>
-            {action.icon}
-          </span>
-      }
+      {/* Pastille d'icône */}
       <span style={{
-        fontSize:11, fontWeight: active ? 600 : 500,
-        color: active ? action.textC : P.textMid,
-        textAlign:"center", lineHeight:1.3,
-        transition:"color 0.12s",
+        width: vital ? 40 : 38, height: vital ? 40 : 38, borderRadius:11, flexShrink:0,
+        background: vital ? "rgba(255,255,255,0.22)" : `color-mix(in srgb, ${action.accent} 16%, transparent)`,
+        display:"flex", alignItems:"center", justifyContent:"center",
+        color: vital ? "#fff" : action.accent,
       }}>
-        {action.label}
+        {action.svg
+          ? <span style={{ width: vital ? 27 : 24, height: vital ? 27 : 24, display:"flex" }}>{action.svg}</span>
+          : <span style={{ fontSize: vital ? 22 : 20 }}>{action.icon}</span>}
       </span>
+      <div style={{ display:"flex", flexDirection:"column", gap:1, minWidth:0 }}>
+        <span style={{
+          fontFamily:sans, fontSize: vital ? 16 : 13.5, fontWeight: vital ? 800 : 700,
+          color: vital ? "#fff" : P.text, lineHeight:1.1, letterSpacing:"0.005em",
+        }}>
+          {action.label}
+        </span>
+        {vital && action.dose && (
+          <span style={{ fontFamily:mono, fontSize:11, fontWeight:700, color:"#fff", opacity:0.92 }}>
+            {action.dose}
+          </span>
+        )}
+      </div>
     </button>
   );
 }
@@ -2482,12 +2490,17 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
           )}
         </div>
 
-        {/* Chronomètre */}
+        {/* Chronomètre — style moniteur */}
         <div style={{textAlign:"center",marginBottom:12}}>
-          <p style={{margin:"0 0 2px",fontSize:10,color:P.textSoft,letterSpacing:"0.1em",
-            textTransform:"uppercase",fontFamily:mono}}>Début RCP médicalisé</p>
-          <span style={{fontSize:58,fontWeight:300,letterSpacing:"-0.03em",
-            color:running?P.text:P.textSoft,fontFamily:mono,lineHeight:1}}>{fmtSec(sec)}</span>
+          <p style={{margin:"0 0 2px",fontSize:9.5,color:P.textSoft,letterSpacing:"0.14em",
+            textTransform:"uppercase",fontFamily:mono,fontWeight:700,
+            display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+            {running && <span style={{width:7,height:7,borderRadius:"50%",background:P.rose,
+              display:"inline-block",animation:"pulse 1.4s infinite"}} />}
+            Début RCP médicalisé</p>
+          <span style={{fontSize:60,fontWeight:800,letterSpacing:"-0.04em",
+            color:running?P.text:P.textSoft,fontFamily:mono,lineHeight:0.95,
+            fontVariantNumeric:"tabular-nums"}}>{fmtSec(sec)}</span>
         </div>
 
         {/* Minuteur Adrénaline pédiatrique */}
@@ -2723,22 +2736,22 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
         {/* ── Contenu Actions (grille pédiatrique) ── */}
         {mainTabPed === "actions" && (
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:10}}>
+          <ActionBtn action={{label:"Adrénaline",dose:`${localMat?.adrenalineMg||""} mg`,vital:true,svg:ICONS.adr,accent:P.rose,soft:P.roseSoft,textC:P.roseText}}
+            onClick={()=>{ addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }}/>
+          <ActionBtn action={{label:"Défibrillation",dose:"4 J/kg",vital:true,svg:ICONS.choc,accent:P.blue,soft:P.blueSoft,textC:P.blueText}}
+            onClick={()=>setModalChocPed(true)}/>
           <ActionBtn action={{label:"Analyse de rythme",svg:ICONS.rythme,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
             onClick={()=>setModalRythme(true)}/>
           <ActionBtn action={{label:"Voie d'abord",svg:ICONS.vvp,accent:P.green,soft:P.greenSoft,textC:P.greenText}}
             onClick={()=>setModalVvpPed(true)}/>
-          <ActionBtn action={{label:adrLabel,svg:ICONS.adr,accent:P.rose,soft:P.roseSoft,textC:P.roseText}}
-            onClick={()=>{ addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }}/>
-          <ActionBtn action={{label:"Défibrillation",svg:ICONS.choc,accent:P.blue,soft:P.blueSoft,textC:P.blueText}}
-            onClick={()=>setModalChocPed(true)}/>
           <ActionBtn action={{label:amioLabel,svg:ICONS.amio,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
             onClick={()=>addEvent("cord",`Amiodarone ${localMat?.amio||""}mg IV/IO (5mg/kg)`,"💊")}/>
+          <ActionBtn action={{label:"Intubation IOT",svg:ICONS.iot,accent:P.violet,soft:P.violetSoft,textC:P.violetText}}
+            onClick={()=>setModalIotPed(true)}/>
           <ActionBtn action={{label:"Planche à masser",svg:ICONS.planche,accent:P.teal,soft:P.tealSoft,textC:P.tealText}}
             onClick={()=>addEvent("planche","Planche à masser mise en place","🦺")}/>
           <ActionBtn action={{label:"Fast-écho",svg:ICONS.fast,accent:P.blue,soft:P.blueSoft,textC:P.blueText}}
             onClick={()=>setModalFastPed(true)}/>
-          <ActionBtn action={{label:"Intubation IOT",svg:ICONS.iot,accent:P.violet,soft:P.violetSoft,textC:P.violetText}}
-            onClick={()=>setModalIotPed(true)}/>
           <ActionBtn action={{label:"Soins post-RACS",icon:"🫀",accent:P.green,soft:P.greenSoft,textC:P.greenText}}
             onClick={()=>setModalRacsPed(true)}/>
           <ActionBtn action={{label:"Constat de décès",svg:ICONS.deces,accent:P.slate,soft:P.slateSoft,textC:P.slateText}}
@@ -4190,7 +4203,7 @@ export default function App() {
   const isTrauma = module === "traumatique";
 
   // Thème jour/nuit — choisi par le médecin, persisté
-  const [theme, setTheme] = useLocalState("acr_theme", "night");
+  const [theme, setTheme] = useLocalState("acr_theme", "day");
   useEffect(() => {
     document.body.classList.remove("acr-night", "acr-day");
     document.body.classList.add(theme === "day" ? "acr-day" : "acr-night");
@@ -5741,12 +5754,18 @@ export default function App() {
           <ThemeToggle theme={theme} setTheme={setTheme} compact />
         </div>
 
-        {/* Grand timer */}
+        {/* Grand timer — style moniteur */}
         <div style={{ textAlign:"center", marginBottom:14 }}>
-          <p style={{ margin:"0 0 2px", fontSize:10, color:P.textSoft, letterSpacing:"0.1em",
-            textTransform:"uppercase", fontFamily:mono }}>Début RCP médicalisé</p>
-          <span style={{ fontSize:58, fontWeight:300, letterSpacing:"-0.03em",
-            color: running ? P.text : P.textSoft, fontFamily:mono, lineHeight:1 }}>
+          <p style={{ margin:"0 0 2px", fontSize:9.5, color:P.textSoft, letterSpacing:"0.14em",
+            textTransform:"uppercase", fontFamily:mono, fontWeight:700,
+            display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+            {running && <span style={{ width:7, height:7, borderRadius:"50%", background:P.rose,
+              display:"inline-block", animation:"pulse 1.4s infinite" }} />}
+            Début RCP médicalisé
+          </p>
+          <span style={{ fontSize:60, fontWeight:800, letterSpacing:"-0.04em",
+            color: running ? P.text : P.textSoft, fontFamily:mono, lineHeight:0.95,
+            fontVariantNumeric:"tabular-nums" }}>
             {fmtSec(sec)}
           </span>
         </div>
@@ -5965,6 +5984,14 @@ export default function App() {
           {/* ── Contenu Actions (grille existante) ── */}
           {mainTab === "actions" && (
           <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
+            {/* Gestes rythmés — vitaux */}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <ActionBtn action={{ label:"Adrénaline", dose:"1 mg IV/IO", vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText }}
+                onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
+              <ActionBtn action={{ label:"Défibrillation", dose:"4 J/kg", vital:true, svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
+                onClick={() => setModalChoc(true)} />
+            </div>
+            {/* Voies & gestes */}
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                 onClick={() => setModalRythme(true)} />
@@ -5972,14 +5999,8 @@ export default function App() {
                 onClick={() => setModalVvp(true)} />
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-              <ActionBtn action={{ label:"Adrénaline 1 mg", svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText }}
-                onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
               <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                 onClick={() => setModalCord(true)} />
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-              <ActionBtn action={{ label:"Défibrillation", svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
-                onClick={() => setModalChoc(true)} />
               <ActionBtn action={{ label:"Intubation IOT", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
                 onClick={() => setModalIot(true)} />
             </div>
