@@ -2,32 +2,61 @@ import { useState, useEffect, useRef } from "react";
 
 const fontLink = document.createElement("link");
 fontLink.rel = "stylesheet";
-fontLink.href = "https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap";
+fontLink.href = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700;800&family=Archivo:wght@700;800;900&display=swap";
 document.head.appendChild(fontLink);
 
 const styleSheet = document.createElement("style");
 styleSheet.textContent = `
+  /* ===== THÈME NUIT (urgentiste, défaut) ===== */
+  :root, .acr-night {
+    --acr-bg:#070A10; --acr-surface:#121925; --acr-surfaceAlt:#1A2331;
+    --acr-border:#28313F; --acr-borderSoft:#1E2735;
+    --acr-text:#F4F8FE; --acr-textMid:#AAB8CA; --acr-textSoft:#8595AB;
+    --acr-blue:#3B82F6; --acr-blueSoft:#15233C; --acr-blueText:#7DB0FF;
+    --acr-rose:#FF3B47; --acr-roseSoft:#2C1418; --acr-roseText:#FF8A91;
+    --acr-amber:#FFB020; --acr-amberSoft:#2A2110; --acr-amberText:#FFC966;
+    --acr-green:#22D67B; --acr-greenSoft:#0F2A1C; --acr-greenText:#62E3A2;
+    --acr-violet:#9D6BFF; --acr-violetSoft:#1F1733; --acr-violetText:#C4A8FF;
+    --acr-slate:#7689A0; --acr-slateSoft:#1A2330; --acr-slateText:#AFBDD0;
+    --acr-teal:#19B8A6; --acr-tealSoft:#0E2624; --acr-tealText:#5FD8CC;
+  }
+  /* ===== THÈME JOUR (haut contraste plein soleil) ===== */
+  .acr-day {
+    --acr-bg:#E9EEF5; --acr-surface:#FFFFFF; --acr-surfaceAlt:#F1F5FA;
+    --acr-border:#C5CFDD; --acr-borderSoft:#E2E8F1;
+    --acr-text:#0A111B; --acr-textMid:#46566F; --acr-textSoft:#76869E;
+    --acr-blue:#1361DE; --acr-blueSoft:#E7F0FD; --acr-blueText:#0B43A0;
+    --acr-rose:#DE1019; --acr-roseSoft:#FDEAEB; --acr-roseText:#A50710;
+    --acr-amber:#B67100; --acr-amberSoft:#FBF3E2; --acr-amberText:#8A5500;
+    --acr-green:#0C9A54; --acr-greenSoft:#E6F7EE; --acr-greenText:#06713C;
+    --acr-violet:#6433C9; --acr-violetSoft:#F0EBFB; --acr-violetText:#491F9C;
+    --acr-slate:#54657C; --acr-slateSoft:#EEF2F7; --acr-slateText:#3A4858;
+    --acr-teal:#0C7B70; --acr-tealSoft:#E4F4F2; --acr-tealText:#085A52;
+  }
+  body { background:var(--acr-bg); transition:background .2s; }
   @keyframes pulse {
     0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.02); box-shadow: 0 8px 28px rgba(217,107,107,0.7); }
+    50% { transform: scale(1.02); box-shadow: 0 8px 28px rgba(255,59,71,0.6); }
   }
 `;
 document.head.appendChild(styleSheet);
+// thème par défaut (nuit) appliqué tôt pour éviter le flash blanc
+try { if (!document.body.className.includes("acr-")) document.body.classList.add("acr-night"); } catch(e){}
 
 const P = {
-  bg:"#F2F5F9", surface:"#FFFFFF", surfaceAlt:"#EEF2F7",
-  border:"#DDE3ED", borderSoft:"#E8ECF4",
-  text:"#1C2B3A", textMid:"#5A7080", textSoft:"#92A4B5",
-  blue:"#3B82C4", blueSoft:"#EBF2FA", blueText:"#2563A8",
-  rose:"#D96B6B", roseSoft:"#FAEEEE", roseText:"#B94A4A",
-  amber:"#C89435", amberSoft:"#FBF5E8", amberText:"#9A6E1A",
-  green:"#3EA876", greenSoft:"#EAF7F1", greenText:"#2A7D57",
-  violet:"#7B6FB0", violetSoft:"#F0EEF9", violetText:"#5A4E8A",
-  slate:"#7A90A4", slateSoft:"#EEF2F7", slateText:"#4A6070",
-  teal:"#2A8F8F", tealSoft:"#E8F5F5", tealText:"#1A6A6A",
+  bg:"var(--acr-bg)", surface:"var(--acr-surface)", surfaceAlt:"var(--acr-surfaceAlt)",
+  border:"var(--acr-border)", borderSoft:"var(--acr-borderSoft)",
+  text:"var(--acr-text)", textMid:"var(--acr-textMid)", textSoft:"var(--acr-textSoft)",
+  blue:"var(--acr-blue)", blueSoft:"var(--acr-blueSoft)", blueText:"var(--acr-blueText)",
+  rose:"var(--acr-rose)", roseSoft:"var(--acr-roseSoft)", roseText:"var(--acr-roseText)",
+  amber:"var(--acr-amber)", amberSoft:"var(--acr-amberSoft)", amberText:"var(--acr-amberText)",
+  green:"var(--acr-green)", greenSoft:"var(--acr-greenSoft)", greenText:"var(--acr-greenText)",
+  violet:"var(--acr-violet)", violetSoft:"var(--acr-violetSoft)", violetText:"var(--acr-violetText)",
+  slate:"var(--acr-slate)", slateSoft:"var(--acr-slateSoft)", slateText:"var(--acr-slateText)",
+  teal:"var(--acr-teal)", tealSoft:"var(--acr-tealSoft)", tealText:"var(--acr-tealText)",
 };
-const sans = "'DM Sans', system-ui, sans-serif";
-const mono = "'DM Mono', monospace";
+const sans = "'Inter', system-ui, sans-serif";
+const mono = "'JetBrains Mono', ui-monospace, monospace";
 
 const getNow = () => new Date().toTimeString().slice(0, 5);
 const fmtSec = s => `${Math.floor(s/60).toString().padStart(2,"0")}:${(s%60).toString().padStart(2,"0")}`;
@@ -179,7 +208,7 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
         pointerEvents:"none",
       }}>
         <div style={{
-          background:P.rose+"15", border:`1px solid ${P.rose}44`, borderRadius:99,
+          background:P.rose+"15", border:`1px solid color-mix(in srgb, ${P.rose} 27%, transparent)`, borderRadius:99,
           padding:"4px 10px", display:"flex", alignItems:"center", gap:6,
           pointerEvents:"auto", boxShadow:"0 1px 4px rgba(0,0,0,0.06)",
         }}>
@@ -216,7 +245,7 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
       animation:"pulse 1.2s ease-in-out infinite",
       background:`linear-gradient(135deg, ${P.rose}, #C53030)`,
       borderRadius:14, padding:"12px 16px", margin:"0 0 10px",
-      boxShadow:`0 6px 20px ${P.rose}55`,
+      boxShadow:`0 6px 20px color-mix(in srgb, ${P.rose} 33%, transparent)`,
       display:"flex", alignItems:"center", gap:10,
     }}>
       <span style={{ fontSize:28 }}>💉</span>
@@ -1262,7 +1291,7 @@ function RemplissageSection({ racs, setRacs }) {
         style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
           border:"none", borderRadius:9, padding:"10px", color:"#fff",
           fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:sans,
-          boxShadow:`0 3px 10px ${P.blue}33`, marginBottom: (racs.remplissages||[]).length>0 ? 10 : 0 }}>
+          boxShadow:`0 3px 10px color-mix(in srgb, ${P.blue} 20%, transparent)`, marginBottom: (racs.remplissages||[]).length>0 ? 10 : 0 }}>
         + Ajouter {vol} mL {sol !== "Autre" ? sol : (autre || "Autre")}
       </button>
 
@@ -1280,7 +1309,7 @@ function RemplissageSection({ racs, setRacs }) {
           ))}
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
             marginTop:8, padding:"7px 10px",
-            background:P.blueSoft, borderRadius:8, border:`1px solid ${P.blue}44` }}>
+            background:P.blueSoft, borderRadius:8, border:`1px solid color-mix(in srgb, ${P.blue} 27%, transparent)` }}>
             <span style={{ fontSize:11, color:P.textSoft }}>Total remplissage</span>
             <span style={{ fontSize:17, fontWeight:700, color:P.blueText, fontFamily:mono }}>{total} mL</span>
           </div>
@@ -1480,7 +1509,7 @@ function RemplissageVasculairePed({ racs, setRacs, localMat }) {
         style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
           border:"none", borderRadius:9, padding:"10px", color:"#fff",
           fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:sans,
-          boxShadow:`0 3px 10px ${P.blue}33`,
+          boxShadow:`0 3px 10px color-mix(in srgb, ${P.blue} 20%, transparent)`,
           marginBottom: (racs.remplissagesPed||[]).length>0 ? 10 : 0 }}>
         + Ajouter {vol} mL {sol !== "Autre" ? sol : (autre || "Autre")}
       </button>
@@ -1498,7 +1527,7 @@ function RemplissageVasculairePed({ racs, setRacs, localMat }) {
           ))}
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
             marginTop:8, padding:"7px 10px",
-            background:P.blueSoft, borderRadius:8, border:`1px solid ${P.blue}44` }}>
+            background:P.blueSoft, borderRadius:8, border:`1px solid color-mix(in srgb, ${P.blue} 27%, transparent)` }}>
             <span style={{ fontSize:11, color:P.textSoft }}>Total remplissage</span>
             <span style={{ fontSize:17, fontWeight:700, color:P.blueText, fontFamily:mono }}>{total} mL</span>
           </div>
@@ -1510,7 +1539,7 @@ function RemplissageVasculairePed({ racs, setRacs, localMat }) {
 
 // ── RCP PÉDIATRIQUE ───────────────────────────────────────────────────────────
 
-function RcpPediatrique({ onBack, acrTime, poids, mat }) {
+function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
   const [running,      setRunning]      = useState(false);
   const [secStored,    setSecStored]    = useLocalState("acr_ped_sec", 0);
   const [sec,          setSec]          = useTimer(running);
@@ -1756,7 +1785,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
             <p style={{margin:0,fontSize:12,color:P.textSoft}}>Position antéro-postérieure</p>
           </button>
           <button onClick={()=>{addEvent("doublechoc","Double défibrillation délivrée","⚡⚡");setModalChocPed(false);}}
-            style={{width:"100%",background:P.blueSoft,border:`1.5px solid ${P.blue}44`,
+            style={{width:"100%",background:P.blueSoft,border:`1.5px solid color-mix(in srgb, ${P.blue} 27%, transparent)`,
               borderRadius:12,padding:"12px 16px",cursor:"pointer",fontFamily:sans,textAlign:"left",
               display:"flex",alignItems:"center",gap:12}}>
             <div style={{width:30,height:30,color:P.blue,flexShrink:0}}>{ICONS.doublechoc}</div>
@@ -1784,7 +1813,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
       {modalIotPed && (
         <Modal title="Intubation IOT" icon={<div style={{width:24,height:24,color:P.violet}}>{ICONS.iot}</div>}
           soft={P.violetSoft} onClose={() => setModalIotPed(false)}>
-          <div style={{background:P.amberSoft,border:`1px solid ${P.amber}44`,borderRadius:10,padding:"10px 14px",marginBottom:14}}>
+          <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,borderRadius:10,padding:"10px 14px",marginBottom:14}}>
             <p style={{margin:"0 0 4px",fontSize:11,fontWeight:600,color:P.amberText}}>Tailles recommandées</p>
             <p style={{margin:0,fontSize:12,color:P.amberText}}>
               Sonde : {localMat?.sondeAvecBallonnet||"—"} mm (avec ballonnet) · {localMat?.sondeSansBallonnet||"—"} mm (sans)<br/>
@@ -1849,7 +1878,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
           }} style={{width:"100%",background:`linear-gradient(135deg,${P.violet},#5A4E8A)`,
             border:"none",borderRadius:12,color:"#fff",fontSize:14,fontWeight:600,
             padding:"14px",cursor:"pointer",fontFamily:sans,
-            boxShadow:`0 6px 18px ${P.violet}33`}}>
+            boxShadow:`0 6px 18px color-mix(in srgb, ${P.violet} 20%, transparent)`}}>
             ✓ Valider l'intubation</button>
         </Modal>
       )}
@@ -1947,7 +1976,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                 <div style={{width:"100%"}}>
                   {/* Encadré normes ventilation */}
                   {localMat && (
-                    <div style={{background:P.amberSoft,border:`1px solid ${P.amber}44`,
+                    <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,
                       borderRadius:10,padding:"10px 12px",marginBottom:12}}>
                       <p style={{margin:"0 0 6px",fontSize:9,fontWeight:600,color:P.amberText,
                         textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
@@ -2069,14 +2098,14 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                 <div style={{width:"100%"}}>
                   {/* Encadré rappel doses calculées */}
                   {localMat && (
-                    <div style={{background:P.amberSoft,border:`1px solid ${P.amber}44`,
+                    <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,
                       borderRadius:10,padding:"10px 12px",marginBottom:12}}>
                       <p style={{margin:"0 0 6px",fontSize:9,fontWeight:600,color:P.amberText,
                         textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
                         Doses sédation — {localPoids} kg · {localRow.age}
                       </p>
                       {/* Midazolam */}
-                      <div style={{marginBottom:8,paddingBottom:8,borderBottom:`1px solid ${P.amber}33`}}>
+                      <div style={{marginBottom:8,paddingBottom:8,borderBottom:`1px solid color-mix(in srgb, ${P.amber} 20%, transparent)`}}>
                         <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.amberText}}>
                           Midazolam — 50 mg / 50 mL (1 mg/mL)
                         </p>
@@ -2183,7 +2212,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
 
                   {/* NIMBEX dans sédation */}
                   {localMat && (
-                    <div style={{background:P.violetSoft,border:`1px solid ${P.violet}44`,borderRadius:10,padding:"10px 12px"}}>
+                    <div style={{background:P.violetSoft,border:`1px solid color-mix(in srgb, ${P.violet} 27%, transparent)`,borderRadius:10,padding:"10px 12px"}}>
                       <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.violetText}}>
                         Nimbex <span style={{fontWeight:400,fontSize:9,color:P.violet,fontStyle:"italic"}}>Cisatracurium — Curare non dépolarisant</span>
                       </p>
@@ -2228,7 +2257,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
                 <div style={{width:"100%"}}>
                   {/* Encadré normes */}
                   {localMat && (
-                    <div style={{background:P.amberSoft,border:`1px solid ${P.amber}44`,borderRadius:10,padding:"10px 12px",marginBottom:12}}>
+                    <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,borderRadius:10,padding:"10px 12px",marginBottom:12}}>
                       <p style={{margin:"0 0 6px",fontSize:9,fontWeight:600,color:P.amberText,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
                         Objectifs — {localPoids} kg · {localRow.age}
                       </p>
@@ -2275,7 +2304,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
 
                   {/* ADRÉNALINE IVSE — paliers cliquables + vitesse éditable */}
                   {localMat && (
-                    <div style={{background:P.roseSoft,border:`1px solid ${P.rose}44`,borderRadius:10,padding:"10px 12px",marginBottom:10}}>
+                    <div style={{background:P.roseSoft,border:`1px solid color-mix(in srgb, ${P.rose} 27%, transparent)`,borderRadius:10,padding:"10px 12px",marginBottom:10}}>
                       <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.roseText}}>Adrénaline IVSE</p>
                       <p style={{margin:"0 0 8px",fontSize:9,color:P.roseText,fontStyle:"italic"}}>
                         {localPoids<=10?"1 mg/50 mL → 0,02 mg/mL":"5 mg/50 mL → 0,1 mg/mL"} · débuter 0,1–0,2 μg/kg/min ↑ par palier 0,1
@@ -2395,8 +2424,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
               </div>
             </div>
           </div>
-          <span style={{fontSize:11,background:P.amberSoft,color:P.amberText,
-            padding:"3px 10px",borderRadius:20,fontFamily:mono}}>Pédiatrique</span>
+          <ThemeToggle theme={theme} setTheme={setTheme} compact />
         </div>
 
         {/* Sélecteur poids — compact éditable */}
@@ -2594,7 +2622,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
 
         {/* Rappel doses + matériel */}
         {localMat && (
-          <div style={{background:P.amberSoft,border:`1px solid ${P.amber}44`,borderRadius:12,
+          <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,borderRadius:12,
             padding:"10px 14px",marginBottom:10}}>
             <p style={{margin:"0 0 6px",fontSize:10,fontWeight:600,color:P.amberText,
               textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Doses · Matériel — {localPoids} kg</p>
@@ -2974,7 +3002,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
           </div>
 
           {/* Chocs et rythme */}
-          <div style={{background:P.blueSoft,border:`1px solid ${P.blue}44`,
+          <div style={{background:P.blueSoft,border:`1px solid color-mix(in srgb, ${P.blue} 27%, transparent)`,
             borderRadius:10,padding:"10px 12px",marginBottom:12}}>
             <p style={{margin:"0 0 8px",fontSize:10,fontWeight:600,color:P.blueText,
               textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
@@ -3045,7 +3073,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
           }} style={{width:"100%",background:`linear-gradient(135deg,${P.amber},#D97706)`,
             border:"none",borderRadius:12,color:"#fff",fontSize:14,fontWeight:600,
             padding:"14px",cursor:"pointer",fontFamily:sans,marginTop:14,
-            boxShadow:`0 6px 18px ${P.amber}33`}}>
+            boxShadow:`0 6px 18px color-mix(in srgb, ${P.amber} 20%, transparent)`}}>
             ✓ Enregistrer la transmission
           </button>
         </Modal>
@@ -3156,7 +3184,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat }) {
   );
 }
 
-function ModulePediatrique({ onBack }) {
+function ModulePediatrique({ onBack, theme, setTheme }) {
   const [acrTime,  setAcrTime]  = useState("");
   const [mode,     setMode]     = useState("poids"); // "poids" | "age"
   const [idx,      setIdx]      = useState(0);
@@ -3170,7 +3198,7 @@ function ModulePediatrique({ onBack }) {
   const sub   = mode === "poids" ? `≈ ${row.age}` : `≈ ${poids} kg`;
 
   if (showRcp) return (
-    <RcpPediatrique onBack={() => setShowRcp(false)} acrTime={acrTime} poids={poids} mat={mat} />
+    <RcpPediatrique onBack={() => setShowRcp(false)} acrTime={acrTime} poids={poids} mat={mat} theme={theme} setTheme={setTheme} />
   );
 
   const MatRow = ({ label, value, color }) => (
@@ -3198,6 +3226,7 @@ function ModulePediatrique({ onBack }) {
           <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>ACR Pédiatrique</p>
           <p style={{ margin:0, fontSize:10, color:P.textSoft }}>Nourrisson · Enfant · Adolescent</p>
         </div>
+        <div style={{ marginLeft:"auto" }}><ThemeToggle theme={theme} setTheme={setTheme} compact /></div>
       </div>
 
       <div style={{ padding:"12px 12px 0", boxSizing:"border-box", width:"100%" }}>
@@ -3376,7 +3405,7 @@ function ModulePediatrique({ onBack }) {
 
             {/* Adrénaline */}
             <div style={{ background:P.roseSoft, borderRadius:8, padding:"8px 12px", marginBottom:8,
-              border:`1px solid ${P.rose}44` }}>
+              border:`1px solid color-mix(in srgb, ${P.rose} 27%, transparent)` }}>
               <p style={{ margin:"0 0 4px", fontSize:9, color:P.roseText, textTransform:"uppercase",
                 letterSpacing:"0.07em", fontFamily:mono }}>Adrénaline — 10 μg/kg/4 min (0,1 mg/mL)</p>
               <div style={{ display:"flex", gap:16 }}>
@@ -3393,7 +3422,7 @@ function ModulePediatrique({ onBack }) {
 
             {/* Amiodarone */}
             <div style={{ background:P.amberSoft, borderRadius:8, padding:"8px 12px", marginBottom:8,
-              border:`1px solid ${P.amber}44` }}>
+              border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)` }}>
               <p style={{ margin:"0 0 4px", fontSize:9, color:P.amberText, textTransform:"uppercase",
                 letterSpacing:"0.07em", fontFamily:mono }}>Amiodarone — 5 mg/kg (PURE 50 mg/mL)</p>
               <div style={{ display:"flex", gap:16 }}>
@@ -3410,7 +3439,7 @@ function ModulePediatrique({ onBack }) {
 
             {/* Défibrillation — 3 niveaux */}
             <div style={{ background:P.blueSoft, borderRadius:8, padding:"8px 12px",
-              border:`1px solid ${P.blue}44` }}>
+              border:`1px solid color-mix(in srgb, ${P.blue} 27%, transparent)` }}>
               <p style={{ margin:"0 0 6px", fontSize:9, color:P.blueText, textTransform:"uppercase",
                 letterSpacing:"0.07em", fontFamily:mono }}>CEE — Patchs antéro-postérieurs pédiatriques</p>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
@@ -3434,7 +3463,7 @@ function ModulePediatrique({ onBack }) {
           </div>
 
           {/* Compressions */}
-          <div style={{ background:P.amberSoft, border:`1px solid ${P.amber}44`, borderRadius:12,
+          <div style={{ background:P.amberSoft, border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`, borderRadius:12,
             padding:"10px 14px", marginBottom:12 }}>
             <p style={{ margin:"0 0 4px", fontSize:11, fontWeight:600, color:P.amberText }}>🫀 Compressions</p>
             <p style={{ margin:0, fontSize:11, color:P.amberText, lineHeight:1.6 }}>
@@ -3711,7 +3740,7 @@ function EcmoModal({ open, onClose, onConfirm, P, mono, sans, Modal, Lbl, TArea,
           border:"none", borderRadius:11, color:"#fff",
           fontSize:12, fontWeight:600, padding:"11px",
           cursor:"pointer", fontFamily:sans,
-          boxShadow:`0 4px 12px ${P.violet}33`
+          boxShadow:`0 4px 12px color-mix(in srgb, ${P.violet} 20%, transparent)`
         }}>
           ECMO envisagée
         </button>
@@ -3821,7 +3850,7 @@ function DdacModal({ open, onClose, onConfirm, P, mono, sans, Modal, Lbl, TArea 
           onClose();
         }} style={{ background:`linear-gradient(135deg,${P.teal},#1A6A6A)`,
           border:"none", borderRadius:11, color:"#fff", fontSize:12, fontWeight:600,
-          padding:"11px", cursor:"pointer", fontFamily:sans, boxShadow:`0 4px 12px ${P.teal}33` }}>
+          padding:"11px", cursor:"pointer", fontFamily:sans, boxShadow:`0 4px 12px color-mix(in srgb, ${P.teal} 20%, transparent)` }}>
           Don envisagé
         </button>
       </div>
@@ -3973,6 +4002,35 @@ const THERAPEUTIQUES_TRAUMA = [
     logDose:"REBOA envisagé", color:"violet", geste:true },
 ];
 
+// ── BASCULE JOUR / NUIT ────────────────────────────────────────────────────────
+function ThemeToggle({ theme, setTheme, compact = false }) {
+  const opts = [
+    { id:"night", label:"Nuit", icon:"🌙" },
+    { id:"day",   label:"Jour", icon:"☀️" },
+  ];
+  return (
+    <div style={{ display:"inline-flex", background:P.surfaceAlt, border:`1px solid ${P.border}`,
+      borderRadius:10, padding:3, gap:3 }}>
+      {opts.map(o => {
+        const on = theme === o.id;
+        return (
+          <button key={o.id} onClick={() => setTheme(o.id)}
+            style={{ border:"none", cursor:"pointer", fontFamily:sans, fontWeight:700,
+              fontSize:compact ? 10 : 11, letterSpacing:"0.02em",
+              padding: compact ? "5px 9px" : "6px 12px", borderRadius:7,
+              background: on ? (o.id==="night" ? "#1F2A3A" : "#FFFFFF") : "transparent",
+              color: on ? (o.id==="night" ? "#FFFFFF" : "#0A111B") : P.textSoft,
+              boxShadow: on ? "0 1px 4px rgba(0,0,0,0.25)" : "none",
+              display:"flex", alignItems:"center", gap:5, transition:"all .15s" }}>
+            <span style={{ fontSize: compact ? 11 : 12 }}>{o.icon}</span>
+            {!compact && o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── APP ────────────────────────────────────────────────────────────────────────
 export default function App() {
   const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"" });
@@ -4042,6 +4100,7 @@ export default function App() {
   const [modalChoc,   setModalChoc]   = useState(false);
   const [modalEcg,    setModalEcg]    = useState(false);
   const [modalRegul,  setModalRegul]  = useState(false);
+  const [modalReset,  setModalReset]  = useState(false);
   const [regulText,   setRegulText]   = useState("");
   const [regulDest,   setRegulDest]   = useState("");
   const [ecgText,     setEcgText]     = useState("");
@@ -4130,6 +4189,13 @@ export default function App() {
   const [module, setModule] = useState(null); // null | "adulte_extra" | "adulte_intra" | "pediatrique" | "traumatique"
   const isTrauma = module === "traumatique";
 
+  // Thème jour/nuit — choisi par le médecin, persisté
+  const [theme, setTheme] = useLocalState("acr_theme", "night");
+  useEffect(() => {
+    document.body.classList.remove("acr-night", "acr-day");
+    document.body.classList.add(theme === "day" ? "acr-day" : "acr-night");
+  }, [theme]);
+
   // États spécifiques trauma (FAST, thoracostomies, hemocue, transfusion)
   const [modalFastTrauma, setModalFastTrauma] = useState(false);
   const [fastTr, setFastTr] = useLocalState("acr_adulte_fastTr", { morrison:"", kohler:"", douglas:"", pleureD:"", pleureG:"", pericarde:"" });
@@ -4160,7 +4226,12 @@ export default function App() {
   if (!module) return (
     <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans,
       display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-      padding:"0 20px" }}>
+      padding:"0 20px", position:"relative" }}>
+
+      {/* Bascule Jour/Nuit en haut */}
+      <div style={{ position:"absolute", top:16, right:16 }}>
+        <ThemeToggle theme={theme} setTheme={setTheme} />
+      </div>
 
       {/* Logo */}
       <div style={{ textAlign:"center", marginBottom:44 }}>
@@ -4178,8 +4249,8 @@ export default function App() {
       {/* Bandeau Reprendre session */}
       {aSessionEnCours && (
         <div style={{ width:"100%", maxWidth:380, marginBottom:16,
-          background:P.amberSoft, border:`1.5px solid ${P.amber}66`, borderRadius:14,
-          padding:"12px 14px", boxShadow:`0 4px 14px ${P.amber}22` }}>
+          background:P.amberSoft, border:`1.5px solid color-mix(in srgb, ${P.amber} 40%, transparent)`, borderRadius:14,
+          padding:"12px 14px", boxShadow:`0 4px 14px color-mix(in srgb, ${P.amber} 13%, transparent)` }}>
           <p style={{ margin:"0 0 4px", fontSize:11, color:P.amberText, fontWeight:600,
             textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
             ⚠ Session non clôturée
@@ -4217,7 +4288,7 @@ export default function App() {
           display:"flex", alignItems:"center", gap:16,
           boxShadow:"0 2px 10px rgba(0,0,0,0.05)",
           transition:"all 0.12s" }}
-          onPointerEnter={e => { e.currentTarget.style.borderColor = P.rose; e.currentTarget.style.boxShadow = `0 4px 18px ${P.rose}22`; }}
+          onPointerEnter={e => { e.currentTarget.style.borderColor = P.rose; e.currentTarget.style.boxShadow = `0 4px 18px color-mix(in srgb, ${P.rose} 13%, transparent)`; }}
           onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.05)"; }}>
           <div style={{ width:48, height:48, borderRadius:14, background:P.roseSoft,
             display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🚑</div>
@@ -4252,7 +4323,7 @@ export default function App() {
           padding:"18px 20px", cursor:"pointer", fontFamily:sans, textAlign:"left",
           display:"flex", alignItems:"center", gap:16,
           boxShadow:"0 2px 10px rgba(0,0,0,0.05)", transition:"all 0.12s" }}
-          onPointerEnter={e => { e.currentTarget.style.borderColor = P.amber; e.currentTarget.style.boxShadow = `0 4px 18px ${P.amber}22`; }}
+          onPointerEnter={e => { e.currentTarget.style.borderColor = P.amber; e.currentTarget.style.boxShadow = `0 4px 18px color-mix(in srgb, ${P.amber} 13%, transparent)`; }}
           onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.05)"; }}>
           <div style={{ width:48, height:48, borderRadius:14, background:P.amberSoft,
             display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>👶</div>
@@ -4289,7 +4360,7 @@ export default function App() {
   );
 
   // Module pédiatrique
-  if (module === "pediatrique") return <ModulePediatrique onBack={() => setModule(null)} />;
+  if (module === "pediatrique") return <ModulePediatrique onBack={() => setModule(null)} theme={theme} setTheme={setTheme} />;
 
   // Modules non encore développés (intra-hospitalier uniquement)
   if (module && module !== "adulte_extra" && module !== "traumatique") return (
@@ -4415,7 +4486,7 @@ export default function App() {
             }} style={{ width:"100%", background:`linear-gradient(135deg, ${P.blue}, ${P.blueText})`,
               border:"none", borderRadius:12, color:"#fff", fontSize:15, fontWeight:600,
               padding:"14px", cursor:"pointer", fontFamily:sans,
-              boxShadow:`0 6px 18px ${P.blue}44` }}>
+              boxShadow:`0 6px 18px color-mix(in srgb, ${P.blue} 27%, transparent)` }}>
               ✓ Choc {joules} J délivré
             </button>
           </div>
@@ -4437,7 +4508,7 @@ export default function App() {
           <button onClick={() => {
             addEvent("doublechoc", "Double défibrillation délivrée", "⚡⚡");
             setModalChoc(false);
-          }} style={{ width:"100%", background:P.blueSoft, border:`1.5px solid ${P.blue}44`,
+          }} style={{ width:"100%", background:P.blueSoft, border:`1.5px solid color-mix(in srgb, ${P.blue} 27%, transparent)`,
             borderRadius:12, padding:"14px 16px", cursor:"pointer", fontFamily:sans, textAlign:"left",
             display:"flex", alignItems:"center", gap:12 }}>
             <div style={{ width:32, height:32, color:P.blue, flexShrink:0 }}>{ICONS.doublechoc}</div>
@@ -4607,7 +4678,7 @@ export default function App() {
             }} style={{ flex:2, background:`linear-gradient(135deg, ${P.teal}, #1A6A6A)`,
               border:"none", borderRadius:11, padding:"12px", color:"#fff",
               fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:sans,
-              boxShadow:`0 4px 14px ${P.teal}44` }}>
+              boxShadow:`0 4px 14px color-mix(in srgb, ${P.teal} 27%, transparent)` }}>
               ✓ Enregistrer l'ECG
             </button>
           </div>
@@ -4785,7 +4856,7 @@ export default function App() {
           }} style={{ width:"100%", background:`linear-gradient(135deg,${P.green},#2F7A4F)`,
             border:"none", borderRadius:12, color:"#fff", fontSize:15, fontWeight:700,
             padding:"15px", cursor:"pointer", fontFamily:sans, marginBottom:14,
-            boxShadow:`0 4px 14px ${P.green}44` }}>
+            boxShadow:`0 4px 14px color-mix(in srgb, ${P.green} 27%, transparent)` }}>
             ✓ FAST normale (rapide)
           </button>
 
@@ -4851,7 +4922,7 @@ export default function App() {
         <Modal title="Hemocue" icon="🩸" soft={P.violetSoft} onClose={() => { setModalHemocue(false); setHemocueVal(""); }}>
           {/* Historique + écart */}
           {hemocueHist.length > 0 && (
-            <div style={{ background:P.violetSoft, border:`1px solid ${P.violet}33`, borderRadius:10,
+            <div style={{ background:P.violetSoft, border:`1px solid color-mix(in srgb, ${P.violet} 20%, transparent)`, borderRadius:10,
               padding:"10px 12px", marginBottom:14 }}>
               <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:600, color:P.violetText,
                 textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Mesures précédentes</p>
@@ -4973,7 +5044,7 @@ export default function App() {
             style={{ width:"100%", background:`linear-gradient(135deg,${P.green},#2F7A4F)`,
               border:"none", borderRadius:12, color:"#fff", fontSize:15, fontWeight:700,
               padding:"15px", cursor:"pointer", fontFamily:sans, marginBottom:10,
-              boxShadow:`0 4px 14px ${P.green}44` }}>
+              boxShadow:`0 4px 14px color-mix(in srgb, ${P.green} 27%, transparent)` }}>
             1 g IVL sur 10 min<br/><span style={{fontSize:11,fontWeight:500,opacity:0.9}}>Dose de charge</span>
           </button>
           <button onClick={() => { addEvent("exacyl", "Exacyl 1 g IVSE sur 8 h", "💉"); setModalExacyl(false); }}
@@ -5120,7 +5191,7 @@ export default function App() {
           </div>
 
           {/* Chocs et rythme */}
-          <div style={{ background:P.blueSoft, border:`1px solid ${P.blue}44`,
+          <div style={{ background:P.blueSoft, border:`1px solid color-mix(in srgb, ${P.blue} 27%, transparent)`,
             borderRadius:10, padding:"10px 12px", marginBottom:12 }}>
             <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:600, color:P.blueText,
               textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
@@ -5194,7 +5265,7 @@ export default function App() {
           }} style={{ width:"100%", background:`linear-gradient(135deg,${P.amber},#D97706)`,
             border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:600,
             padding:"14px", cursor:"pointer", fontFamily:sans, marginTop:14,
-            boxShadow:`0 6px 18px ${P.amber}33` }}>
+            boxShadow:`0 6px 18px color-mix(in srgb, ${P.amber} 20%, transparent)` }}>
             ✓ Enregistrer la transmission
           </button>
         </Modal>
@@ -5218,7 +5289,7 @@ export default function App() {
           }} style={{ width:"100%", background:`linear-gradient(135deg,${P.teal},#1A6A6A)`,
             border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:600,
             padding:"14px", cursor:"pointer", fontFamily:sans, marginTop:14,
-            boxShadow:`0 6px 18px ${P.teal}33` }}>
+            boxShadow:`0 6px 18px color-mix(in srgb, ${P.teal} 20%, transparent)` }}>
             ✓ Ajouter à la chronologie
           </button>
         </Modal>
@@ -5667,6 +5738,7 @@ export default function App() {
               </div>
             </div>
           </div>
+          <ThemeToggle theme={theme} setTheme={setTheme} compact />
         </div>
 
         {/* Grand timer */}
@@ -6132,7 +6204,7 @@ export default function App() {
               boxShadow:"0 4px 12px rgba(59,130,196,0.25)" }}>
             📄 Compte-rendu
           </button>
-          <button onClick={reset}
+          <button onClick={() => setModalReset(true)}
             style={{ background:P.surface, border:`1.5px solid ${P.border}`,
               borderRadius:11, padding:"10px 6px", color:P.textSoft,
               fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:sans }}>
@@ -6141,6 +6213,41 @@ export default function App() {
         </div>
 
       </div>
+
+      {/* ── Modal confirmation Reset (double validation) ── */}
+      {modalReset && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(28,43,58,0.55)", zIndex:90,
+          display:"flex", alignItems:"center", justifyContent:"center", padding:20,
+          backdropFilter:"blur(2px)" }} onClick={() => setModalReset(false)}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:P.surface, borderRadius:18, padding:"22px 20px", maxWidth:340,
+              width:"100%", boxShadow:"0 20px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ textAlign:"center", marginBottom:14 }}>
+              <div style={{ width:52, height:52, borderRadius:16, background:P.roseSoft,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:26,
+                margin:"0 auto 12px" }}>⚠️</div>
+              <p style={{ margin:0, fontSize:16, fontWeight:700, color:P.text }}>Réinitialiser la session ?</p>
+              <p style={{ margin:"8px 0 0", fontSize:12.5, color:P.textSoft, lineHeight:1.5 }}>
+                Toutes les données de la réanimation en cours seront <b>définitivement effacées</b> :
+                chronologie, dossier patient, transmission, compte-rendu. Cette action est irréversible.
+              </p>
+            </div>
+            <button onClick={() => { reset(); setModalReset(false); }}
+              style={{ width:"100%", background:`linear-gradient(135deg,${P.rose},#B94A4A)`,
+                border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:700,
+                padding:"13px", cursor:"pointer", fontFamily:sans, marginBottom:9,
+                boxShadow:`0 4px 14px color-mix(in srgb, ${P.rose} 27%, transparent)` }}>
+              Oui, tout effacer
+            </button>
+            <button onClick={() => setModalReset(false)}
+              style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                borderRadius:12, color:P.textMid, fontSize:14, fontWeight:600,
+                padding:"13px", cursor:"pointer", fontFamily:sans }}>
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Modal Régulation ── */}
       {modalRegul && (
