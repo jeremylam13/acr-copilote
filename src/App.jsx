@@ -38,6 +38,12 @@ styleSheet.textContent = `
     0%, 100% { transform: scale(1); }
     50% { transform: scale(1.02); box-shadow: 0 8px 28px rgba(255,59,71,0.6); }
   }
+  @keyframes acrConfirmIn {
+    0% { opacity:0; transform: translate(-50%, 12px) scale(0.96); }
+    12% { opacity:1; transform: translate(-50%, 0) scale(1); }
+    82% { opacity:1; transform: translate(-50%, 0) scale(1); }
+    100% { opacity:0; transform: translate(-50%, 6px) scale(0.98); }
+  }
 `;
 document.head.appendChild(styleSheet);
 // thème par défaut (nuit) appliqué tôt pour éviter le flash blanc
@@ -57,19 +63,69 @@ const P = {
 };
 const sans = "'Inter', system-ui, sans-serif";
 const mono = "'JetBrains Mono', ui-monospace, monospace";
+const disp = "'Archivo', 'Inter', system-ui, sans-serif";
 
 const getNow = () => new Date().toTimeString().slice(0, 5);
 const fmtSec = s => `${Math.floor(s/60).toString().padStart(2,"0")}:${(s%60).toString().padStart(2,"0")}`;
 
+// Chronomètre basé sur l'HORLOGE RÉELLE (pas un compteur de ticks).
+// → Continue de tourner juste même si l'app passe en arrière-plan (où les
+//   intervalles JS sont ralentis/suspendus). Se recale au retour au 1er plan.
 function useTimer(active) {
   const [s, setS] = useState(0);
-  const ref = useRef(null);
+  const sRef     = useRef(0);     // valeur affichée (toujours à jour)
+  const baseRef  = useRef(0);     // secondes cumulées avant le segment courant
+  const startRef = useRef(null);  // Date.now() au démarrage du segment courant
+  const activeRef = useRef(active);
+  sRef.current = s;
+
+  // Setter externe (restauration / remise à zéro) : ré-ancre l'horloge
+  const setExternal = (val) => {
+    setS(prev => {
+      const next = typeof val === "function" ? val(prev) : val;
+      baseRef.current = next;
+      startRef.current = activeRef.current ? Date.now() : null;
+      sRef.current = next;
+      return next;
+    });
+  };
+
   useEffect(() => {
-    if (active) ref.current = setInterval(() => setS(p => p + 1), 1000);
-    else clearInterval(ref.current);
-    return () => clearInterval(ref.current);
+    activeRef.current = active;
+    if (active) {
+      // démarrage / reprise : on ancre sur l'heure courante
+      baseRef.current = sRef.current;
+      startRef.current = Date.now();
+    } else if (startRef.current != null) {
+      // pause : on fige la valeur réelle écoulée
+      const frozen = baseRef.current + Math.floor((Date.now() - startRef.current) / 1000);
+      baseRef.current = frozen;
+      startRef.current = null;
+      setS(frozen);
+    }
   }, [active]);
-  return [s, setS];
+
+  useEffect(() => {
+    if (!active) return;
+    const recompute = () => {
+      if (startRef.current == null) return;
+      setS(baseRef.current + Math.floor((Date.now() - startRef.current) / 1000));
+    };
+    const id = setInterval(recompute, 500); // 500 ms : affichage fluide
+    const onVis = () => { if (!document.hidden) recompute(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", recompute);
+    window.addEventListener("pageshow", recompute);
+    recompute(); // recale immédiatement
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", recompute);
+      window.removeEventListener("pageshow", recompute);
+    };
+  }, [active]);
+
+  return [s, setExternal];
 }
 
 function calcAge(ddn) {
@@ -113,6 +169,34 @@ function clearSession(prefix) {
   } catch {}
 }
 
+// ── ARCHIVES LOCALES DES ARRÊTS ────────────────────────────────────────────────
+const ARCHIVE_KEY = "acr_archives";
+function loadArchives() {
+  try { return JSON.parse(localStorage.getItem(ARCHIVE_KEY) || "[]"); }
+  catch { return []; }
+}
+function saveArchive(snapshot) {
+  try {
+    const list = loadArchives();
+    list.unshift(snapshot);                 // plus récent en tête
+    const capped = list.slice(0, 50);       // plafond 50 arrêts
+    localStorage.setItem(ARCHIVE_KEY, JSON.stringify(capped));
+    return capped;
+  } catch { return loadArchives(); }
+}
+function deleteArchive(key) {
+  try {
+    const list = loadArchives().filter(a => a.key !== key);
+    localStorage.setItem(ARCHIVE_KEY, JSON.stringify(list));
+    return list;
+  } catch { return loadArchives(); }
+}
+function clearArchives() {
+  try { localStorage.removeItem(ARCHIVE_KEY); } catch {}
+  return [];
+}
+
+
 // ── WAKE LOCK : empêche le verrouillage écran ──────────────────────────────────
 function useWakeLock(active) {
   useEffect(() => {
@@ -143,34 +227,59 @@ function useWakeLock(active) {
   }, [active]);
 }
 
-// ── BIP SONORE (Web Audio API) ─────────────────────────────────────────────────
-function playAdrenalineBeep() {
+// ── ALARME SONORE (Web Audio API) ──────────────────────────────────────────────
+// IMPORTANT : sur iPhone, le bouton silencieux physique coupe le son du Web Audio.
+// Aucune app web ne peut le contourner (seule une app native le peut). Sur Android,
+// le son passe sur le canal média et joue même sonnerie coupée. La vibration ne
+// fonctionne pas sur iOS Safari. → l'alarme VISUELLE plein écran reste le filet
+// de sécurité fiable sur tous les appareils.
+let _acrAudioCtx = null;
+function getAudioCtx() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    // 3 bips courts et doux
-    [0, 0.3, 0.6].forEach(t => {
+    if (!_acrAudioCtx) _acrAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (_acrAudioCtx && _acrAudioCtx.state === "suspended") _acrAudioCtx.resume().catch(() => {});
+  } catch {}
+  return _acrAudioCtx;
+}
+// À appeler sur un geste utilisateur pour « déverrouiller » l'audio (iOS).
+function unlockAudio() { try { getAudioCtx(); } catch {} }
+
+let _acrAlarmTimer = null;
+let _acrAlarmCount = 0;
+function _acrBeep() {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  try {
+    // Double bip perçant (onde carrée = plus fort qu'une sinusoïde)
+    [0, 0.28].forEach(t => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = 880; // La5
-      osc.type = "sine";
-      const start = ctx.currentTime + t;
-      gain.gain.setValueAtTime(0, start);
-      gain.gain.linearRampToValueAtTime(0.25, start + 0.02);
-      gain.gain.linearRampToValueAtTime(0, start + 0.18);
-      osc.start(start);
-      osc.stop(start + 0.2);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = "square";
+      osc.frequency.value = 880;
+      const s = ctx.currentTime + t;
+      gain.gain.setValueAtTime(0, s);
+      gain.gain.linearRampToValueAtTime(0.5, s + 0.02);
+      gain.gain.linearRampToValueAtTime(0, s + 0.24);
+      osc.start(s); osc.stop(s + 0.26);
     });
-    // Ferme le contexte après 1 sec
-    setTimeout(() => { try { ctx.close(); } catch {} }, 1000);
   } catch {}
+  try { if ("vibrate" in navigator) navigator.vibrate([300, 150, 300]); } catch {}
 }
-
-function vibrateAdrenaline() {
-  try {
-    if ("vibrate" in navigator) navigator.vibrate([200, 100, 200, 100, 200]);
-  } catch {}
+// Démarre l'alarme en boucle jusqu'à acquittement (plafond ~30 s de sécurité).
+function startAlarm() {
+  stopAlarm();
+  _acrAlarmCount = 0;
+  _acrBeep();
+  _acrAlarmTimer = setInterval(() => {
+    _acrAlarmCount += 1;
+    if (_acrAlarmCount > 20) { stopAlarm(); return; } // sécurité : ~30 s max
+    _acrBeep();
+  }, 1500);
+}
+function stopAlarm() {
+  if (_acrAlarmTimer) { clearInterval(_acrAlarmTimer); _acrAlarmTimer = null; }
+  try { if ("vibrate" in navigator) navigator.vibrate(0); } catch {}
 }
 
 // ── COMPOSANT TIMER ADRÉNALINE (option C : discret puis impossible à manquer) ──
@@ -193,11 +302,16 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
 
   useEffect(() => {
     if (expired && !played) {
-      playAdrenalineBeep();
-      vibrateAdrenaline();
+      startAlarm();
       setPlayed(true);
     }
   }, [expired, played]);
+  // Arrêt de l'alarme si le timer n'est plus expiré (reset) ou au démontage
+  useEffect(() => {
+    if (!expired) stopAlarm();
+    return () => stopAlarm();
+  }, [expired]);
+  const ack = (fn) => () => { stopAlarm(); fn && fn(); };
 
   if (!expired) {
     // Mode DISCRET : petite chip en haut à droite
@@ -257,7 +371,7 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
           {intervalMin} min écoulées depuis la précédente
         </p>
       </div>
-      <button onClick={onAdminister}
+      <button onClick={ack(onAdminister)}
         style={{
           background:"#fff", border:"none", borderRadius:9,
           padding:"8px 14px", fontSize:13, fontWeight:700,
@@ -266,7 +380,7 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
         }}>
         Administrer
       </button>
-      <button onClick={onCancel}
+      <button onClick={ack(onCancel)}
         style={{ background:"transparent", border:"none", color:"#fff",
           fontSize:18, cursor:"pointer", padding:"4px 6px", lineHeight:1 }}>×</button>
     </div>
@@ -442,8 +556,8 @@ const ICONS = {
 // ── Composants de base ─────────────────────────────────────────────────────────
 
 const Lbl = ({ children }) => (
-  <p style={{ margin:"0 0 5px", fontSize:10, fontWeight:500, color:P.textSoft,
-    textTransform:"uppercase", letterSpacing:"0.09em", fontFamily:mono }}>{children}</p>
+  <p style={{ margin:"0 0 5px", fontSize:9.5, fontWeight:700, color:P.textSoft,
+    textTransform:"uppercase", letterSpacing:"0.12em", fontFamily:mono }}>{children}</p>
 );
 
 const TInput = ({ value, onChange, placeholder, type="text" }) => (
@@ -516,7 +630,7 @@ function ActionBtn({ action, onClick }) {
       onPointerDown={() => setPress(true)}
       onPointerUp={() => setPress(false)}
       onPointerLeave={() => setPress(false)}
-      onClick={() => { setFlash(true); setTimeout(() => setFlash(false), 500); onClick(); }}
+      onClick={() => { setFlash(true); setTimeout(() => setFlash(false), 700); try { if (navigator.vibrate) navigator.vibrate(28); } catch(e){} onClick(); }}
       style={vital ? {
         // ── Bouton VITAL : aplat saturé ──
         background:`linear-gradient(135deg, ${action.accent}, ${action.textC})`,
@@ -529,25 +643,29 @@ function ActionBtn({ action, onClick }) {
         minWidth:0, boxSizing:"border-box", width:"100%", minHeight:90, color:"#fff",
       } : {
         // ── Bouton standard : carte + pastille colorée ──
-        background: P.surface,
-        border: `1.5px solid ${flash ? action.accent : P.border}`,
+        background: flash ? `color-mix(in srgb, ${P.green} 12%, ${P.surface})` : P.surface,
+        border: `1.5px solid ${flash ? P.green : P.border}`,
         borderRadius:15, padding:"13px 12px", cursor:"pointer", fontFamily:sans,
         display:"flex", alignItems:"center", gap:11, textAlign:"left",
         transform: press ? "scale(0.96)" : "scale(1)",
-        transition:"transform 0.08s, border-color 0.15s, box-shadow 0.15s",
-        boxShadow: flash ? `0 0 0 3px ${action.soft}, 0 4px 14px ${action.accent}33` : "0 1px 4px rgba(0,0,0,0.05)",
+        transition:"transform 0.08s, border-color 0.15s, box-shadow 0.15s, background 0.15s",
+        boxShadow: flash ? `0 0 0 3px color-mix(in srgb, ${P.green} 25%, transparent)` : "0 1px 4px rgba(0,0,0,0.05)",
         minWidth:0, boxSizing:"border-box", width:"100%", minHeight:64,
       }}>
-      {/* Pastille d'icône */}
+      {/* Pastille d'icône (✓ vert pendant la confirmation) */}
       <span style={{
         width: vital ? 40 : 38, height: vital ? 40 : 38, borderRadius:11, flexShrink:0,
-        background: vital ? "rgba(255,255,255,0.22)" : `color-mix(in srgb, ${action.accent} 16%, transparent)`,
+        background: flash ? (vital ? "rgba(255,255,255,0.30)" : `color-mix(in srgb, ${P.green} 20%, transparent)`)
+                          : (vital ? "rgba(255,255,255,0.22)" : `color-mix(in srgb, ${action.accent} 16%, transparent)`),
         display:"flex", alignItems:"center", justifyContent:"center",
-        color: vital ? "#fff" : action.accent,
+        color: flash ? (vital ? "#fff" : P.green) : (vital ? "#fff" : action.accent),
+        transition:"all 0.15s",
       }}>
-        {action.svg
-          ? <span style={{ width: vital ? 27 : 24, height: vital ? 27 : 24, display:"flex" }}>{action.svg}</span>
-          : <span style={{ fontSize: vital ? 22 : 20 }}>{action.icon}</span>}
+        {flash
+          ? <span style={{ fontSize: vital ? 24 : 21, fontWeight:900, lineHeight:1 }}>✓</span>
+          : action.svg
+            ? <span style={{ width: vital ? 27 : 24, height: vital ? 27 : 24, display:"flex" }}>{action.svg}</span>
+            : <span style={{ fontSize: vital ? 22 : 20 }}>{action.icon}</span>}
       </span>
       <div style={{ display:"flex", flexDirection:"column", gap:1, minWidth:0 }}>
         <span style={{
@@ -1547,7 +1665,7 @@ function RemplissageVasculairePed({ racs, setRacs, localMat }) {
 
 // ── RCP PÉDIATRIQUE ───────────────────────────────────────────────────────────
 
-function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
+function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }) {
   const [running,      setRunning]      = useState(false);
   const [secStored,    setSecStored]    = useLocalState("acr_ped_sec", 0);
   const [sec,          setSec]          = useTimer(running);
@@ -1557,7 +1675,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
   const [cycleOffset,  setCycleOffset]  = useLocalState("acr_ped_cycleOffset", 0);
   const [events,       setEvents]       = useLocalState("acr_ped_events", []);
   const [alert,        setAlert]        = useState(null);
-  const [showLog,      setShowLog]      = useState(false);
+  const [showLog,      setShowLog]      = useState(true);
   const [showPdf,      setShowPdf]      = useState(false);
   const initIdx = PED_TABLE.findIndex(r => r.p === parseFloat(poids));
   const [localPoidsIdx, setLocalPoidsIdx] = useLocalState("acr_ped_poidsIdx", initIdx >= 0 ? initIdx : 0);
@@ -1579,6 +1697,14 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
   const [noteTextPed,  setNoteTextPed]   = useState("");
   // Transmission équipes pré-SMUR
   const [modalTransPed, setModalTransPed] = useState(false);
+  const [modalPatPed, setModalPatPed] = useState(false);
+  const [etco2ListPed, setEtco2ListPed] = useLocalState("acr_ped_etco2", []);
+  const [modalEtco2Ped, setModalEtco2Ped] = useState(false);
+  const [etco2ValPed, setEtco2ValPed] = useState("");
+  // CCF pédiatrique (réglage partagé)
+  const [ccfEnabled] = useLocalState("acr_ccf_enabled", false);
+  const [ccfPausedTotalPed, setCcfPausedTotalPed] = useLocalState("acr_ped_ccfPaused", 0);
+  const [ccfPausedSincePed, setCcfPausedSincePed] = useLocalState("acr_ped_ccfSince", null);
   const [transPed, setTransPed] = useLocalState("acr_ped_trans", {
     hEffondrement:"", temoin:"", mceTemoin:"",
     hArriveePompiers:"", hPoseDSA:"", h1erChoc:"",
@@ -1645,8 +1771,17 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
     alertRef.current = setTimeout(() => setAlert(null), 7000);
   }, [sec, running]);
 
-  const addEvent = (id, label, icon, customTime) =>
+  const [confirmAdd, setConfirmAdd] = useState(null); // { label, key }
+  const addEvent = (id, label, icon, customTime) => {
     setEvents(p => [...p, { id, label, icon, time: customTime || getNow(), sec }]);
+    setConfirmAdd({ label, key: Date.now() });
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(e){}
+  };
+  useEffect(() => {
+    if (!confirmAdd) return;
+    const t = setTimeout(() => setConfirmAdd(null), 1500);
+    return () => clearTimeout(t);
+  }, [confirmAdd]);
 
   const start = () => {
     const lf = getNow();
@@ -1655,6 +1790,49 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
     setEvents([{ id:"start", label:"Début RCP médicalisée", icon:"🫀", time:lf, sec:0 }]);
   };
   useEffect(() => { window.scrollTo(0, 0); start(); }, []);
+
+  // Clôturer & archiver la réa pédiatrique
+  const cloturerEtArchiver = () => {
+    if (typeof window !== "undefined" &&
+        !window.confirm("Clôturer cette réanimation pédiatrique ?\nElle sera archivée puis la session sera effacée.")) return;
+    const hasContent = (events && events.length > 1) || patPed.nom || sec > 0;
+    if (hasContent) {
+      const outcome = events.find(e => e.id === "rosc") ? "RACS"
+                    : events.find(e => e.id === "deces") ? "Décès" : "—";
+      saveArchive({
+        key: Date.now(),
+        archivedAt: new Date().toISOString(),
+        type: "Pédiatrique",
+        label: patPed.nom ? `${patPed.nom} ${patPed.prenom}`.trim() : `${poids} kg`,
+        durationSec: sec,
+        outcome,
+        props: {
+          patient: { nom:patPed.nom, prenom:patPed.prenom, ddn:patPed.ddn,
+            age: patPed.age || calcAge(patPed.ddn) || localRow?.age || "", sexe:"",
+            temp:patPed.temp, atcd:patPed.atcd, histoire:patPed.histoire },
+          noFlow: noFlowMin, lowFlow: lowFlowMin, acrTime: localAcrTime,
+          iot: { cormack:"", sonde:localMat?.sondeAvecBallonnet||"", repere:localMat?.repereLab||"", capno:"" },
+          events: [...events], totalSec: sec, trans: { ...transPed }, hemocue: [],
+        },
+      });
+    }
+    clearSession("acr_ped_");
+    if (onHome) onHome();
+  };
+
+  // CCF pédiatrique — bascule pause/reprise des compressions
+  const compPausedPed = ccfPausedSincePed != null;
+  const ccfPausedNowPed = ccfPausedTotalPed + (compPausedPed ? Math.max(0, sec - ccfPausedSincePed) : 0);
+  const ccfPctPed = sec > 0 ? Math.max(0, Math.min(100, Math.round(((sec - ccfPausedNowPed) / sec) * 100))) : 100;
+  const toggleCompressionsPed = () => {
+    if (compPausedPed) {
+      setCcfPausedTotalPed(t => t + Math.max(0, sec - ccfPausedSincePed));
+      setCcfPausedSincePed(null);
+    } else {
+      setCcfPausedSincePed(sec);
+    }
+    try { if (navigator.vibrate) navigator.vibrate(20); } catch(e){}
+  };
 
   const cp = (sec - cycleOffset)%120, pct=(cp/120)*100, rem=120-cp;
   const warn=rem<=30, crit=rem<=8;
@@ -1727,6 +1905,36 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
               <p style={{margin:0,fontSize:15,fontWeight:600,color:P.tealText}}>ECG post-RACS</p>
               <p style={{margin:"2px 0 0",fontSize:12,color:P.teal}}>{ecgTxt?"Décrit ✓ — Modifier":"Décrire l'électrocardiogramme"}</p>
             </div>
+          </button>
+        </Modal>
+      )}
+
+      {/* Modal saisie EtCO₂ pédiatrique */}
+      {modalEtco2Ped && (
+        <Modal title="EtCO₂ — capnographie" icon="📈" soft={P.tealSoft} onClose={() => setModalEtco2Ped(false)}>
+          <Lbl>Valeur mesurée (mmHg)</Lbl>
+          <input type="number" inputMode="numeric" value={etco2ValPed}
+            onChange={e => setEtco2ValPed(e.target.value)} placeholder="ex : 22" autoFocus
+            style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+              borderRadius:12, padding:"16px", fontSize:30, color:P.text, fontFamily:mono,
+              textAlign:"center", fontWeight:800, boxSizing:"border-box", outline:"none" }}
+            onFocus={e => e.target.style.borderColor = P.teal}
+            onBlur={e  => e.target.style.borderColor = P.border} />
+          <p style={{ margin:"10px 0 0", fontSize:11, color:P.textSoft, lineHeight:1.5 }}>
+            Repère : &lt; 10 mmHg → optimiser le MCE · remontée brutale → possible RACS · chute brutale → sonde déplacée
+          </p>
+          <button onClick={() => {
+            const v = parseFloat(String(etco2ValPed).replace(",", "."));
+            if (!isNaN(v)) {
+              setEtco2ListPed(prev => [...prev, { val: String(etco2ValPed).replace(",", "."), sec, time: getNow() }]);
+              try { if (navigator.vibrate) navigator.vibrate(28); } catch(e){}
+            }
+            setModalEtco2Ped(false);
+          }} style={{ width:"100%", background:`linear-gradient(135deg, ${P.teal}, ${P.tealText})`,
+            border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:700,
+            padding:"14px", cursor:"pointer", fontFamily:sans, marginTop:14,
+            boxShadow:`0 5px 16px color-mix(in srgb, ${P.teal} 30%, transparent)` }}>
+            ✓ Ajouter à la courbe
           </button>
         </Modal>
       )}
@@ -1819,7 +2027,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
 
       {/* Intubation pédiatrique */}
       {modalIotPed && (
-        <Modal title="Intubation IOT" icon={<div style={{width:24,height:24,color:P.violet}}>{ICONS.iot}</div>}
+        <Modal title="Intubation oro-trachéale" icon={<div style={{width:24,height:24,color:P.violet}}>{ICONS.iot}</div>}
           soft={P.violetSoft} onClose={() => setModalIotPed(false)}>
           <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,borderRadius:10,padding:"10px 14px",marginBottom:14}}>
             <p style={{margin:"0 0 4px",fontSize:11,fontWeight:600,color:P.amberText}}>Tailles recommandées</p>
@@ -1881,7 +2089,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
 
           <button onClick={()=>{
             const detail = [iotSonde&&`sonde ${iotSonde}mm`, iotRepere&&`repère ${iotRepere}cm`, iotCapno&&`ETCO2 ${iotCapno}mmHg`].filter(Boolean).join(", ");
-            addEvent("iot",`Intubation IOT${detail?` (${detail})`:""}`, "🫁");
+            addEvent("iot",`Intubation${detail?` (${detail})`:""}`, "🫁");
             setModalIotPed(false);
           }} style={{width:"100%",background:`linear-gradient(135deg,${P.violet},#5A4E8A)`,
             border:"none",borderRadius:12,color:"#fff",fontSize:14,fontWeight:600,
@@ -1914,7 +2122,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
 
       {/* Appel régulation */}
       {modalRegulPed && (
-        <Modal title="Appel régulation" icon="📞" soft="#FFF3E0" onClose={() => setModalRegulPed(false)}>
+        <Modal title="Appel régulation" icon="📞" soft={P.amberSoft} onClose={() => setModalRegulPed(false)}>
           <Lbl>Destination</Lbl>
           <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:14}}>
             {["PICU","Réanimation péd.","SAUV","Déchocage","Autre"].map(d=>(
@@ -1954,12 +2162,15 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
             style={{background:P.surface,width:"100%",borderRadius:"20px 20px 0 0",
               padding:"20px 16px 40px",boxShadow:"0 -12px 40px rgba(0,0,0,0.18)",
               fontFamily:sans,maxHeight:"90vh",display:"flex",flexDirection:"column"}}>
-            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16,flexShrink:0}}>
-              <div style={{width:38,height:38,borderRadius:11,background:P.greenSoft,
-                display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>🫀</div>
+            <div style={{display:"flex",alignItems:"center",gap:11,marginBottom:16,flexShrink:0}}>
+              <div style={{width:42,height:42,borderRadius:13,
+                background:`linear-gradient(135deg, ${P.green}, ${P.greenText})`,
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,
+                boxShadow:`0 5px 16px color-mix(in srgb, ${P.green} 32%, transparent)`}}>🫀</div>
               <div>
-                <p style={{margin:0,fontSize:15,fontWeight:600,color:P.text}}>Soins post-RACS</p>
-                <p style={{margin:0,fontSize:11,color:P.textSoft}}>Paramètres post-RACS pédiatrique</p>
+                <p style={{margin:"0 0 1px",fontSize:9.5,fontWeight:700,color:P.green,
+                  textTransform:"uppercase",letterSpacing:"0.14em",fontFamily:mono}}>Après RACS · Pédiatrie</p>
+                <p style={{margin:0,fontSize:18,fontWeight:800,color:P.text,fontFamily:disp,letterSpacing:"-0.01em",lineHeight:1}}>Soins post-RACS</p>
               </div>
               <button onClick={()=>setModalRacsPed(false)}
                 style={{marginLeft:"auto",background:"transparent",border:"none",color:P.textSoft,fontSize:20,cursor:"pointer"}}>×</button>
@@ -1969,12 +2180,13 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
               background:P.surfaceAlt,borderRadius:12,padding:4,marginBottom:14,flexShrink:0}}>
               {[{id:"ventil",label:"Ventil.",icon:"🌬️"},{id:"sedat",label:"Sédation",icon:"💊"},{id:"hemo",label:"Hémo.",icon:"💓"}].map(t=>(
                 <button key={t.id} onClick={()=>setRacsTabPed(t.id)}
-                  style={{padding:"8px 4px",borderRadius:9,border:"none",
-                    background:racsTabPed===t.id?P.surface:"transparent",
-                    color:racsTabPed===t.id?P.text:P.textSoft,
-                    fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:sans,
-                    boxShadow:racsTabPed===t.id?"0 1px 4px rgba(0,0,0,0.08)":"none",
-                    display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                  style={{padding:"9px 4px",borderRadius:9,border:"none",
+                    background:racsTabPed===t.id?P.greenSoft:"transparent",
+                    color:racsTabPed===t.id?P.greenText:P.textSoft,
+                    fontSize:11,fontWeight:racsTabPed===t.id?800:600,cursor:"pointer",
+                    fontFamily:racsTabPed===t.id?disp:sans,
+                    boxShadow:racsTabPed===t.id?`inset 0 0 0 1px color-mix(in srgb, ${P.green} 30%, transparent)`:"none",
+                    display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
                   <span>{t.icon}</span>{t.label}
                 </button>
               ))}
@@ -2037,36 +2249,36 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
                       ))}
                     </div>
                   ))}
-                  <p style={{margin:"2px 0 0",fontSize:9,color:"#94B8D0",fontStyle:"italic",textAlign:"right"}}>
+                  <p style={{margin:"2px 0 0",fontSize:9,color:P.textSoft,fontStyle:"italic",textAlign:"right"}}>
                     SpO₂ 94–98 % · EtCO₂ 35–45 mmHg
                   </p>
 
                   {/* Accordéon DOPÉE */}
                   <div style={{marginTop:12}}>
                     <button onClick={()=>setShowDopee(v=>!v)}
-                      style={{width:"100%",background:showDopee?"#FEF3C7":"#FFFBEB",
-                        border:`1.5px solid ${showDopee?"#F59E0B":"#FCD34D"}`,
+                      style={{width:"100%",background:showDopee?P.amberSoft:P.amberSoft,
+                        border:`1.5px solid ${P.amber}`,
                         borderRadius:10,padding:"10px 14px",cursor:"pointer",fontFamily:sans,
                         display:"flex",alignItems:"center",justifyContent:"space-between",
                         transition:"all 0.15s"}}>
                       <div style={{display:"flex",alignItems:"center",gap:8}}>
                         <span style={{fontSize:16}}>⚠️</span>
                         <div style={{textAlign:"left"}}>
-                          <p style={{margin:0,fontSize:13,fontWeight:600,color:"#92400E"}}>
+                          <p style={{margin:0,fontSize:13,fontWeight:600,color:P.amberText}}>
                             Vérifier DOPÉE
                           </p>
-                          <p style={{margin:0,fontSize:9,color:"#B45309",fontStyle:"italic"}}>
+                          <p style={{margin:0,fontSize:9,color:P.amberText,fontStyle:"italic"}}>
                             Problème de ventilation
                           </p>
                         </div>
                       </div>
-                      <span style={{fontSize:12,color:"#92400E",fontWeight:600}}>
+                      <span style={{fontSize:12,color:P.amberText,fontWeight:600}}>
                         {showDopee?"▲":"▼"}
                       </span>
                     </button>
 
                     {showDopee && (
-                      <div style={{background:"#FFFBEB",border:`1.5px solid #FCD34D`,
+                      <div style={{background:P.amberSoft,border:`1.5px solid ${P.amber}`,
                         borderTop:"none",borderRadius:"0 0 10px 10px",
                         padding:"4px 12px 12px",marginTop:-2}}>
                         {[
@@ -2091,7 +2303,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
                               <p style={{margin:0,fontSize:13,fontWeight:600,color:"#78350F",lineHeight:1.3}}>
                                 {item.label}
                               </p>
-                              <p style={{margin:"2px 0 0",fontSize:11,color:"#92400E",lineHeight:1.4}}>
+                              <p style={{margin:"2px 0 0",fontSize:11,color:P.amberText,lineHeight:1.4}}>
                                 {item.detail}
                               </p>
                             </div>
@@ -2305,7 +2517,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
                           <span style={{fontSize:9,color:P.textSoft,fontFamily:mono,textTransform:"uppercase",letterSpacing:"0.08em"}}>PAM calculée</span>
                           <span style={{fontSize:16,fontWeight:700,fontFamily:mono,color:pam!==null?(pamOk?P.greenText:P.roseText):P.textSoft}}>{pam!==null?`${pam} mmHg`:"—"}</span>
                         </div>
-                        {pam!==null&&localMat&&(<p style={{margin:0,fontSize:9,color:"#94B8D0",fontStyle:"italic"}}>Objectif hors TC {">"} {localMat.pamHTC} · si TC {">"} {localMat.pamTC} mmHg</p>)}
+                        {pam!==null&&localMat&&(<p style={{margin:0,fontSize:9,color:P.textSoft,fontStyle:"italic"}}>Objectif hors TC {">"} {localMat.pamHTC} · si TC {">"} {localMat.pamTC} mmHg</p>)}
                       </div>
                     );
                   })()}
@@ -2420,7 +2632,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
               style={{background:"transparent",border:"none",color:P.textMid,
                 fontSize:22,cursor:"pointer",padding:"0 6px",lineHeight:1,fontFamily:sans}}>‹</button>
             <div>
-              <p style={{margin:0,fontSize:13,fontWeight:600,color:P.text}}>ACR Pédiatrique</p>
+              <p style={{margin:0,fontSize:14,fontWeight:800,color:P.text,fontFamily:disp,letterSpacing:"-0.01em"}}>ACR Pédiatrique</p>
               <div style={{display:"flex",alignItems:"center",gap:5,marginTop:2}}>
                 <span style={{fontSize:11,color:P.textSoft}}>ACR =</span>
                 <input type="time" value={localAcrTime} onChange={e=>{setLocalAcrTime(e.target.value);stp("hEffondrement")(e.target.value);}}
@@ -2501,7 +2713,54 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
           <span style={{fontSize:60,fontWeight:800,letterSpacing:"-0.04em",
             color:running?P.text:P.textSoft,fontFamily:mono,lineHeight:0.95,
             fontVariantNumeric:"tabular-nums"}}>{fmtSec(sec)}</span>
+
+          {/* Sous-ligne moniteur : no-flow / low-flow en pastilles discrètes */}
+          <div style={{display:"flex",justifyContent:"center",gap:7,marginTop:9,flexWrap:"wrap"}}>
+            <div style={{display:"flex",alignItems:"center",gap:5,background:P.surfaceAlt,
+              border:`1px solid ${P.border}`,borderRadius:20,padding:"4px 11px"}}>
+              <span style={{fontSize:9,fontWeight:700,color:P.amberText,fontFamily:mono,letterSpacing:"0.06em"}}>NO-FLOW</span>
+              <select value={noFlowMin} onChange={e=>setNoFlowMin(e.target.value)}
+                style={{background:"transparent",border:"none",borderBottom:`1px solid ${P.border}`,
+                  fontSize:13,fontWeight:700,color:P.text,fontFamily:mono,textAlign:"center",outline:"none",
+                  padding:"0 2px 1px",cursor:"pointer",appearance:"none",WebkitAppearance:"none"}}>
+                <option value="">—</option>
+                {Array.from({length:61},(_,i)=>(<option key={i} value={String(i)}>{i}</option>))}
+              </select>
+              <span style={{fontSize:9,color:P.textSoft}}>min</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:5,background:P.surfaceAlt,
+              border:`1px solid ${P.border}`,borderRadius:20,padding:"4px 11px"}}>
+              <span style={{fontSize:9,fontWeight:700,color:P.blueText,fontFamily:mono,letterSpacing:"0.06em"}}>LOW-FLOW</span>
+              <select value={lowFlowMin} onChange={e=>setLowFlowMin(e.target.value)}
+                style={{background:"transparent",border:"none",borderBottom:`1px solid ${P.border}`,
+                  fontSize:13,fontWeight:700,color:P.text,fontFamily:mono,textAlign:"center",outline:"none",
+                  padding:"0 2px 1px",cursor:"pointer",appearance:"none",WebkitAppearance:"none"}}>
+                <option value="">—</option>
+                {Array.from({length:61},(_,i)=>(<option key={i} value={String(i)}>{i}</option>))}
+              </select>
+              <span style={{fontSize:9,color:P.textSoft}}>min</span>
+            </div>
+          </div>
         </div>
+
+        {/* ── Suivi CCF pédiatrique (si activé) ── */}
+        {ccfEnabled && running && !events.find(e => e.id === "rosc") && (
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10,
+            background:P.surface, border:`1.5px solid ${compPausedPed ? P.amber : P.border}`,
+            borderRadius:12, padding:"9px 12px", boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+            <span style={{ fontSize:9, fontWeight:700, color:P.textSoft, fontFamily:mono, letterSpacing:"0.08em" }}>CCF</span>
+            <span style={{ fontSize:20, fontWeight:800, fontFamily:mono, fontVariantNumeric:"tabular-nums", lineHeight:1,
+              color: ccfPctPed >= 60 ? P.greenText : P.amberText }}>{ccfPctPed}%</span>
+            {compPausedPed && <span style={{ fontSize:9.5, fontWeight:700, color:P.amberText, fontFamily:mono }}>● COMPRESSIONS ARRÊTÉES</span>}
+            <button onClick={toggleCompressionsPed}
+              style={{ marginLeft:"auto", border:`1px solid ${compPausedPed ? P.green : P.amber}`,
+                background: compPausedPed ? `color-mix(in srgb, ${P.green} 14%, transparent)` : `color-mix(in srgb, ${P.amber} 14%, transparent)`,
+                color: compPausedPed ? P.greenText : P.amberText, borderRadius:9, padding:"7px 11px",
+                fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>
+              {compPausedPed ? "▶ Reprendre" : "⏸ Pause compressions"}
+            </button>
+          </div>
+        )}
 
         {/* Minuteur Adrénaline pédiatrique */}
         {adrTimerStartPed > 0 && running && !events.find(e => e.id === "rosc") && (
@@ -2554,20 +2813,20 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
                 </span>
               </div>
               {(showAmio1 || showAmio2) && localMat && (
-                <div style={{gridColumn:"1 / -1",background:"#FEF3C7",
-                  border:"1.5px solid #F59E0B",borderRadius:10,padding:"8px 12px",
+                <div style={{gridColumn:"1 / -1",background:P.amberSoft,
+                  border:`1.5px solid ${P.amber}`,borderRadius:10,padding:"8px 12px",
                   display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:18}}>💊</span>
                   <div style={{flex:1,minWidth:0}}>
-                    <p style={{margin:0,fontSize:11,fontWeight:700,color:"#92400E"}}>
+                    <p style={{margin:0,fontSize:11,fontWeight:700,color:P.amberText}}>
                       Rappel : Amiodarone {localMat.amio} mg ({localMat.amioMl} mL)
                     </p>
-                    <p style={{margin:0,fontSize:10,color:"#B45309"}}>
+                    <p style={{margin:0,fontSize:10,color:P.amberText}}>
                       Après le {showAmio1 ? "3ᵉ" : "5ᵉ"} choc cumulé · 5 mg/kg · {localPoids} kg
                     </p>
                   </div>
                   <button onClick={() => addEvent("cord",`Amiodarone ${localMat.amio}mg IV/IO (5mg/kg)`,"💊")}
-                    style={{background:"#F59E0B",border:"none",borderRadius:7,
+                    style={{background:P.amber,border:"none",borderRadius:7,
                       color:"#fff",padding:"6px 10px",fontSize:11,fontWeight:600,
                       cursor:"pointer",fontFamily:sans}}>
                     Administrer
@@ -2578,39 +2837,6 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
           );
         })()}
 
-        {/* Encarts No-flow / Low-flow indépendants */}
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
-          <div style={{background:P.surfaceAlt,borderRadius:10,padding:"7px 10px",border:`1px solid ${P.border}`}}>
-            <p style={{margin:"0 0 4px",fontSize:9,color:P.textSoft,textTransform:"uppercase",
-              letterSpacing:"0.09em",fontFamily:mono}}>No-flow</p>
-            <div style={{display:"flex",alignItems:"center",gap:4}}>
-              <input type="number" min="0" max="60" value={noFlowMin}
-                onChange={e=>setNoFlowMin(e.target.value)} placeholder="—"
-                style={{flex:1,minWidth:0,background:P.surface,border:`1px solid ${P.border}`,borderRadius:7,
-                  padding:"5px 4px",fontSize:17,color:P.text,fontFamily:mono,outline:"none",
-                  textAlign:"center",fontWeight:600,boxSizing:"border-box"}}
-                onFocus={e=>e.target.style.borderColor=P.rose}
-                onBlur={e=>e.target.style.borderColor=P.border}/>
-              <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>min</span>
-            </div>
-            <p style={{margin:"3px 0 0",fontSize:8,color:P.textSoft,fontStyle:"italic"}}>Sans massage</p>
-          </div>
-          <div style={{background:P.surfaceAlt,borderRadius:10,padding:"7px 10px",border:`1px solid ${P.border}`}}>
-            <p style={{margin:"0 0 4px",fontSize:9,color:P.textSoft,textTransform:"uppercase",
-              letterSpacing:"0.09em",fontFamily:mono}}>Low-flow</p>
-            <div style={{display:"flex",alignItems:"center",gap:4}}>
-              <input type="number" min="0" max="240" value={lowFlowMin}
-                onChange={e=>setLowFlowMin(e.target.value)} placeholder="—"
-                style={{flex:1,minWidth:0,background:P.surface,border:`1px solid ${P.border}`,borderRadius:7,
-                  padding:"5px 4px",fontSize:17,color:P.text,fontFamily:mono,outline:"none",
-                  textAlign:"center",fontWeight:600,boxSizing:"border-box"}}
-                onFocus={e=>e.target.style.borderColor=P.blue}
-                onBlur={e=>e.target.style.borderColor=P.border}/>
-              <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>min</span>
-            </div>
-            <p style={{margin:"3px 0 0",fontSize:8,color:P.textSoft,fontStyle:"italic"}}>Durée MCE</p>
-          </div>
-        </div>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
           <span style={{fontSize:10,color:P.textSoft,fontFamily:mono}}>Cycle RCP · 2 min</span>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -2658,60 +2884,76 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
                 </div>
               ))}
             </div>
-            <p style={{margin:"8px 0 0",fontSize:9,color:"#9B2C2C",fontWeight:600,
+            <p style={{margin:"8px 0 0",fontSize:9,color:P.roseText,fontWeight:600,
               lineHeight:1.4,borderTop:"1px solid #F5C99E",paddingTop:6}}>
               ⚠️ Doses à recalculer et vérifier avant administration — le praticien demeure seul responsable.
             </p>
           </div>
         )}
-        <Collapsible icon="🪪"
-          title={patPed.nom ? `${patPed.nom} ${patPed.prenom}${patPed.ddn ? ` · ${calcAge(patPed.ddn)||patPed.ddn}` : ""}` : "Dossier patient"}
-          badge="éditable">
-          <div style={{ display:"grid", gap:10 }}>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-              <div><Lbl>Nom</Lbl><TInput value={patPed.nom} onChange={spf("nom")} placeholder="Dupont" /></div>
-              <div><Lbl>Prénom</Lbl><TInput value={patPed.prenom} onChange={spf("prenom")} placeholder="Léa" /></div>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-              <div>
-                <Lbl>Date de naissance</Lbl>
-                <TInput type="date" value={patPed.ddn} onChange={v => { spf("ddn")(v); spf("age")(calcAge(v)); }} />
-                {patPed.ddn && calcAge(patPed.ddn) && (
-                  <p style={{ margin:"4px 0 0", fontSize:11, color:P.amber, fontWeight:600 }}>
-                    → {calcAge(patPed.ddn)}
-                  </p>
-                )}
-              </div>
-              <div><Lbl>Poids</Lbl><TInput value={patPed.poids} onChange={spf("poids")} placeholder={`${localPoids} kg`} /></div>
-            </div>
-            <div><Lbl>Température (°C)</Lbl>
-              <TInput value={patPed.temp} onChange={spf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
-            <div><Lbl>Antécédents</Lbl>
-              <TArea value={patPed.atcd} onChange={spf("atcd")} placeholder="Cardiopathie, allergie..." rows={2} /></div>
-            <div><Lbl>Histoire de la maladie</Lbl>
-              <TArea value={patPed.histoire} onChange={spf("histoire")} placeholder="Circonstances, témoins..." rows={2} /></div>
-          </div>
-        </Collapsible>
+        {/* ── Rangée d'accès rapide : Patient · Transmission · Régulation ── */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
+          <button onClick={() => setModalPatPed(true)}
+            style={{ background:P.surface, border:`1px solid ${patPed.nom ? P.blue : P.border}`, borderRadius:14,
+              padding:"11px 6px", cursor:"pointer", fontFamily:sans, display:"flex",
+              flexDirection:"column", alignItems:"center", gap:6, minWidth:0,
+              boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+            <span style={{ width:34, height:34, borderRadius:10,
+              background:`color-mix(in srgb, ${P.blue} 16%, transparent)`,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:17, color:P.blue }}>🪪</span>
+            <span style={{ fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>Patient</span>
+            <span style={{ fontSize:8.5, color:P.textSoft, fontFamily:mono, letterSpacing:"0.03em",
+              maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{patPed.nom ? `${patPed.nom}` : "à renseigner"}</span>
+          </button>
+          <button onClick={() => setModalTransPed(true)}
+            style={{ background: transPed.saved ? P.greenSoft : P.amberSoft,
+              border:`1px solid ${transPed.saved ? P.green : P.amber}`, borderRadius:14,
+              padding:"11px 6px", cursor:"pointer", fontFamily:sans, display:"flex",
+              flexDirection:"column", alignItems:"center", gap:6, minWidth:0,
+              boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+            <span style={{ width:34, height:34, borderRadius:10,
+              background: transPed.saved ? `color-mix(in srgb, ${P.green} 20%, transparent)` : `color-mix(in srgb, ${P.amber} 20%, transparent)`,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              color: transPed.saved ? P.greenText : P.amberText }}>
+              <span style={{ width:18, height:18, display:"flex" }}>{ICONS.transmission}</span>
+            </span>
+            <span style={{ fontSize:11.5, fontWeight:800, color: transPed.saved ? P.greenText : P.amberText, fontFamily:disp }}>Transmission</span>
+            <span style={{ fontSize:8.5, color: transPed.saved ? P.greenText : P.amberText, opacity:0.85, fontFamily:mono, letterSpacing:"0.03em" }}>{transPed.saved ? "enregistrée" : "à compléter"}</span>
+          </button>
+          <button onClick={() => setModalRegulPed(true)}
+            style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
+              padding:"11px 6px", cursor:"pointer", fontFamily:sans, display:"flex",
+              flexDirection:"column", alignItems:"center", gap:6, minWidth:0,
+              boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+            <span style={{ width:34, height:34, borderRadius:10,
+              background:`color-mix(in srgb, ${P.teal} 16%, transparent)`,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, color:P.teal }}>📞</span>
+            <span style={{ fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>Régulation</span>
+            <span style={{ fontSize:8.5, color:P.textSoft, fontFamily:mono, letterSpacing:"0.03em" }}>SAMU</span>
+          </button>
+        </div>
 
-        {/* Bandeau Transmission équipes en place — pédiatrique */}
-        <button onClick={() => setModalTransPed(true)}
-          style={{ width:"100%", background: transPed.saved ? P.greenSoft : P.amberSoft,
-            border:`1.5px solid ${transPed.saved ? "#A6D6B0" : "#F5C99E"}`,
-            borderRadius:12, padding:"10px 14px", cursor:"pointer", fontFamily:sans,
-            display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-          <div style={{ width:24, height:24, color: transPed.saved ? P.greenText : P.amberText, flexShrink:0 }}>{ICONS.transmission}</div>
-          <div style={{ flex:1, minWidth:0, textAlign:"left" }}>
-            <p style={{ margin:0, fontSize:12, fontWeight:600, color: transPed.saved ? P.greenText : P.amberText }}>
-              {transPed.saved ? "Transmission équipes enregistrée" : "Transmission équipes en place"}
-            </p>
-            <p style={{ margin:"1px 0 0", fontSize:10, color: transPed.saved ? P.greenText : P.amberText, opacity:0.85 }}>
-              {transPed.saved ? "Cliquer pour modifier" : "Recueil pré-SMUR (pompiers, témoin, DSA…)"}
-            </p>
+        {/* ── Carte EtCO₂ (capnographie, courbe en direct) ── */}
+        <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:13,
+          padding:"9px 12px", marginBottom:10, boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:5 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+              <span style={{ width:24, height:24, borderRadius:8,
+                background:`color-mix(in srgb, ${P.teal} 16%, transparent)`,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:P.teal }}>📈</span>
+              <p style={{ margin:0, fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>EtCO₂ <span style={{ fontSize:8, fontWeight:600, color:P.textSoft, fontFamily:mono, letterSpacing:"0.05em" }}>mmHg</span></p>
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:9 }}>
+              {etco2ListPed.length > 0 && (
+                <span style={{ fontSize:20, fontWeight:800, color:P.tealText, fontFamily:mono, fontVariantNumeric:"tabular-nums", lineHeight:1 }}>{etco2ListPed[etco2ListPed.length - 1].val}</span>
+              )}
+              <button onClick={() => { setEtco2ValPed(""); setModalEtco2Ped(true); }}
+                style={{ background:`color-mix(in srgb, ${P.teal} 14%, transparent)`, color:P.tealText,
+                  border:`1px solid ${P.teal}`, borderRadius:9, padding:"6px 11px", fontSize:11,
+                  fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>+ Valeur</button>
+            </div>
           </div>
-          <span style={{ fontSize:16, color: transPed.saved ? P.greenText : P.amberText }}>
-            {transPed.saved ? "✓" : "→"}
-          </span>
-        </button>
+          <Etco2Curve data={etco2ListPed} P={P} mono={mono} />
+        </div>
 
         {/* ── Tab bar Actions / Étiologie / Thérapeutiques ── */}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,
@@ -2746,7 +2988,7 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
             onClick={()=>setModalVvpPed(true)}/>
           <ActionBtn action={{label:amioLabel,svg:ICONS.amio,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
             onClick={()=>addEvent("cord",`Amiodarone ${localMat?.amio||""}mg IV/IO (5mg/kg)`,"💊")}/>
-          <ActionBtn action={{label:"Intubation IOT",svg:ICONS.iot,accent:P.violet,soft:P.violetSoft,textC:P.violetText}}
+          <ActionBtn action={{label:"Intubation",svg:ICONS.iot,accent:P.violet,soft:P.violetSoft,textC:P.violetText}}
             onClick={()=>setModalIotPed(true)}/>
           <ActionBtn action={{label:"Planche à masser",svg:ICONS.planche,accent:P.teal,soft:P.tealSoft,textC:P.tealText}}
             onClick={()=>addEvent("planche","Planche à masser mise en place","🦺")}/>
@@ -2927,6 +3169,40 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
               fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:sans}}>← Retour</button>
         </div>
       </div>
+
+      {/* ── Modal Dossier patient pédiatrique ── */}
+      {modalPatPed && (
+        <Modal title="Dossier patient" icon="🪪" soft={P.surfaceAlt} onClose={() => setModalPatPed(false)}>
+          <div style={{ display:"grid", gap:10 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              <div><Lbl>Nom</Lbl><TInput value={patPed.nom} onChange={spf("nom")} placeholder="Dupont" /></div>
+              <div><Lbl>Prénom</Lbl><TInput value={patPed.prenom} onChange={spf("prenom")} placeholder="Léa" /></div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              <div>
+                <Lbl>Date de naissance</Lbl>
+                <TInput type="date" value={patPed.ddn} onChange={v => { spf("ddn")(v); spf("age")(calcAge(v)); }} />
+                {patPed.ddn && calcAge(patPed.ddn) && (
+                  <p style={{ margin:"4px 0 0", fontSize:11, color:P.amber, fontWeight:600 }}>→ {calcAge(patPed.ddn)}</p>
+                )}
+              </div>
+              <div><Lbl>Poids</Lbl><TInput value={patPed.poids} onChange={spf("poids")} placeholder={`${localPoids} kg`} /></div>
+            </div>
+            <div><Lbl>Température (°C)</Lbl>
+              <TInput value={patPed.temp} onChange={spf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
+            <div><Lbl>Antécédents</Lbl>
+              <TArea value={patPed.atcd} onChange={spf("atcd")} placeholder="Cardiopathie, allergie..." rows={2} /></div>
+            <div><Lbl>Histoire de la maladie</Lbl>
+              <TArea value={patPed.histoire} onChange={spf("histoire")} placeholder="Circonstances, témoins..." rows={2} /></div>
+          </div>
+          <button onClick={() => setModalPatPed(false)}
+            style={{ width:"100%", background:P.text, border:"none", borderRadius:12,
+              color:P.bg, fontSize:14, fontWeight:700, padding:"13px", cursor:"pointer",
+              fontFamily:sans, marginTop:14 }}>
+            ✓ Enregistrer
+          </button>
+        </Modal>
+      )}
 
       {/* Modal Constat de décès pédiatrique */}
       {/* ── Modal ECMO pédiatrique ── */}
@@ -3149,22 +3425,41 @@ function RcpPediatrique({ onBack, acrTime, poids, mat, theme, setTheme }) {
         </Modal>
       )}
 
-      {/* Bandeau fixe régulation */}
+      {/* ── Toast de confirmation d'ajout à la chronologie ── */}
+      {confirmAdd && (
+        <div key={confirmAdd.key}
+          style={{ position:"fixed", bottom:70, left:"50%", zIndex:95,
+            transform:"translateX(-50%)", maxWidth:"86%",
+            background:`linear-gradient(135deg, ${P.green}, ${P.greenText})`,
+            color:"#fff", borderRadius:13, padding:"11px 16px",
+            display:"flex", alignItems:"center", gap:10, pointerEvents:"none",
+            boxShadow:`0 8px 26px color-mix(in srgb, ${P.green} 50%, transparent)`,
+            animation:"acrConfirmIn 1.5s ease forwards", fontFamily:sans }}>
+          <span style={{ width:24, height:24, borderRadius:"50%", background:"rgba(255,255,255,0.25)",
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:900, flexShrink:0 }}>✓</span>
+          <div style={{ minWidth:0 }}>
+            <p style={{ margin:0, fontSize:10, fontWeight:700, opacity:0.85, letterSpacing:"0.05em", textTransform:"uppercase", fontFamily:mono }}>Ajouté à la chronologie</p>
+            <p style={{ margin:0, fontSize:13, fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{confirmAdd.label}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Bandeau fixe compte-rendu */}
       <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:30,
         background:P.surface,borderTop:`1px solid ${P.border}`,
         padding:"7px 14px 10px",boxShadow:"0 -4px 16px rgba(0,0,0,0.08)"}}>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-          <button onClick={()=>setModalRegulPed(true)}
-            style={{background:"linear-gradient(135deg,#F97316,#EA6010)",border:"none",
-              borderRadius:11,color:"#fff",fontSize:12,fontWeight:600,padding:"9px",
-              cursor:"pointer",fontFamily:sans,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
-            <span>📞</span> Régulation
-          </button>
+        <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:8}}>
           <button onClick={() => setShowPdf(true)}
-            style={{background:"linear-gradient(135deg,#3B82C4,#2563A8)",border:"none",
-              borderRadius:11,color:"#fff",fontSize:12,fontWeight:600,padding:"9px",
-              cursor:"pointer",fontFamily:sans}}>
+            style={{width:"100%",background:"linear-gradient(135deg,#3B82C4,#2563A8)",border:"none",
+              borderRadius:11,color:"#fff",fontSize:13,fontWeight:600,padding:"11px",
+              cursor:"pointer",fontFamily:sans,display:"flex",alignItems:"center",justifyContent:"center",gap:7}}>
             📄 Compte-rendu
+          </button>
+          <button onClick={cloturerEtArchiver}
+            style={{background:P.surfaceAlt,border:`1px solid ${P.border}`,
+              borderRadius:11,color:P.textMid,fontSize:12,fontWeight:600,padding:"11px 14px",
+              cursor:"pointer",fontFamily:sans,whiteSpace:"nowrap"}}>
+            ✓ Clôturer
           </button>
         </div>
       </div>
@@ -3211,7 +3506,7 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
   const sub   = mode === "poids" ? `≈ ${row.age}` : `≈ ${poids} kg`;
 
   if (showRcp) return (
-    <RcpPediatrique onBack={() => setShowRcp(false)} acrTime={acrTime} poids={poids} mat={mat} theme={theme} setTheme={setTheme} />
+    <RcpPediatrique onBack={() => setShowRcp(false)} onHome={onBack} acrTime={acrTime} poids={poids} mat={mat} theme={theme} setTheme={setTheme} />
   );
 
   const MatRow = ({ label, value, color }) => (
@@ -3233,11 +3528,11 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
         <button onClick={onBack}
           style={{ background:"transparent", border:"none", color:P.textMid,
             fontSize:22, cursor:"pointer", padding:"0 4px", lineHeight:1, flexShrink:0 }}>‹</button>
-        <div style={{ width:34, height:34, borderRadius:10, background:P.amberSoft, flexShrink:0,
-          display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>👶</div>
+        <div style={{ width:38, height:38, borderRadius:11, background:P.amberSoft, flexShrink:0,
+          display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>👶</div>
         <div style={{ minWidth:0 }}>
-          <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>ACR Pédiatrique</p>
-          <p style={{ margin:0, fontSize:10, color:P.textSoft }}>Nourrisson · Enfant · Adolescent</p>
+          <p style={{ margin:0, fontSize:15, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Pédiatrique</p>
+          <p style={{ margin:0, fontSize:9.5, color:P.textSoft, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Nourrisson · Enfant · Adolescent</p>
         </div>
         <div style={{ marginLeft:"auto" }}><ThemeToggle theme={theme} setTheme={setTheme} compact /></div>
       </div>
@@ -3333,14 +3628,14 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
         {mat && (<>
 
           {/* ── DISCLAIMER RENFORCÉ — doses pédiatriques ── */}
-          <div style={{ background:"#FEF2F2", border:"1.5px solid #E53E3E", borderRadius:12,
+          <div style={{ background:P.roseSoft, border:`1.5px solid ${P.rose}`, borderRadius:12,
             padding:"11px 13px", marginBottom:12, display:"flex", gap:9, alignItems:"flex-start" }}>
             <span style={{ fontSize:18, flexShrink:0, lineHeight:1.2 }}>⚠️</span>
             <div>
-              <p style={{ margin:"0 0 3px", fontSize:11.5, fontWeight:700, color:"#9B2C2C", lineHeight:1.4 }}>
+              <p style={{ margin:"0 0 3px", fontSize:11.5, fontWeight:700, color:P.roseText, lineHeight:1.4 }}>
                 Doses et tailles à vérifier systématiquement
               </p>
-              <p style={{ margin:0, fontSize:10.5, color:"#9B2C2C", lineHeight:1.5 }}>
+              <p style={{ margin:0, fontSize:10.5, color:P.roseText, lineHeight:1.5 }}>
                 Outil d'aide cognitive — il ne remplace pas le contrôle indépendant.
                 Toute posologie et tout matériel doivent être recalculés et confirmés
                 par le praticien avant administration. En cas de doute, se référer au
@@ -3491,13 +3786,13 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
         {/* Bouton démarrer */}
         <button onClick={() => setShowRcp(true)}
           style={{ width:"100%", boxSizing:"border-box",
-            background:"linear-gradient(135deg,#D96B6B,#C85050)",
-            border:"none", borderRadius:14, color:"#fff",
-            fontSize:16, fontWeight:600, padding:"16px",
-            cursor:"pointer", fontFamily:sans,
-            display:"flex", alignItems:"center", justifyContent:"center", gap:10,
-            boxShadow:"0 8px 24px rgba(217,107,107,0.3)", marginBottom:20 }}>
-          <span style={{ fontSize:20 }}>🫀</span>
+            background:`linear-gradient(135deg, ${P.rose}, ${P.roseText})`,
+            border:"none", borderRadius:16, color:"#fff",
+            fontSize:17, fontWeight:800, fontFamily:disp, letterSpacing:"-0.01em", padding:"19px",
+            cursor:"pointer",
+            display:"flex", alignItems:"center", justifyContent:"center", gap:11,
+            boxShadow:`0 10px 28px color-mix(in srgb, ${P.rose} 38%, transparent)`, marginBottom:20 }}>
+          <span style={{ fontSize:23 }}>🫀</span>
           Début RCP médicalisée — {poids} kg
         </button>
 
@@ -4044,6 +4339,59 @@ function ThemeToggle({ theme, setTheme, compact = false }) {
   );
 }
 
+// ── COURBE EtCO₂ (SVG maison, sans dépendance) ─────────────────────────────────
+function Etco2Curve({ data, P, mono }) {
+  // data = [{ val:Number, sec:Number, time:String }]
+  const pts = (data || [])
+    .map(d => ({ v: parseFloat(String(d.val).replace(",", ".")), sec: d.sec || 0, time: d.time }))
+    .filter(d => !isNaN(d.v));
+  if (pts.length === 0) {
+    return (
+      <p style={{ margin:0, fontSize:11, color:P.textSoft, textAlign:"center", padding:"8px 0", fontFamily:mono }}>
+        Aucune valeur — appuyer sur « + Valeur »
+      </p>
+    );
+  }
+  const W = 300, H = 72, padL = 24, padR = 6, padT = 8, padB = 13;
+  const vMax = Math.max(50, Math.ceil(Math.max(...pts.map(p => p.v)) / 10) * 10);
+  const sMin = pts[0].sec, sMax = pts[pts.length - 1].sec;
+  const spanS = Math.max(1, sMax - sMin);
+  const x = s => padL + ((s - sMin) / spanS) * (W - padL - padR);
+  const y = v => padT + (1 - v / vMax) * (H - padT - padB);
+  const xPos = pts.length === 1 ? [(W - padL - padR) / 2 + padL] : pts.map(p => x(p.sec));
+  const line = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${xPos[i].toFixed(1)} ${y(p.v).toFixed(1)}`).join(" ");
+  const yRef = y(10); // seuil qualité ~10 mmHg
+  const last = pts[pts.length - 1];
+  const gridVals = [0, vMax / 2, vMax];
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" preserveAspectRatio="none" style={{ display:"block" }}>
+      {/* grilles Y */}
+      {gridVals.map((gv, i) => (
+        <g key={i}>
+          <line x1={padL} y1={y(gv)} x2={W - padR} y2={y(gv)}
+            stroke={P.border} strokeWidth="0.5" />
+          <text x={padL - 4} y={y(gv) + 3} textAnchor="end"
+            fontSize="8" fill={P.textSoft} fontFamily={mono}>{gv}</text>
+        </g>
+      ))}
+      {/* seuil 10 mmHg */}
+      <line x1={padL} y1={yRef} x2={W - padR} y2={yRef}
+        stroke={P.amber} strokeWidth="1" strokeDasharray="3 3" opacity="0.8" />
+      {/* courbe */}
+      {pts.length > 1 && <path d={line} fill="none" stroke={P.teal} strokeWidth="2"
+        strokeLinejoin="round" strokeLinecap="round" />}
+      {/* points */}
+      {pts.map((p, i) => (
+        <circle key={i} cx={xPos[i]} cy={y(p.v)} r={i === pts.length - 1 ? 3.5 : 2.5}
+          fill={i === pts.length - 1 ? P.teal : P.surface} stroke={P.teal} strokeWidth="1.5" />
+      ))}
+      {/* dernière valeur */}
+      <text x={Math.min(xPos[xPos.length - 1] + 5, W - padR - 14)} y={Math.max(y(last.v) - 6, 10)}
+        fontSize="10" fontWeight="700" fill={P.tealText} fontFamily={mono}>{last.v}</text>
+    </svg>
+  );
+}
+
 // ── APP ────────────────────────────────────────────────────────────────────────
 export default function App() {
   const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"" });
@@ -4057,6 +4405,12 @@ export default function App() {
 
   // IOT data
   const [iot, setIot] = useLocalState("acr_adulte_iot", { cormack:"", sonde:"", repere:"", capno:"" });
+  const [etco2List, setEtco2List] = useLocalState("acr_adulte_etco2", []);
+  const [modalEtco2, setModalEtco2] = useState(false);
+  const [etco2Val, setEtco2Val] = useState("");
+  // CCF (fraction de compression) — actif seulement si réglage activé
+  const [ccfPausedTotal, setCcfPausedTotal] = useLocalState("acr_adulte_ccfPaused", 0);
+  const [ccfPausedSince, setCcfPausedSince] = useLocalState("acr_adulte_ccfSince", null);
   const si = k => v => setIot(p => ({ ...p, [k]: v }));
 
   const [started,     setStarted]     = useLocalState("acr_adulte_started", false);
@@ -4071,7 +4425,7 @@ export default function App() {
   const [events,      setEvents]      = useLocalState("acr_adulte_events", []);
   const [alert,       setAlert]       = useState(null);
   const [showPdf,     setShowPdf]     = useState(false);
-  const [showLog,     setShowLog]     = useState(false);
+  const [showLog,     setShowLog]     = useState(true);
 
   const [modalCord,   setModalCord]   = useState(false);
   const [modalDeces,  setModalDeces]  = useState(false);
@@ -4114,6 +4468,7 @@ export default function App() {
   const [modalEcg,    setModalEcg]    = useState(false);
   const [modalRegul,  setModalRegul]  = useState(false);
   const [modalReset,  setModalReset]  = useState(false);
+  const [modalPat,    setModalPat]    = useState(false);
   const [regulText,   setRegulText]   = useState("");
   const [regulDest,   setRegulDest]   = useState("");
   const [ecgText,     setEcgText]     = useState("");
@@ -4137,8 +4492,17 @@ export default function App() {
     alertRef.current = setTimeout(() => setAlert(null), 7000);
   }, [sec, running]);
 
-  const addEvent = (id, label, icon, customTime) =>
+  const [confirmAdd, setConfirmAdd] = useState(null); // { label, key }
+  const addEvent = (id, label, icon, customTime) => {
     setEvents(p => [...p, { id, label, icon, time: customTime || getNow(), sec }]);
+    setConfirmAdd({ label, key: Date.now() });
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(e){}
+  };
+  useEffect(() => {
+    if (!confirmAdd) return;
+    const t = setTimeout(() => setConfirmAdd(null), 1500);
+    return () => clearTimeout(t);
+  }, [confirmAdd]);
 
   const start = () => {
     const lf = getNow();
@@ -4149,6 +4513,36 @@ export default function App() {
     setModalElectrodes(true);
   };
 
+  // Alarme sonore quand un rappel Cordarone apparaît (après 3ᵉ / 5ᵉ choc cumulé)
+  const _chocsTot   = events.filter(e => e.id === "choc").length + (parseInt(trans.chocsPompiers) || 0);
+  const _cordDone   = events.filter(e => e.id === "cord300" || e.id === "cord150").length;
+  const cordReminderActive = started && !events.find(e => e.id === "rosc") &&
+    ((_chocsTot >= 3 && _cordDone === 0) || (_chocsTot >= 5 && _cordDone === 1));
+  const cordAlarmedRef = useRef(false);
+  useEffect(() => {
+    if (cordReminderActive && !cordAlarmedRef.current) {
+      cordAlarmedRef.current = true;
+      startAlarm();
+    } else if (!cordReminderActive && cordAlarmedRef.current) {
+      cordAlarmedRef.current = false;
+      stopAlarm();
+    }
+  }, [cordReminderActive]);
+
+  // CCF — bascule pause/reprise des compressions
+  const compPaused = ccfPausedSince != null;
+  const ccfPausedNow = ccfPausedTotal + (compPaused ? Math.max(0, sec - ccfPausedSince) : 0);
+  const ccfPct = sec > 0 ? Math.max(0, Math.min(100, Math.round(((sec - ccfPausedNow) / sec) * 100))) : 100;
+  const toggleCompressions = () => {
+    if (compPaused) {
+      setCcfPausedTotal(t => t + Math.max(0, sec - ccfPausedSince));
+      setCcfPausedSince(null);
+    } else {
+      setCcfPausedSince(sec);
+    }
+    try { if (navigator.vibrate) navigator.vibrate(20); } catch(e){}
+  };
+
   const confirmIot = () => {
     const parts = [
       iot.cormack && `Cormack ${iot.cormack}`,
@@ -4157,7 +4551,7 @@ export default function App() {
       iot.capno   && `ETCO2 ${iot.capno} mmHg`,
     ].filter(Boolean);
     const detail = parts.length ? ` (${parts.join(", ")})` : "";
-    addEvent("iot", `Intubation IOT${detail}`, "🫁");
+    addEvent("iot", `Intubation${detail}`, "🫁");
     setModalIot(false);
   };
 
@@ -4169,6 +4563,27 @@ export default function App() {
   };
 
   const reset = () => {
+    // Archiver la session si elle a du contenu (avant effacement)
+    const hasContent = (events && events.length > 1) || pat.nom || sec > 0;
+    if (hasContent) {
+      const outcome = events.find(e => e.id === "rosc") ? "RACS"
+                    : events.find(e => e.id === "deces") ? "Décès" : "—";
+      const snapshot = {
+        key: Date.now(),
+        archivedAt: new Date().toISOString(),
+        type: isTrauma ? "Traumatique" : "Adulte",
+        label: pat.nom ? `${pat.nom} ${pat.prenom}`.trim() : "Sans nom",
+        durationSec: sec,
+        outcome,
+        props: {
+          patient: { ...pat },
+          noFlow: noFlowMin, lowFlow: lowFlowMin, acrTime,
+          iot: { ...iot }, events: [...events], totalSec: sec,
+          trans: { ...trans }, hemocue: [...hemocueHist],
+        },
+      };
+      setArchives(saveArchive(snapshot));
+    }
     setStarted(false); setRunning(false); setSec(0); setSecStored(0); setModule(null);
     setAcrTime(""); setNoFlowMin(""); setLowFlowMin(""); setLowFlowStart("");
     setEvents([]); setAlert(null); setCycleOffset(0);
@@ -4181,7 +4596,7 @@ export default function App() {
     setMainTab("actions"); setSuspectedAd([]); setModalEcmo(false); setModalDdac(false);
     setModalFastTrauma(false); setFastTr({ morrison:"", kohler:"", douglas:"", pleureD:"", pleureG:"", pericarde:"" });
     setModalThoraco(null); setModalHemocue(false); setHemocueVal(""); setModalTransfu(false); setTransfu({ cgr:"", pfc:"", plaq:"" });
-    setModalExacyl(false); setModalHemoExt(false); setGarrotSite(""); setGarrotHeure(""); setHemocueHist([]);
+    setModalExacyl(false); setModalHemoExt(false); setGarrotSite(""); setGarrotHeure(""); setHemocueHist([]); setModalPat(false);
     clearSession("acr_adulte_");
     setModalCord(false); setModalDeces(false); setModalIot(false); setModalFast(false);
     setModalRythme(false); setModalVvp(false); setModalElectrodes(false); setModalRacs(false); setModalChoc(false); setModalEcg(false); setModalRegul(false);
@@ -4190,6 +4605,8 @@ export default function App() {
     setActiveTab("actions");
     setFastResult("");
     setIot({ cormack:"", sonde:"", repere:"", capno:"" });
+    setEtco2List([]);
+    setCcfPausedTotal(0); setCcfPausedSince(null);
     setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"" });
   };
 
@@ -4208,6 +4625,22 @@ export default function App() {
     document.body.classList.remove("acr-night", "acr-day");
     document.body.classList.add(theme === "day" ? "acr-day" : "acr-night");
   }, [theme]);
+
+  // Archives locales des arrêts
+  const [archives, setArchives] = useState(() => loadArchives());
+  const [viewArchive, setViewArchive] = useState(null); // snapshot consulté
+  useEffect(() => { if (!module) setArchives(loadArchives()); }, [module]);
+
+  // Réglages
+  const [modalSettings, setModalSettings] = useState(false);
+  const [ccfEnabled, setCcfEnabled] = useLocalState("acr_ccf_enabled", false);
+
+  // Déverrouille l'audio dès le 1er contact (requis par iOS pour jouer un son ensuite)
+  useEffect(() => {
+    const unlock = () => unlockAudio();
+    window.addEventListener("pointerdown", unlock, { once: true });
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, []);
 
   // États spécifiques trauma (FAST, thoracostomies, hemocue, transfusion)
   const [modalFastTrauma, setModalFastTrauma] = useState(false);
@@ -4241,21 +4674,36 @@ export default function App() {
       display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
       padding:"0 20px", position:"relative" }}>
 
+      {/* Réglages en haut à gauche */}
+      <div style={{ position:"absolute", top:16, left:16 }}>
+        <button onClick={() => setModalSettings(true)}
+          style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:11,
+            width:40, height:40, cursor:"pointer", fontSize:18, color:P.textMid,
+            display:"flex", alignItems:"center", justifyContent:"center", fontFamily:sans }}
+          aria-label="Réglages">⚙️</button>
+      </div>
+
       {/* Bascule Jour/Nuit en haut */}
       <div style={{ position:"absolute", top:16, right:16 }}>
         <ThemeToggle theme={theme} setTheme={setTheme} />
       </div>
 
       {/* Logo */}
-      <div style={{ textAlign:"center", marginBottom:44 }}>
-        <div style={{ width:80, height:80, borderRadius:24, background:P.roseSoft,
-          display:"flex", alignItems:"center", justifyContent:"center", fontSize:42,
-          margin:"0 auto 16px", boxShadow:"0 8px 28px rgba(217,107,107,0.18)" }}>❤️‍🩹</div>
-        <h1 style={{ margin:0, fontSize:28, fontWeight:600, color:P.text, letterSpacing:"-0.02em" }}>
+      <div style={{ textAlign:"center", marginBottom:40 }}>
+        <div style={{ width:84, height:84, borderRadius:24,
+          background:`linear-gradient(135deg, ${P.rose}, ${P.roseText})`,
+          display:"flex", alignItems:"center", justifyContent:"center", fontSize:44,
+          margin:"0 auto 18px", boxShadow:`0 10px 30px color-mix(in srgb, ${P.rose} 38%, transparent)` }}>❤️‍🩹</div>
+        <p style={{ margin:"0 0 6px", fontSize:10.5, fontWeight:700, color:P.rose,
+          textTransform:"uppercase", letterSpacing:"0.22em", fontFamily:mono }}>
+          Aide cognitive
+        </p>
+        <h1 style={{ margin:0, fontSize:32, fontWeight:900, color:P.text,
+          letterSpacing:"-0.03em", fontFamily:disp, lineHeight:1 }}>
           Copilote ACR
         </h1>
-        <p style={{ margin:"6px 0 0", fontSize:13, color:P.textSoft }}>
-          Aide cognitive · Arrêt cardiaque
+        <p style={{ margin:"8px 0 0", fontSize:12.5, color:P.textSoft }}>
+          Réanimation de l'arrêt cardiaque · SMUR
         </p>
       </div>
 
@@ -4303,13 +4751,14 @@ export default function App() {
           transition:"all 0.12s" }}
           onPointerEnter={e => { e.currentTarget.style.borderColor = P.rose; e.currentTarget.style.boxShadow = `0 4px 18px color-mix(in srgb, ${P.rose} 13%, transparent)`; }}
           onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.05)"; }}>
-          <div style={{ width:48, height:48, borderRadius:14, background:P.roseSoft,
+          <div style={{ width:50, height:50, borderRadius:14, background:P.roseSoft,
             display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🚑</div>
-          <div>
-            <p style={{ margin:0, fontSize:15, fontWeight:600, color:P.text }}>ACR Adulte</p>
-            <p style={{ margin:"2px 0 0", fontSize:12, color:P.textSoft }}>Extra-hospitalier · SMUR</p>
+          <div style={{ flex:1, minWidth:0 }}>
+            <p style={{ margin:"0 0 2px", fontSize:9.5, fontWeight:700, color:P.rose,
+              textTransform:"uppercase", letterSpacing:"0.13em", fontFamily:mono }}>Extra-hospitalier</p>
+            <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Adulte</p>
           </div>
-          <span style={{ marginLeft:"auto", color:P.textSoft, fontSize:18 }}>›</span>
+          <span style={{ marginLeft:"auto", color:P.rose, fontSize:20, fontWeight:700 }}>›</span>
         </button>
 
         {/* ACR Adulte Intra-hospitalier */}
@@ -4320,14 +4769,16 @@ export default function App() {
           boxShadow:"0 2px 10px rgba(0,0,0,0.05)", opacity:0.7 }}
           onPointerEnter={e => { e.currentTarget.style.borderColor = P.blue; e.currentTarget.style.opacity = "1"; }}
           onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.opacity = "0.7"; }}>
-          <div style={{ width:48, height:48, borderRadius:14, background:P.blueSoft,
+          <div style={{ width:50, height:50, borderRadius:14, background:P.blueSoft,
             display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🏥</div>
-          <div>
-            <p style={{ margin:0, fontSize:15, fontWeight:600, color:P.text }}>ACR Adulte</p>
-            <p style={{ margin:"2px 0 0", fontSize:12, color:P.textSoft }}>Intra-hospitalier · SAUV</p>
+          <div style={{ flex:1, minWidth:0 }}>
+            <p style={{ margin:"0 0 2px", fontSize:9.5, fontWeight:700, color:P.blue,
+              textTransform:"uppercase", letterSpacing:"0.13em", fontFamily:mono }}>Intra-hospitalier</p>
+            <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Adulte</p>
           </div>
-          <span style={{ marginLeft:"auto", fontSize:10, background:P.surfaceAlt,
-            color:P.textSoft, padding:"3px 10px", borderRadius:20, whiteSpace:"nowrap" }}>Bientôt</span>
+          <span style={{ marginLeft:"auto", fontSize:9.5, background:P.surfaceAlt, fontWeight:700,
+            color:P.textSoft, padding:"3px 10px", borderRadius:20, whiteSpace:"nowrap", fontFamily:mono,
+            textTransform:"uppercase", letterSpacing:"0.06em" }}>Bientôt</span>
         </button>
 
         {/* ACR Pédiatrique */}
@@ -4338,13 +4789,14 @@ export default function App() {
           boxShadow:"0 2px 10px rgba(0,0,0,0.05)", transition:"all 0.12s" }}
           onPointerEnter={e => { e.currentTarget.style.borderColor = P.amber; e.currentTarget.style.boxShadow = `0 4px 18px color-mix(in srgb, ${P.amber} 13%, transparent)`; }}
           onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.05)"; }}>
-          <div style={{ width:48, height:48, borderRadius:14, background:P.amberSoft,
+          <div style={{ width:50, height:50, borderRadius:14, background:P.amberSoft,
             display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>👶</div>
-          <div>
-            <p style={{ margin:0, fontSize:15, fontWeight:600, color:P.text }}>ACR Pédiatrique</p>
-            <p style={{ margin:"2px 0 0", fontSize:12, color:P.textSoft }}>Nourrisson · Enfant · Adolescent</p>
+          <div style={{ flex:1, minWidth:0 }}>
+            <p style={{ margin:"0 0 2px", fontSize:9.5, fontWeight:700, color:P.amber,
+              textTransform:"uppercase", letterSpacing:"0.13em", fontFamily:mono }}>Nourrisson · Enfant</p>
+            <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Pédiatrique</p>
           </div>
-          <span style={{ marginLeft:"auto", color:P.textSoft, fontSize:18 }}>›</span>
+          <span style={{ marginLeft:"auto", color:P.amber, fontSize:20, fontWeight:700 }}>›</span>
         </button>
 
         {/* ACR Traumatique */}
@@ -4355,20 +4807,120 @@ export default function App() {
           boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}
           onPointerEnter={e => { e.currentTarget.style.borderColor = P.slate; }}
           onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; }}>
-          <div style={{ width:48, height:48, borderRadius:14, background:P.slateSoft,
+          <div style={{ width:50, height:50, borderRadius:14, background:P.slateSoft,
             display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🩻</div>
-          <div>
-            <p style={{ margin:0, fontSize:15, fontWeight:600, color:P.text }}>ACR Traumatique</p>
-            <p style={{ margin:"2px 0 0", fontSize:12, color:P.textSoft }}>Trauma · Polytraumatisé · HOTT</p>
+          <div style={{ flex:1, minWidth:0 }}>
+            <p style={{ margin:"0 0 2px", fontSize:9.5, fontWeight:700, color:P.slateText,
+              textTransform:"uppercase", letterSpacing:"0.13em", fontFamily:mono }}>Polytraumatisé · HOTT</p>
+            <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Traumatique</p>
           </div>
-          <span style={{ marginLeft:"auto", fontSize:18, color:P.textSoft }}>›</span>
+          <span style={{ marginLeft:"auto", fontSize:20, color:P.slateText, fontWeight:700 }}>›</span>
         </button>
 
       </div>
 
+      {/* ── Arrêts archivés ── */}
+      {archives.length > 0 && (
+        <div style={{ width:"100%", maxWidth:420, marginTop:30 }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+            <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.textSoft,
+              letterSpacing:"0.12em", textTransform:"uppercase", fontFamily:mono }}>
+              Arrêts archivés · {archives.length}
+            </p>
+            <button onClick={() => {
+              if (typeof window !== "undefined" && window.confirm("Effacer définitivement tous les arrêts archivés ?")) {
+                setArchives(clearArchives());
+              }
+            }} style={{ background:"transparent", border:"none", color:P.roseText,
+              fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:sans }}>
+              Tout effacer
+            </button>
+          </div>
+
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            {archives.map(a => {
+              const d = new Date(a.archivedAt);
+              const dateStr = d.toLocaleDateString("fr-FR", { day:"2-digit", month:"2-digit", year:"2-digit" })
+                + " · " + d.toLocaleTimeString("fr-FR", { hour:"2-digit", minute:"2-digit" });
+              const dur = `${Math.floor((a.durationSec||0)/60)} min`;
+              const oc = a.outcome === "RACS" ? { c:P.greenText, s:P.greenSoft }
+                       : a.outcome === "Décès" ? { c:P.slateText, s:P.slateSoft }
+                       : { c:P.textSoft, s:P.surfaceAlt };
+              return (
+                <div key={a.key} style={{ display:"flex", alignItems:"center", gap:10,
+                  background:P.surface, border:`1px solid ${P.border}`, borderRadius:13, padding:"11px 13px" }}>
+                  <button onClick={() => setViewArchive(a)}
+                    style={{ flex:1, minWidth:0, background:"transparent", border:"none",
+                      cursor:"pointer", fontFamily:sans, textAlign:"left", display:"flex",
+                      flexDirection:"column", gap:3, padding:0 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                      <span style={{ fontSize:9, fontWeight:700, color:P.textSoft, fontFamily:mono,
+                        background:P.surfaceAlt, borderRadius:5, padding:"1px 6px" }}>{a.type}</span>
+                      <span style={{ fontSize:13, fontWeight:700, color:P.text, overflow:"hidden",
+                        textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.label}</span>
+                    </div>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:10.5, color:P.textSoft }}>
+                      <span style={{ fontFamily:mono }}>{dateStr}</span>
+                      <span>·</span><span style={{ fontFamily:mono }}>{dur}</span>
+                      {a.outcome !== "—" && (
+                        <span style={{ color:oc.c, background:oc.s, borderRadius:5,
+                          padding:"1px 7px", fontWeight:700, fontSize:9.5 }}>{a.outcome}</span>
+                      )}
+                    </div>
+                  </button>
+                  <button onClick={() => {
+                    if (typeof window !== "undefined" && window.confirm(`Supprimer l'arrêt « ${a.label} » ?`)) {
+                      setArchives(deleteArchive(a.key));
+                    }
+                  }} style={{ background:"transparent", border:"none", color:P.textSoft,
+                    fontSize:18, cursor:"pointer", padding:"0 4px", flexShrink:0, lineHeight:1 }}>×</button>
+                </div>
+              );
+            })}
+          </div>
+
+          <p style={{ margin:"10px 2px 0", fontSize:9.5, color:P.textSoft, lineHeight:1.5, fontStyle:"italic" }}>
+            ⚠️ Données stockées en clair sur cet appareil uniquement (non chiffrées, non synchronisées).
+            Données de santé : n'utiliser que sur un appareil sécurisé et personnel ; anonymisation recommandée. Effacer après usage.
+          </p>
+        </div>
+      )}
+
       <p style={{ marginTop:36, fontSize:10, color:P.textSoft, fontFamily:mono }}>
         Usage professionnel exclusif · Outil d'aide cognitive uniquement — chaque professionnel de santé demeure seul responsable de ses prescriptions et décisions thérapeutiques
       </p>
+
+      {/* ── Réglages ── */}
+      {modalSettings && (
+        <Modal title="Réglages" icon="⚙️" soft={P.surfaceAlt} onClose={() => setModalSettings(false)}>
+          <div style={{ display:"flex", alignItems:"flex-start", gap:12,
+            background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Suivi CCF</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+                Affiche en réanimation un bouton « pause / reprise des compressions » et calcule la
+                <b> fraction de compression thoracique</b> (objectif &gt; 60–80 %). Désactivé, rien ne change.
+              </p>
+            </div>
+            <button onClick={() => setCcfEnabled(v => !v)}
+              style={{ flexShrink:0, width:50, height:30, borderRadius:15, border:"none", cursor:"pointer",
+                background: ccfEnabled ? P.green : P.border, position:"relative", transition:"background 0.15s",
+                padding:0 }} aria-label="Activer le suivi CCF">
+              <span style={{ position:"absolute", top:3, left: ccfEnabled ? 23 : 3, width:24, height:24,
+                borderRadius:"50%", background:"#fff", transition:"left 0.15s",
+                boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
+            </button>
+          </div>
+          <p style={{ margin:"14px 2px 0", fontSize:10, color:P.textSoft, fontFamily:mono, letterSpacing:"0.04em" }}>
+            D'autres réglages viendront ici.
+          </p>
+        </Modal>
+      )}
+
+      {/* Consultation d'un arrêt archivé (lecture seule) */}
+      {viewArchive && (
+        <PdfView {...viewArchive.props} onClose={() => setViewArchive(null)} />
+      )}
     </div>
   );
 
@@ -4408,11 +4960,12 @@ export default function App() {
         <button onClick={() => setModule(null)}
           style={{ background:"transparent", border:"none", color:P.textMid,
             fontSize:22, cursor:"pointer", padding:"0 6px", lineHeight:1, fontFamily:sans }}>‹</button>
-        <div style={{ width:38, height:38, borderRadius:12, background:isTrauma?P.slateSoft:P.roseSoft,
-          display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>{isTrauma?"🩻":"🚑"}</div>
+        <div style={{ width:40, height:40, borderRadius:12,
+          background: isTrauma ? P.slateSoft : P.roseSoft,
+          display:"flex", alignItems:"center", justifyContent:"center", fontSize:21 }}>{isTrauma?"🩻":"🚑"}</div>
         <div>
-          <p style={{ margin:0, fontSize:14, fontWeight:600, color:P.text }}>{isTrauma?"ACR Traumatique":"ACR Adulte — Extra-hospitalier"}</p>
-          <p style={{ margin:0, fontSize:11, color:P.textSoft }}>Copilote ACR · SMUR</p>
+          <p style={{ margin:0, fontSize:15, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>{isTrauma?"ACR Traumatique":"ACR Adulte"}</p>
+          <p style={{ margin:0, fontSize:10, color:P.textSoft, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>{isTrauma?"Polytraumatisé · SMUR":"Extra-hospitalier · SMUR"}</p>
         </div>
       </div>
 
@@ -4420,33 +4973,33 @@ export default function App() {
 
         {/* Heure de l'arrêt */}
         <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:16,
-          padding:"16px 18px", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
-          <p style={{ margin:"0 0 10px", fontSize:10, fontWeight:500, color:P.textSoft,
-            textTransform:"uppercase", letterSpacing:"0.09em", fontFamily:mono,
+          padding:"18px", boxShadow:"0 2px 8px rgba(0,0,0,0.04)", marginBottom:14 }}>
+          <p style={{ margin:"0 0 12px", fontSize:10, fontWeight:700, color:P.textSoft,
+            textTransform:"uppercase", letterSpacing:"0.16em", fontFamily:mono,
             textAlign:"center" }}>Heure de l'arrêt cardiaque</p>
           <div style={{ display:"flex", justifyContent:"center", alignItems:"center" }}>
             <input type="time" value={acrTime}
               onChange={e => { setAcrTime(e.target.value); st("hEffondrement")(e.target.value); }}
               style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-                borderRadius:12, color:P.text, fontSize:32, padding:"12px 20px",
-                fontFamily:mono, textAlign:"center", fontWeight:700,
+                borderRadius:14, color:P.text, fontSize:38, padding:"14px 22px",
+                fontFamily:mono, textAlign:"center", fontWeight:800, fontVariantNumeric:"tabular-nums",
                 outline:"none", appearance:"none", WebkitAppearance:"none" }}
               onFocus={e => e.target.style.borderColor = P.rose}
               onBlur={e  => e.target.style.borderColor = P.border} />
           </div>
-          <p style={{ margin:"8px 0 0", fontSize:11, color:P.textSoft, textAlign:"center" }}>
+          <p style={{ margin:"10px 0 0", fontSize:11, color:P.textSoft, textAlign:"center" }}>
             Laisser vide si inconnue
           </p>
         </div>
 
         {/* Bouton démarrer */}
         <button onClick={start} style={{
-          width:"100%", background:"linear-gradient(135deg,#D96B6B,#C85050)",
-          border:"none", borderRadius:16, color:"#fff", fontSize:17, fontWeight:600,
-          padding:"20px", cursor:"pointer", fontFamily:sans,
-          boxShadow:"0 8px 24px rgba(217,107,107,0.32)",
+          width:"100%", background:`linear-gradient(135deg, ${P.rose}, ${P.roseText})`,
+          border:"none", borderRadius:18, color:"#fff", fontSize:18, fontWeight:800, fontFamily:disp,
+          letterSpacing:"-0.01em", padding:"22px", cursor:"pointer",
+          boxShadow:`0 10px 30px color-mix(in srgb, ${P.rose} 40%, transparent)`,
           display:"flex", alignItems:"center", justifyContent:"center", gap:12 }}>
-          <span style={{ fontSize:24 }}>🫀</span> Début RCP médicalisée
+          <span style={{ fontSize:26 }}>🫀</span> Début RCP médicalisée
         </button>
 
       </div>
@@ -4455,7 +5008,7 @@ export default function App() {
 
   // ── ÉCRAN RCP ──────────────────────────────────────────────────────────────
   return (
-    <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans, paddingBottom:60 }}>
+    <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans, paddingBottom:28 }}>
 
       {/* Modal Analyse de rythme */}
       {/* ── Modal Défibrillation ── */}
@@ -4537,69 +5090,103 @@ export default function App() {
           display:"flex", alignItems:"flex-end", justifyContent:"center",
           backdropFilter:"blur(3px)" }}>
           <div style={{ background:P.surface, width:"100%", maxWidth:480,
-            borderRadius:"20px 20px 0 0", padding:"24px 20px 32px",
+            borderRadius:"20px 20px 0 0", padding:"16px 16px 16px",
             boxShadow:"0 -16px 50px rgba(0,0,0,0.2)", fontFamily:sans,
-            maxHeight:"92vh", overflowY:"auto" }}>
+            maxHeight:"94vh", overflowY:"auto" }}>
 
-            {/* Titre */}
-            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16 }}>
-              <div style={{ width:40, height:40, borderRadius:12, background:P.blueSoft,
-                display:"flex", alignItems:"center", justifyContent:"center", fontSize:22 }}>🔌</div>
+            {/* ── Section 1 : Efficacité du MCE (prioritaire) ── */}
+            <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:8 }}>
+              <div style={{ width:36, height:36, borderRadius:11, background:P.greenSoft,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>❤️</div>
               <div>
-                <p style={{ margin:0, fontSize:16, fontWeight:600, color:P.text }}>
-                  Vérification des électrodes
+                <p style={{ margin:0, fontSize:15.5, fontWeight:800, color:P.text, fontFamily:sans }}>
+                  Efficacité du massage
                 </p>
-                <p style={{ margin:0, fontSize:11, color:P.textSoft }}>
+                <p style={{ margin:0, fontSize:10.5, color:P.textSoft }}>
+                  Vérifier en continu la qualité du MCE
+                </p>
+              </div>
+            </div>
+            <div style={{ display:"grid", gap:5, marginBottom:14 }}>
+              {[
+                { t:"Fréquence 100–120 / min" },
+                { t:"Profondeur 5–6 cm" },
+                { t:"Relâchement thoracique complet", s:"entre chaque compression" },
+                { t:"Interruptions minimales", s:"< 10 s" },
+                { t:"Relais du masseur toutes les 2 min" },
+                { t:"EtCO₂ = témoin d'efficacité", s:"chute → masseur épuisé / sonde déplacée" },
+              ].map((c, i) => (
+                <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:8,
+                  background:P.greenSoft, borderRadius:9, padding:"6px 10px",
+                  borderLeft:`3px solid ${P.green}` }}>
+                  <span style={{ color:P.green, fontSize:13, fontWeight:900, lineHeight:1.3, flexShrink:0 }}>✓</span>
+                  <div>
+                    <span style={{ fontSize:12, fontWeight:700, color:P.text }}>{c.t}</span>
+                    {c.s && <span style={{ fontSize:10, color:P.textSoft }}> · {c.s}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* ── Section 2 : Pose des électrodes (secondaire) ── */}
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+              <div style={{ width:28, height:28, borderRadius:9, background:P.blueSoft,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:15 }}>🔌</div>
+              <div>
+                <p style={{ margin:0, fontSize:13.5, fontWeight:700, color:P.text }}>
+                  Pose des électrodes
+                </p>
+                <p style={{ margin:0, fontSize:10.5, color:P.textSoft }}>
                   Confirmer le positionnement avant l'analyse
                 </p>
               </div>
             </div>
 
             {/* Image ERC 2025 */}
-            <div style={{ borderRadius:14, overflow:"hidden", marginBottom:16,
+            <div style={{ borderRadius:12, overflow:"hidden", marginBottom:10,
               border:`1px solid ${P.border}` }}>
               <img src="data:image/jpeg;base64,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"
                 alt="Positionnement électrodes ERC 2025"
-                style={{ width:"100%", display:"block" }} />
+                style={{ width:"100%", maxHeight:128, objectFit:"contain", display:"block" }} />
             </div>
 
             {/* Légende positions */}
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:20 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, marginBottom:12 }}>
               {[
                 { pos:"Antéro-apical",    desc:"Sous-claviculaire D + apex G", color:P.blue },
                 { pos:"Antéro-postérieur",desc:"Sternal + dorsal G",           color:P.teal },
                 { pos:"Antéro-latéral",   desc:"Sternal + latéral G",          color:P.violet },
               ].map(p => (
-                <div key={p.pos} style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px 12px",
+                <div key={p.pos} style={{ background:P.surfaceAlt, borderRadius:9, padding:"7px 10px",
                   borderLeft:`3px solid ${p.color}` }}>
-                  <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:600, color:P.text }}>{p.pos}</p>
-                  <p style={{ margin:0, fontSize:11, color:P.textSoft }}>{p.desc}</p>
+                  <p style={{ margin:"0 0 1px", fontSize:11.5, fontWeight:700, color:P.text }}>{p.pos}</p>
+                  <p style={{ margin:0, fontSize:10, color:P.textSoft }}>{p.desc}</p>
                 </div>
               ))}
-              <div style={{ background:P.amberSoft, borderRadius:10, padding:"10px 12px",
+              <div style={{ background:P.amberSoft, borderRadius:9, padding:"7px 10px",
                 borderLeft:`3px solid ${P.amber}` }}>
-                <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:600, color:P.amberText }}>Femme</p>
-                <p style={{ margin:0, fontSize:11, color:P.amberText }}>Électrode sous le sein gauche</p>
+                <p style={{ margin:"0 0 1px", fontSize:11.5, fontWeight:700, color:P.amberText }}>Femme</p>
+                <p style={{ margin:0, fontSize:10, color:P.amberText }}>Électrode sous le sein gauche</p>
               </div>
             </div>
 
             {/* Bouton valider */}
             <button onClick={() => {
-              addEvent("electrodes", "Électrodes posées et positionnement vérifié", "🔌");
+              addEvent("electrodes", "Vérifications de départ : efficacité MCE + pose des électrodes", "✓");
               setModalElectrodes(false);
             }} style={{
-              width:"100%", background:"linear-gradient(135deg,#3B82C4,#2563A8)",
-              border:"none", borderRadius:14, color:"#fff", fontSize:15, fontWeight:600,
-              padding:"16px", cursor:"pointer", fontFamily:sans,
-              boxShadow:"0 6px 18px rgba(59,130,196,0.28)",
+              width:"100%", background:`linear-gradient(135deg,${P.green},${P.greenText})`,
+              border:"none", borderRadius:13, color:"#fff", fontSize:14.5, fontWeight:700,
+              padding:"13px", cursor:"pointer", fontFamily:sans,
+              boxShadow:`0 6px 18px color-mix(in srgb, ${P.green} 35%, transparent)`,
               display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}>
-              ✓ Électrodes posées — Positionnement vérifié
+              ✓ Vérifications faites
             </button>
 
             {/* Bouton ignorer */}
             <button onClick={() => setModalElectrodes(false)}
-              style={{ width:"100%", background:"transparent", border:"none", padding:"12px",
-                color:P.textSoft, fontSize:12, cursor:"pointer", fontFamily:sans, marginTop:6 }}>
+              style={{ width:"100%", background:"transparent", border:"none", padding:"8px",
+                color:P.textSoft, fontSize:12, cursor:"pointer", fontFamily:sans, marginTop:2 }}>
               Ignorer
             </button>
           </div>
@@ -4660,6 +5247,36 @@ export default function App() {
                 {ecgText ? "Décrit ✓ — Modifier" : "Décrire l'électrocardiogramme"}
               </p>
             </div>
+          </button>
+        </Modal>
+      )}
+
+      {/* Modal saisie EtCO₂ */}
+      {modalEtco2 && (
+        <Modal title="EtCO₂ — capnographie" icon="📈" soft={P.tealSoft} onClose={() => setModalEtco2(false)}>
+          <Lbl>Valeur mesurée (mmHg)</Lbl>
+          <input type="number" inputMode="numeric" value={etco2Val}
+            onChange={e => setEtco2Val(e.target.value)} placeholder="ex : 22" autoFocus
+            style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+              borderRadius:12, padding:"16px", fontSize:30, color:P.text, fontFamily:mono,
+              textAlign:"center", fontWeight:800, boxSizing:"border-box", outline:"none" }}
+            onFocus={e => e.target.style.borderColor = P.teal}
+            onBlur={e  => e.target.style.borderColor = P.border} />
+          <p style={{ margin:"10px 0 0", fontSize:11, color:P.textSoft, lineHeight:1.5 }}>
+            Repère : &lt; 10 mmHg → optimiser le MCE · remontée brutale → possible RACS · chute brutale → sonde déplacée
+          </p>
+          <button onClick={() => {
+            const v = parseFloat(String(etco2Val).replace(",", "."));
+            if (!isNaN(v)) {
+              setEtco2List(prev => [...prev, { val: String(etco2Val).replace(",", "."), sec, time: getNow() }]);
+              try { if (navigator.vibrate) navigator.vibrate(28); } catch(e){}
+            }
+            setModalEtco2(false);
+          }} style={{ width:"100%", background:`linear-gradient(135deg, ${P.teal}, ${P.tealText})`,
+            border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:700,
+            padding:"14px", cursor:"pointer", fontFamily:sans, marginTop:14,
+            boxShadow:`0 5px 16px color-mix(in srgb, ${P.teal} 30%, transparent)` }}>
+            ✓ Ajouter à la courbe
           </button>
         </Modal>
       )}
@@ -5364,12 +5981,15 @@ export default function App() {
                 fontFamily:sans, maxHeight:"90vh", display:"flex", flexDirection:"column" }}>
 
               {/* Titre */}
-              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16, flexShrink:0 }}>
-                <div style={{ width:38, height:38, borderRadius:11, background:P.greenSoft,
-                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>🫀</div>
+              <div style={{ display:"flex", alignItems:"center", gap:11, marginBottom:16, flexShrink:0 }}>
+                <div style={{ width:42, height:42, borderRadius:13,
+                  background:`linear-gradient(135deg, ${P.green}, ${P.greenText})`,
+                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:22,
+                  boxShadow:`0 5px 16px color-mix(in srgb, ${P.green} 32%, transparent)` }}>🫀</div>
                 <div>
-                  <p style={{ margin:0, fontSize:15, fontWeight:600, color:P.text }}>Soins post-RACS</p>
-                  <p style={{ margin:0, fontSize:11, color:P.textSoft }}>Après retour de circulation spontanée</p>
+                  <p style={{ margin:"0 0 1px", fontSize:9.5, fontWeight:700, color:P.green,
+                    textTransform:"uppercase", letterSpacing:"0.14em", fontFamily:mono }}>Après RACS</p>
+                  <p style={{ margin:0, fontSize:18, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em", lineHeight:1 }}>Soins post-RACS</p>
                 </div>
                 <button onClick={() => setModalRacs(false)}
                   style={{ marginLeft:"auto", background:"transparent", border:"none",
@@ -5381,12 +6001,13 @@ export default function App() {
                 background:P.surfaceAlt, borderRadius:12, padding:4, marginBottom:16, flexShrink:0 }}>
                 {racsTabs.map(t => (
                   <button key={t.id} onClick={() => setRacsTab(t.id)}
-                    style={{ padding:"8px 4px", borderRadius:9, border:"none",
-                      background: racsTab===t.id ? P.surface : "transparent",
-                      color: racsTab===t.id ? P.text : P.textSoft,
-                      fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:sans,
-                      boxShadow: racsTab===t.id ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
-                      display:"flex", alignItems:"center", justifyContent:"center", gap:4,
+                    style={{ padding:"9px 4px", borderRadius:9, border:"none",
+                      background: racsTab===t.id ? P.greenSoft : "transparent",
+                      color: racsTab===t.id ? P.greenText : P.textSoft,
+                      fontSize:12, fontWeight: racsTab===t.id ? 800 : 600, cursor:"pointer",
+                      fontFamily: racsTab===t.id ? disp : sans,
+                      boxShadow: racsTab===t.id ? `inset 0 0 0 1px color-mix(in srgb, ${P.green} 30%, transparent)` : "none",
+                      display:"flex", alignItems:"center", justifyContent:"center", gap:5,
                       transition:"all 0.15s" }}>
                     <span>{t.icon}</span>{t.label}
                   </button>
@@ -5420,7 +6041,7 @@ export default function App() {
                         </div>
                       ))}
                     </div>
-                    <p style={{ margin:"0 0 10px", fontSize:9, color:"#94B8D0", fontStyle:"italic", textAlign:"right" }}>
+                    <p style={{ margin:"0 0 10px", fontSize:9, color:P.textSoft, fontStyle:"italic", textAlign:"right" }}>
                       Objectif Vt 6 mL/kg de poids idéal
                     </p>
 
@@ -5455,7 +6076,7 @@ export default function App() {
                         </div>
                       </div>
                     </div>
-                    <p style={{ margin:"0 0 10px", fontSize:9, color:"#94B8D0", fontStyle:"italic", textAlign:"right" }}>
+                    <p style={{ margin:"0 0 10px", fontSize:9, color:P.textSoft, fontStyle:"italic", textAlign:"right" }}>
                       Objectif SpO₂ 94–98 %
                     </p>
 
@@ -5490,7 +6111,7 @@ export default function App() {
                         </div>
                       </div>
                     </div>
-                    <p style={{ margin:"0", fontSize:9, color:"#94B8D0", fontStyle:"italic", textAlign:"right" }}>
+                    <p style={{ margin:"0", fontSize:9, color:P.textSoft, fontStyle:"italic", textAlign:"right" }}>
                       Objectif EtCO₂ 35–45 mmHg
                     </p>
                   </div>
@@ -5617,7 +6238,7 @@ export default function App() {
                               {pam!==null ? `${pam} mmHg` : "—"}
                             </span>
                           </div>
-                          <p style={{ margin:0, fontSize:9, color:"#94B8D0", fontStyle:"italic" }}>
+                          <p style={{ margin:0, fontSize:9, color:P.textSoft, fontStyle:"italic" }}>
                             Objectif PAM {">"} 65 mmHg · post-TC {">"} 80 mmHg
                           </p>
                         </div>
@@ -5626,18 +6247,18 @@ export default function App() {
 
                     {/* Température — contrôle ciblé */}
                     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
-                      background:"#FFF7ED", border:"1px solid #FDBA74", borderRadius:9, padding:"7px 10px" }}>
+                      background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:9, padding:"7px 10px" }}>
                       <span style={{ fontSize:13, flexShrink:0 }}>🌡️</span>
                       <input type="number" inputMode="decimal" step="0.1" value={racs.tempRacs}
                         onChange={e => sr("tempRacs")(e.target.value)} placeholder="36,5"
-                        style={{ width:62, background:P.surface, border:`1px solid #FDBA74`,
+                        style={{ width:62, background:P.surface, border:`1px solid ${P.amber}`,
                           borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
                           fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
                           boxSizing:"border-box", flexShrink:0 }}
-                        onFocus={e => e.target.style.borderColor = "#EA580C"}
-                        onBlur={e  => e.target.style.borderColor = "#FDBA74"} />
-                      <span style={{ fontSize:12, color:"#9A3412", fontWeight:600, flexShrink:0 }}>°C</span>
-                      <span style={{ fontSize:10, color:"#9A3412", lineHeight:1.3 }}>Éviter l'hyperthermie</span>
+                        onFocus={e => e.target.style.borderColor = P.amberText}
+                        onBlur={e  => e.target.style.borderColor = P.amber} />
+                      <span style={{ fontSize:12, color:P.amberText, fontWeight:600, flexShrink:0 }}>°C</span>
+                      <span style={{ fontSize:10, color:P.amberText, lineHeight:1.3 }}>Éviter l'hyperthermie</span>
                     </div>
 
                     {/* Noradrénaline */}
@@ -5768,7 +6389,58 @@ export default function App() {
             fontVariantNumeric:"tabular-nums" }}>
             {fmtSec(sec)}
           </span>
+
+          {/* Sous-ligne moniteur : no-flow / low-flow en pastilles discrètes */}
+          <div style={{ display:"flex", justifyContent:"center", gap:7, marginTop:9, flexWrap:"wrap" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:5, background:P.surfaceAlt,
+              border:`1px solid ${P.border}`, borderRadius:20, padding:"4px 11px" }}>
+              <span style={{ fontSize:9, fontWeight:700, color:P.amberText, fontFamily:mono, letterSpacing:"0.06em" }}>NO-FLOW</span>
+              <select value={noFlowMin} onChange={e => setNoFlowMin(e.target.value)}
+                style={{ background:"transparent", border:"none", borderBottom:`1px solid ${P.border}`,
+                  fontSize:13, fontWeight:700, color:P.text, fontFamily:mono, textAlign:"center",
+                  outline:"none", padding:"0 2px 1px", cursor:"pointer", appearance:"none", WebkitAppearance:"none" }}>
+                <option value="">—</option>
+                {Array.from({ length:61 }, (_, i) => (
+                  <option key={i} value={String(i)}>{i}</option>
+                ))}
+              </select>
+              <span style={{ fontSize:9, color:P.textSoft }}>min</span>
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:5, background:P.surfaceAlt,
+              border:`1px solid ${P.border}`, borderRadius:20, padding:"4px 11px" }}>
+              <span style={{ fontSize:9, fontWeight:700, color:P.blueText, fontFamily:mono, letterSpacing:"0.06em" }}>LOW-FLOW</span>
+              <select value={lowFlowMin} onChange={e => setLowFlowMin(e.target.value)}
+                style={{ background:"transparent", border:"none", borderBottom:`1px solid ${P.border}`,
+                  fontSize:13, fontWeight:700, color:P.text, fontFamily:mono, textAlign:"center",
+                  outline:"none", padding:"0 2px 1px", cursor:"pointer", appearance:"none", WebkitAppearance:"none" }}>
+                <option value="">—</option>
+                {Array.from({ length:61 }, (_, i) => (
+                  <option key={i} value={String(i)}>{i}</option>
+                ))}
+              </select>
+              <span style={{ fontSize:9, color:P.textSoft }}>min</span>
+            </div>
+          </div>
         </div>
+
+        {/* ── Suivi CCF (si activé dans les réglages) ── */}
+        {ccfEnabled && started && !events.find(e => e.id === "rosc") && (
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10,
+            background:P.surface, border:`1.5px solid ${compPaused ? P.amber : P.border}`,
+            borderRadius:12, padding:"9px 12px", boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+            <span style={{ fontSize:9, fontWeight:700, color:P.textSoft, fontFamily:mono, letterSpacing:"0.08em" }}>CCF</span>
+            <span style={{ fontSize:20, fontWeight:800, fontFamily:mono, fontVariantNumeric:"tabular-nums", lineHeight:1,
+              color: ccfPct >= 60 ? P.greenText : P.amberText }}>{ccfPct}%</span>
+            {compPaused && <span style={{ fontSize:9.5, fontWeight:700, color:P.amberText, fontFamily:mono }}>● COMPRESSIONS ARRÊTÉES</span>}
+            <button onClick={toggleCompressions}
+              style={{ marginLeft:"auto", border:`1px solid ${compPaused ? P.green : P.amber}`,
+                background: compPaused ? `color-mix(in srgb, ${P.green} 14%, transparent)` : `color-mix(in srgb, ${P.amber} 14%, transparent)`,
+                color: compPaused ? P.greenText : P.amberText, borderRadius:9, padding:"7px 11px",
+                fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>
+              {compPaused ? "▶ Reprendre" : "⏸ Pause compressions"}
+            </button>
+          </div>
+        )}
 
         {/* Minuteur Adrénaline (option C : discret au repos, alerte si dépassé) */}
         {adrTimerStart > 0 && started && !events.find(e => e.id === "rosc") && (
@@ -5821,15 +6493,15 @@ export default function App() {
                 </span>
               </div>
               {(showCord300 || showCord150) && (
-                <div style={{ gridColumn:"1 / -1", background:"#FEF3C7",
-                  border:"1.5px solid #F59E0B", borderRadius:10, padding:"8px 12px",
+                <div style={{ gridColumn:"1 / -1", background:P.amberSoft,
+                  border:`1.5px solid ${P.amber}`, borderRadius:10, padding:"8px 12px",
                   display:"flex", alignItems:"center", gap:8 }}>
                   <span style={{ fontSize:18 }}>💊</span>
                   <div style={{ flex:1, minWidth:0 }}>
-                    <p style={{ margin:0, fontSize:11, fontWeight:700, color:"#92400E" }}>
+                    <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.amberText }}>
                       Rappel : Cordarone {showCord300 ? "300 mg" : "150 mg"}
                     </p>
-                    <p style={{ margin:0, fontSize:10, color:"#B45309" }}>
+                    <p style={{ margin:0, fontSize:10, color:P.amberText }}>
                       Après le {showCord300 ? "3ᵉ" : "5ᵉ"} choc cumulé
                     </p>
                   </div>
@@ -5837,7 +6509,7 @@ export default function App() {
                     if (showCord300) addEvent("cord300", "Cordarone 300 mg IV (après 3ᵉ choc)", "💊");
                     else             addEvent("cord150", "Cordarone 150 mg IV (après 5ᵉ choc)", "💊");
                   }}
-                    style={{ background:"#F59E0B", border:"none", borderRadius:7,
+                    style={{ background:P.amber, border:"none", borderRadius:7,
                       color:"#fff", padding:"6px 10px", fontSize:11, fontWeight:600,
                       cursor:"pointer", fontFamily:sans }}>
                     Administrer
@@ -5847,43 +6519,6 @@ export default function App() {
             </div>
           );
         })()}
-
-        {/* ── Encarts No-flow / Low-flow ── */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
-          {/* No-flow */}
-          <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"7px 10px",
-            border:`1px solid ${P.border}` }}>
-            <p style={{ margin:"0 0 4px", fontSize:9, color:P.textSoft, textTransform:"uppercase",
-              letterSpacing:"0.09em", fontFamily:mono }}>No-flow (min)</p>
-            <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-              <input type="number" min="0" max="60" value={noFlowMin}
-                onChange={e => setNoFlowMin(e.target.value)} placeholder="—"
-                style={{ flex:1, minWidth:0, background:P.surface, border:`1px solid ${P.border}`,
-                  borderRadius:7, padding:"5px 4px", fontSize:17, color:P.text, fontFamily:mono,
-                  outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                onFocus={e => e.target.style.borderColor = P.rose}
-                onBlur={e  => e.target.style.borderColor = P.border} />
-              <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>min</span>
-            </div>
-          </div>
-
-          {/* Low-flow */}
-          <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"7px 10px",
-            border:`1px solid ${P.border}` }}>
-            <p style={{ margin:"0 0 4px", fontSize:9, color:P.textSoft, textTransform:"uppercase",
-              letterSpacing:"0.09em", fontFamily:mono }}>Low-flow (min)</p>
-            <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-              <input type="number" min="0" max="120" value={lowFlowMin}
-                onChange={e => setLowFlowMin(e.target.value)} placeholder="—"
-                style={{ flex:1, minWidth:0, background:P.surface, border:`1px solid ${P.border}`,
-                  borderRadius:7, padding:"5px 4px", fontSize:17, color:P.text, fontFamily:mono,
-                  outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                onFocus={e => e.target.style.borderColor = P.blue}
-                onBlur={e  => e.target.style.borderColor = P.border} />
-              <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>min</span>
-            </div>
-          </div>
-        </div>
 
         {/* Barre cycle */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:5 }}>
@@ -5917,49 +6552,73 @@ export default function App() {
         {/* ── Onglet unique : Actions ── */}
         {true && <>
 
-          {/* Dossier éditable */}
-          <Collapsible icon="🪪"
-            title={pat.nom ? `${pat.nom} ${pat.prenom}${pat.age ? ` · ${pat.age} ans` : ""}` : "Dossier patient"}
-            badge="éditable">
-            <div style={{ display:"grid", gap:12 }}>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-                <div><Lbl>Nom</Lbl><TInput value={pat.nom} onChange={sf("nom")} placeholder="Dupont" /></div>
-                <div><Lbl>Prénom</Lbl><TInput value={pat.prenom} onChange={sf("prenom")} placeholder="Jean" /></div>
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-                <div><Lbl>Date de naissance</Lbl><TInput type="date" value={pat.ddn} onChange={v => { sf("ddn")(v); sf("age")(calcAge(v)); }} /></div>
-                <div><Lbl>Âge</Lbl><TInput value={pat.age} onChange={sf("age")} placeholder="67 ans" /></div>
-              </div>
-              <div><Lbl>Température (°C)</Lbl>
-                <TInput value={pat.temp} onChange={sf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
-              <div><Lbl>Antécédents médicaux</Lbl>
-                <TArea value={pat.atcd} onChange={sf("atcd")} placeholder="HTA, diabète, ACFA..." rows={2} /></div>
-              <div><Lbl>Traitements habituels</Lbl>
-                <TArea value={pat.traitement} onChange={sf("traitement")} placeholder="Metformine, Bisoprolol..." rows={2} /></div>
-              <div><Lbl>Histoire de la maladie</Lbl>
-                <TArea value={pat.histoire} onChange={sf("histoire")} placeholder="Circonstances, symptômes précédents..." rows={3} /></div>
-            </div>
-          </Collapsible>
+          {/* ── Rangée d'accès rapide : Patient · Transmission · Régulation ── */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
+            {/* Patient */}
+            <button onClick={() => setModalPat(true)}
+              style={{ background:P.surface, border:`1px solid ${pat.nom ? P.blue : P.border}`, borderRadius:14,
+                padding:"11px 6px", cursor:"pointer", fontFamily:sans, display:"flex",
+                flexDirection:"column", alignItems:"center", gap:6, minWidth:0,
+                boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+              <span style={{ width:34, height:34, borderRadius:10,
+                background:`color-mix(in srgb, ${P.blue} 16%, transparent)`,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:17, color:P.blue }}>🪪</span>
+              <span style={{ fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>Patient</span>
+              <span style={{ fontSize:8.5, color:P.textSoft, fontFamily:mono, letterSpacing:"0.03em",
+                maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{pat.nom ? `${pat.nom}` : "à renseigner"}</span>
+            </button>
+            {/* Transmission */}
+            <button onClick={() => setModalTrans(true)}
+              style={{ background: trans.saved ? P.greenSoft : P.amberSoft,
+                border:`1px solid ${trans.saved ? P.green : P.amber}`, borderRadius:14,
+                padding:"11px 6px", cursor:"pointer", fontFamily:sans, display:"flex",
+                flexDirection:"column", alignItems:"center", gap:6, minWidth:0,
+                boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+              <span style={{ width:34, height:34, borderRadius:10,
+                background: trans.saved ? `color-mix(in srgb, ${P.green} 20%, transparent)` : `color-mix(in srgb, ${P.amber} 20%, transparent)`,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                color: trans.saved ? P.greenText : P.amberText }}>
+                <span style={{ width:18, height:18, display:"flex" }}>{ICONS.transmission}</span>
+              </span>
+              <span style={{ fontSize:11.5, fontWeight:800, color: trans.saved ? P.greenText : P.amberText, fontFamily:disp }}>Transmission</span>
+              <span style={{ fontSize:8.5, color: trans.saved ? P.greenText : P.amberText, opacity:0.85, fontFamily:mono, letterSpacing:"0.03em" }}>{trans.saved ? "enregistrée" : "à compléter"}</span>
+            </button>
+            {/* Régulation */}
+            <button onClick={() => setModalRegul(true)}
+              style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
+                padding:"11px 6px", cursor:"pointer", fontFamily:sans, display:"flex",
+                flexDirection:"column", alignItems:"center", gap:6, minWidth:0,
+                boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+              <span style={{ width:34, height:34, borderRadius:10,
+                background:`color-mix(in srgb, ${P.teal} 16%, transparent)`,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, color:P.teal }}>📞</span>
+              <span style={{ fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>Régulation</span>
+              <span style={{ fontSize:8.5, color:P.textSoft, fontFamily:mono, letterSpacing:"0.03em" }}>SAMU</span>
+            </button>
+          </div>
 
-          {/* Bandeau Transmission équipes en place — adulte */}
-          <button onClick={() => setModalTrans(true)}
-            style={{ width:"100%", background: trans.saved ? P.greenSoft : P.amberSoft,
-              border:`1.5px solid ${trans.saved ? "#A6D6B0" : "#F5C99E"}`,
-              borderRadius:12, padding:"10px 14px", cursor:"pointer", fontFamily:sans,
-              display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-            <div style={{ width:24, height:24, color: trans.saved ? P.greenText : P.amberText, flexShrink:0 }}>{ICONS.transmission}</div>
-            <div style={{ flex:1, minWidth:0, textAlign:"left" }}>
-              <p style={{ margin:0, fontSize:12, fontWeight:600, color: trans.saved ? P.greenText : P.amberText }}>
-                {trans.saved ? "Transmission équipes enregistrée" : "Transmission équipes en place"}
-              </p>
-              <p style={{ margin:"1px 0 0", fontSize:10, color: trans.saved ? P.greenText : P.amberText, opacity:0.85 }}>
-                {trans.saved ? "Cliquer pour modifier" : "Recueil pré-SMUR (pompiers, témoin, DSA…)"}
-              </p>
+          {/* ── Carte EtCO₂ (capnographie, courbe en direct) ── */}
+          <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:13,
+            padding:"9px 12px", marginBottom:10, boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:5 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                <span style={{ width:24, height:24, borderRadius:8,
+                  background:`color-mix(in srgb, ${P.teal} 16%, transparent)`,
+                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:P.teal }}>📈</span>
+                <p style={{ margin:0, fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>EtCO₂ <span style={{ fontSize:8, fontWeight:600, color:P.textSoft, fontFamily:mono, letterSpacing:"0.05em" }}>mmHg</span></p>
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:9 }}>
+                {etco2List.length > 0 && (
+                  <span style={{ fontSize:20, fontWeight:800, color:P.tealText, fontFamily:mono, fontVariantNumeric:"tabular-nums", lineHeight:1 }}>{etco2List[etco2List.length - 1].val}</span>
+                )}
+                <button onClick={() => { setEtco2Val(""); setModalEtco2(true); }}
+                  style={{ background:`color-mix(in srgb, ${P.teal} 14%, transparent)`, color:P.tealText,
+                    border:`1px solid ${P.teal}`, borderRadius:9, padding:"6px 11px", fontSize:11,
+                    fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>+ Valeur</button>
+              </div>
             </div>
-            <span style={{ fontSize:16, color: trans.saved ? P.greenText : P.amberText }}>
-              {trans.saved ? "✓" : "→"}
-            </span>
-          </button>
+            <Etco2Curve data={etco2List} P={P} mono={mono} />
+          </div>
 
           {/* ── Tab bar Actions / Étiologie / Thérapeutiques ── */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5,
@@ -6001,7 +6660,7 @@ export default function App() {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                 onClick={() => setModalCord(true)} />
-              <ActionBtn action={{ label:"Intubation IOT", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
+              <ActionBtn action={{ label:"Intubation", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
                 onClick={() => setModalIot(true)} />
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
@@ -6235,6 +6894,36 @@ export default function App() {
 
       </div>
 
+      {/* ── Modal Dossier patient ── */}
+      {modalPat && (
+        <Modal title="Dossier patient" icon="🪪" soft={P.surfaceAlt} onClose={() => setModalPat(false)}>
+          <div style={{ display:"grid", gap:12 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <div><Lbl>Nom</Lbl><TInput value={pat.nom} onChange={sf("nom")} placeholder="Dupont" /></div>
+              <div><Lbl>Prénom</Lbl><TInput value={pat.prenom} onChange={sf("prenom")} placeholder="Jean" /></div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <div><Lbl>Date de naissance</Lbl><TInput type="date" value={pat.ddn} onChange={v => { sf("ddn")(v); sf("age")(calcAge(v)); }} /></div>
+              <div><Lbl>Âge</Lbl><TInput value={pat.age} onChange={sf("age")} placeholder="67 ans" /></div>
+            </div>
+            <div><Lbl>Température (°C)</Lbl>
+              <TInput value={pat.temp} onChange={sf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
+            <div><Lbl>Antécédents médicaux</Lbl>
+              <TArea value={pat.atcd} onChange={sf("atcd")} placeholder="HTA, diabète, ACFA..." rows={2} /></div>
+            <div><Lbl>Traitements habituels</Lbl>
+              <TArea value={pat.traitement} onChange={sf("traitement")} placeholder="Metformine, Bisoprolol..." rows={2} /></div>
+            <div><Lbl>Histoire de la maladie</Lbl>
+              <TArea value={pat.histoire} onChange={sf("histoire")} placeholder="Circonstances, symptômes précédents..." rows={3} /></div>
+          </div>
+          <button onClick={() => setModalPat(false)}
+            style={{ width:"100%", background:P.text, border:"none", borderRadius:12,
+              color:P.bg, fontSize:14, fontWeight:700, padding:"13px", cursor:"pointer",
+              fontFamily:sans, marginTop:14 }}>
+            ✓ Enregistrer
+          </button>
+        </Modal>
+      )}
+
       {/* ── Modal confirmation Reset (double validation) ── */}
       {modalReset && (
         <div style={{ position:"fixed", inset:0, background:"rgba(28,43,58,0.55)", zIndex:90,
@@ -6249,8 +6938,8 @@ export default function App() {
                 margin:"0 auto 12px" }}>⚠️</div>
               <p style={{ margin:0, fontSize:16, fontWeight:700, color:P.text }}>Réinitialiser la session ?</p>
               <p style={{ margin:"8px 0 0", fontSize:12.5, color:P.textSoft, lineHeight:1.5 }}>
-                Toutes les données de la réanimation en cours seront <b>définitivement effacées</b> :
-                chronologie, dossier patient, transmission, compte-rendu. Cette action est irréversible.
+                La session va être <b>archivée</b> (consultable depuis l'accueil), puis l'écran sera
+                remis à zéro pour une nouvelle réanimation : chronologie, dossier patient, transmission.
               </p>
             </div>
             <button onClick={() => { reset(); setModalReset(false); }}
@@ -6258,7 +6947,7 @@ export default function App() {
                 border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:700,
                 padding:"13px", cursor:"pointer", fontFamily:sans, marginBottom:9,
                 boxShadow:`0 4px 14px color-mix(in srgb, ${P.rose} 27%, transparent)` }}>
-              Oui, tout effacer
+              Archiver et réinitialiser
             </button>
             <button onClick={() => setModalReset(false)}
               style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
@@ -6281,7 +6970,7 @@ export default function App() {
               fontFamily:sans, maxHeight:"85vh", overflowY:"auto" }}>
 
             <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20 }}>
-              <div style={{ width:38, height:38, borderRadius:11, background:"#FFF3E0",
+              <div style={{ width:38, height:38, borderRadius:11, background:P.amberSoft,
                 display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>📞</div>
               <div>
                 <p style={{ margin:0, fontSize:15, fontWeight:600, color:P.text }}>Appel régulation</p>
@@ -6342,20 +7031,24 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Bandeau fixe Appel Régulation ── */}
-      <div style={{ position:"fixed", bottom:0, left:0, right:0, zIndex:30,
-        background:P.surface, borderTop:`1px solid ${P.border}`,
-        padding:"7px 14px 10px", boxShadow:"0 -4px 16px rgba(0,0,0,0.08)" }}>
-        <button onClick={() => setModalRegul(true)}
-          style={{ width:"100%", background:"linear-gradient(135deg,#F97316,#EA6010)",
-            border:"none", borderRadius:11, color:"#fff", fontSize:13, fontWeight:600,
-            padding:"9px 16px", cursor:"pointer", fontFamily:sans,
-            display:"flex", alignItems:"center", justifyContent:"center", gap:8,
-            boxShadow:"0 3px 10px rgba(249,115,22,0.3)" }}>
-          <span style={{ fontSize:15 }}>📞</span>
-          Appel régulation
-        </button>
-      </div>
+      {/* ── Toast de confirmation d'ajout à la chronologie ── */}
+      {confirmAdd && (
+        <div key={confirmAdd.key}
+          style={{ position:"fixed", bottom:24, left:"50%", zIndex:95,
+            transform:"translateX(-50%)", maxWidth:"86%",
+            background:`linear-gradient(135deg, ${P.green}, ${P.greenText})`,
+            color:"#fff", borderRadius:13, padding:"11px 16px",
+            display:"flex", alignItems:"center", gap:10, pointerEvents:"none",
+            boxShadow:`0 8px 26px color-mix(in srgb, ${P.green} 50%, transparent)`,
+            animation:"acrConfirmIn 1.5s ease forwards", fontFamily:sans }}>
+          <span style={{ width:24, height:24, borderRadius:"50%", background:"rgba(255,255,255,0.25)",
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:900, flexShrink:0 }}>✓</span>
+          <div style={{ minWidth:0 }}>
+            <p style={{ margin:0, fontSize:10, fontWeight:700, opacity:0.85, letterSpacing:"0.05em", textTransform:"uppercase", fontFamily:mono }}>Ajouté à la chronologie</p>
+            <p style={{ margin:0, fontSize:13, fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{confirmAdd.label}</p>
+          </div>
+        </div>
+      )}
 
       {/* PDF adulte — overlay */}
       {showPdf && (
