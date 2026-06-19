@@ -2610,6 +2610,9 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
           <button onClick={()=>{
             const detail = [iotSonde&&`sonde ${iotSonde}mm`, iotRepere&&`repère ${iotRepere}cm`, iotCapno&&`ETCO2 ${iotCapno}mmHg`].filter(Boolean).join(", ");
             addEvent("iot",`Intubation${detail?` (${detail})`:""}`, "🫁");
+            if (iotCapno) {
+              setEtco2ListPed(prev => [...prev, { val: iotCapno, sec, time: getNow() }]);
+            }
             setModalIotPed(false);
           }} style={{width:"100%",background:`linear-gradient(135deg,${P.violet},#5A4E8A)`,
             border:"none",borderRadius:12,color:"#fff",fontSize:14,fontWeight:600,
@@ -3119,6 +3122,12 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
                 p.push(`Débit ${rempliDebit}mL/h`);
               if(racsPed.autresHemo) p.push(racsPed.autresHemo);
               addEvent("racs_soins", p.length ? `Post-RACS : ${p.join(" · ")}` : "Soins post-RACS initiés", "🫀");
+              if (racsPed.tas || racsPed.fc) {
+                setHemoListPed(prev => [...prev, { sec, time: getNow(), pas: racsPed.tas, pad: racsPed.tad, fc: racsPed.fc }]);
+              }
+              if (racsPed.capno) {
+                setEtco2ListPed(prev => [...prev, { val: racsPed.capno, sec, time: getNow() }]);
+              }
               setModalRacsPed(false);
             }} style={{width:"100%",background:"linear-gradient(135deg,#3EA876,#2A7D57)",
               border:"none",borderRadius:14,color:"#fff",fontSize:14,fontWeight:600,
@@ -5536,6 +5545,9 @@ export default function App() {
     ].filter(Boolean);
     const detail = parts.length ? ` (${parts.join(", ")})` : "";
     addEvent("iot", `Intubation${detail}`, "🫁");
+    if (iot.capno) {
+      setEtco2List(prev => [...prev, { val: iot.capno, sec, time: getNow() }]);
+    }
     setModalIot(false);
   };
 
@@ -5658,10 +5670,10 @@ export default function App() {
   if (!module) return (
     <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans,
       display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-      padding:"0 20px", position:"relative" }}>
+      padding:"64px 20px 20px", boxSizing:"border-box", position:"relative" }}>
 
       {/* Réglages en haut à gauche */}
-      <div style={{ position:"absolute", top:16, left:16 }}>
+      <div style={{ position:"absolute", top:16, left:16, zIndex:5 }}>
         <button onClick={() => setModalSettings(true)}
           style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:11,
             width:40, height:40, cursor:"pointer", fontSize:18, color:P.textMid,
@@ -5669,9 +5681,9 @@ export default function App() {
           aria-label="Réglages">⚙️</button>
       </div>
 
-      {/* Bascule Jour/Nuit en haut */}
-      <div style={{ position:"absolute", top:16, right:16 }}>
-        <ThemeToggle theme={theme} setTheme={setTheme} />
+      {/* Bascule Jour/Nuit en haut, bien à droite */}
+      <div style={{ position:"absolute", top:16, right:12, zIndex:5 }}>
+        <ThemeToggle theme={theme} setTheme={setTheme} compact />
       </div>
 
       {/* Logo */}
@@ -7438,7 +7450,16 @@ export default function App() {
               </div>
 
               {/* Valider */}
-              <button onClick={() => { addEvent("racs_soins", buildLog(), "🫀"); setModalRacs(false); }}
+              <button onClick={() => {
+                addEvent("racs_soins", buildLog(), "🫀");
+                if (racs.tas || racs.fc) {
+                  setHemoList(prev => [...prev, { sec, time: getNow(), pas: racs.tas, pad: racs.tad, fc: racs.fc }]);
+                }
+                if (racs.capno) {
+                  setEtco2List(prev => [...prev, { val: racs.capno, sec, time: getNow() }]);
+                }
+                setModalRacs(false);
+              }}
                 style={{ width:"100%", background:"linear-gradient(135deg,#3EA876,#2A7D57)",
                   border:"none", borderRadius:14, color:"#fff", fontSize:15, fontWeight:600,
                   padding:"15px", cursor:"pointer", fontFamily:sans, marginTop:14, flexShrink:0,
@@ -7923,7 +7944,20 @@ export default function App() {
                 else if (id === "transfusion") setModalTransfu(true);
                 else if (id === "exacyl") setModalExacyl(true);
                 else if (id === "hemo_ext") setModalHemoExt(true);
-                else if (id === "octaplas") { setBattForm({ age:"", pas:"", glasgow:"", fr:"", spo2:"", fc:"", penetrant:false, hcin:false }); setModalOctaplas(true); }
+                else if (id === "octaplas") {
+                  const lastHemo = hemoList.length > 0 ? hemoList[hemoList.length - 1] : null;
+                  const ageNum = pat?.age ? String(pat.age).match(/\d+/)?.[0] || "" : "";
+                  setBattForm({
+                    age: ageNum,
+                    pas: lastHemo?.pas || "",
+                    glasgow: "",
+                    fr: "",
+                    spo2: "",
+                    fc: lastHemo?.fc || "",
+                    penetrant: false, hcin: false,
+                  });
+                  setModalOctaplas(true);
+                }
               }}
               P={P} mono={mono} sans={sans} />
           )}
@@ -8396,6 +8430,9 @@ export default function App() {
               <div style={{ background:P.surfaceAlt, borderRadius:13, padding:"12px 14px", marginBottom:12 }}>
                 <p style={{ margin:"0 0 10px", fontSize:10, fontWeight:700, color:P.textSoft,
                   textTransform:"uppercase", letterSpacing:"0.12em", fontFamily:mono }}>Calculateur BATT Score</p>
+                <p style={{ margin:"-4px 0 10px", fontSize:10, color:P.textSoft, fontStyle:"italic" }}>
+                  Âge et dernières TA/FC pré-remplis si déjà saisis — modifiables
+                </p>
 
                 <Bfield label="Âge" keyN="age" placeholder="ans" unit="ans" ptsV={pts.age}
                   value={battForm.age} onChange={v => setBattForm(f=>({...f,age:v}))} />
