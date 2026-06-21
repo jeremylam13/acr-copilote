@@ -932,18 +932,279 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     return lines.join("\n");
   };
 
+  // ── Génération d'un rapport HTML autonome, structuré et coloré (pour le partage) ──
+  const buildHtml = () => {
+    const esc = (s) => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+    // Palette jour (fixe, fidèle au thème clair de l'app)
+    const C = {
+      bg:"#E9EEF5", surface:"#FFFFFF", surfaceAlt:"#F1F5FA", border:"#C5CFDD", borderSoft:"#E2E8F1",
+      text:"#0A111B", textMid:"#46566F", textSoft:"#76869E",
+      blue:"#1361DE", blueSoft:"#E7F0FD", blueText:"#0B43A0",
+      rose:"#DE1019", roseSoft:"#FDEAEB", roseText:"#A50710",
+      amber:"#B67100", amberSoft:"#FBF3E2", amberText:"#8A5500",
+      green:"#0C9A54", greenSoft:"#E6F7EE", greenText:"#06713C",
+      violet:"#6433C9", violetSoft:"#F0EBFB", violetText:"#491F9C",
+      teal:"#0C7B70", tealSoft:"#E4F4F2", tealText:"#085A52",
+    };
+
+    const rosc2  = events.find(e => e.id === "rosc");
+    const deces2 = events.find(e => e.id === "deces");
+    const chocs2 = events.filter(e => e.id === "choc").length;
+    const adrs2  = events.filter(e => e.id === "adr").length;
+    const cordEvts2 = events.filter(e => e.id === "cord300" || e.id === "cord150");
+    const rv2 = events.find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
+    const patientDesc2 = [
+      patient?.nom && patient?.prenom ? `${patient.nom} ${patient.prenom}` : patient?.nom || null,
+      patient?.age ? `${patient.age}` : patient?.ddn ? calcAge(patient.ddn) : null,
+    ].filter(Boolean).join(", ");
+    const lastH2 = (hemo && hemo.length > 0) ? hemo[hemo.length-1] : null;
+    const lastPam2 = lastH2 && lastH2.pas && lastH2.pad
+      ? Math.round(parseFloat(lastH2.pad) + (parseFloat(lastH2.pas) - parseFloat(lastH2.pad)) / 3) : null;
+    const tT = trans;
+    const preSMUR2 = tT && [
+      tT.temoin && `Témoin : ${tT.temoin}`,
+      tT.mceTemoin && `MCE témoin : ${tT.mceTemoin}`,
+      (parseInt(tT.chocsPompiers)||0)>0 && `${tT.chocsPompiers} choc(s) DSA`,
+      tT.rythmeDSA && `Rythme initial : ${tT.rythmeDSA}`,
+    ].filter(Boolean).join(" · ");
+
+    // ── Mini-graphiques SVG (autonomes, sans JS) ──
+    const sparkline = (pts, { color, threshold, unit, w=560, h=130 } = {}) => {
+      const padL=34, padR=14, padT=14, padB=22;
+      if (!pts || pts.length === 0) return "";
+      const vMax = Math.max(...pts.map(p=>p.v), threshold||0) * 1.15 || 10;
+      const x = i => pts.length===1 ? (w-padL-padR)/2+padL : padL + (i/(pts.length-1))*(w-padL-padR);
+      const y = v => padT + (1 - v/vMax) * (h-padT-padB);
+      const path = pts.map((p,i)=>`${i===0?"M":"L"} ${x(i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(" ");
+      const last = pts[pts.length-1];
+      let svg = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block" preserveAspectRatio="none">`;
+      svg += `<line x1="${padL}" y1="${h-padB}" x2="${w-padR}" y2="${h-padB}" stroke="${C.border}" stroke-width="1"/>`;
+      if (threshold) {
+        svg += `<line x1="${padL}" y1="${y(threshold).toFixed(1)}" x2="${w-padR}" y2="${y(threshold).toFixed(1)}" stroke="${C.amber}" stroke-width="1" stroke-dasharray="4 3" opacity="0.8"/>`;
+        svg += `<text x="${padL-4}" y="${y(threshold).toFixed(1)+3}" text-anchor="end" font-size="10" fill="${C.amber}" font-family="monospace">${threshold}</text>`;
+      }
+      if (pts.length > 1) svg += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+      pts.forEach((p,i) => { svg += `<circle cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${i===pts.length-1?4:2.5}" fill="${i===pts.length-1?color:C.surface}" stroke="${color}" stroke-width="1.5"/>`; });
+      svg += `<text x="${x(pts.length-1).toFixed(1)+6}" y="${Math.max(y(last.v)-8,12)}" font-size="13" font-weight="700" fill="${color}" font-family="monospace">${last.v}${unit||""}</text>`;
+      svg += `</svg>`;
+      return svg;
+    };
+
+    const hemoSvg = (pts, amineList) => {
+      const w=560,h=150,padL=36,padR=14,padT=14,padB=24;
+      const valid = (pts||[]).filter(p=>p.pas||p.pad||p.fc);
+      if (valid.length===0) return "";
+      const pamPts = valid.filter(p=>p.pas&&p.pad).map(p=>({...p,pam:Math.round(parseFloat(p.pad)+(parseFloat(p.pas)-parseFloat(p.pad))/3)}));
+      const vMax=220;
+      const x = i => valid.length===1 ? (w-padL-padR)/2+padL : padL + (i/(valid.length-1))*(w-padL-padR);
+      const y = v => padT + (1 - v/vMax) * (h-padT-padB);
+      const lineOf = (key) => valid.map((p,i)=>p[key]?`${i===0?"M":"L"} ${x(i).toFixed(1)} ${y(parseFloat(p[key])).toFixed(1)}`:"").filter(Boolean).join(" ");
+      let svg = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block" preserveAspectRatio="none">`;
+      svg += `<line x1="${padL}" y1="${y(65).toFixed(1)}" x2="${w-padR}" y2="${y(65).toFixed(1)}" stroke="${C.amber}" stroke-width="1" stroke-dasharray="4 3" opacity="0.8"/>`;
+      svg += `<text x="${padL-4}" y="${y(65).toFixed(1)+3}" text-anchor="end" font-size="9" fill="${C.amber}" font-family="monospace">PAM65</text>`;
+      if (valid.filter(p=>p.pas).length>1) svg += `<path d="${lineOf('pas')}" fill="none" stroke="${C.rose}" stroke-width="2"/>`;
+      if (valid.filter(p=>p.pad).length>1) svg += `<path d="${lineOf('pad')}" fill="none" stroke="${C.blue}" stroke-width="2"/>`;
+      if (valid.filter(p=>p.fc).length>1)  svg += `<path d="${lineOf('fc')}" fill="none" stroke="${C.violet}" stroke-width="1.5" stroke-dasharray="2 3"/>`;
+      svg += `</svg>`;
+      svg += `<div style="display:flex;gap:14px;margin-top:4px;flex-wrap:wrap">
+        <span style="font-size:10px;font-weight:700;color:${C.rose};font-family:monospace">— PAS</span>
+        <span style="font-size:10px;font-weight:700;color:${C.blue};font-family:monospace">— PAD</span>
+        <span style="font-size:10px;font-weight:700;color:${C.violet};font-family:monospace">┄ FC</span>
+      </div>`;
+      return svg;
+    };
+
+    const section = (title, color, soft, inner) => `
+      <div style="background:${C.surface};border:1px solid ${C.border};border-left:4px solid ${color};
+        border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 3px rgba(10,17,27,0.06)">
+        <p style="margin:0 0 10px;font-size:11px;font-weight:800;color:${color};text-transform:uppercase;
+          letter-spacing:0.1em;font-family:'JetBrains Mono',monospace">${title}</p>
+        ${inner}
+      </div>`;
+
+    const row = (label, value, valColor) => `
+      <div style="display:flex;justify-content:space-between;align-items:baseline;padding:4px 0;border-bottom:1px solid ${C.borderSoft}">
+        <span style="font-size:13px;color:${C.textMid}">${esc(label)}</span>
+        <span style="font-size:14px;font-weight:700;color:${valColor||C.text};font-family:'JetBrains Mono',monospace">${esc(value)}</span>
+      </div>`;
+
+    let html = `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compte-rendu SMUR${patient?.nom ? " — "+esc(patient.nom) : ""}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Archivo:wght@800;900&family=JetBrains+Mono:wght@600;700&display=swap');
+  * { box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  body { margin:0; background:${C.bg}; font-family:'Inter',system-ui,sans-serif; color:${C.text};
+    padding:20px 14px 40px; }
+  .wrap { max-width:640px; margin:0 auto; }
+</style></head><body><div class="wrap">
+
+  <!-- En-tête -->
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px">
+    <div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,${C.rose},${C.roseText});
+      display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0">❤️‍🩹</div>
+    <div>
+      <p style="margin:0;font-size:10px;font-weight:800;color:${C.rose};text-transform:uppercase;
+        letter-spacing:0.14em;font-family:'JetBrains Mono',monospace">Copilote ACR · Aide cognitive SMUR</p>
+      <p style="margin:0;font-size:21px;font-weight:900;color:${C.text};font-family:'Archivo',sans-serif;letter-spacing:-0.02em">
+        Compte-rendu de réanimation</p>
+      <p style="margin:0;font-size:11px;color:${C.textSoft}">${new Date().toLocaleDateString("fr-FR")} · ${getNow()}</p>
+    </div>
+  </div>`;
+
+    // Identité
+    if (patient?.nom || patient?.prenom || patient?.age || patient?.atcd || patient?.histoire) {
+      html += section("🪪 Identité patient", C.blue, C.blueSoft, `
+        ${(patient.nom||patient.prenom) ? row("Nom", [patient.nom,patient.prenom].filter(Boolean).join(" ")) : ""}
+        ${patient.age ? row("Âge", patient.age) : ""}
+        ${patient.atcd ? row("ATCD", patient.atcd) : ""}
+        ${patient.histoire ? row("Circonstances", patient.histoire) : ""}
+      `);
+    }
+
+    // Données RCP
+    html += section("🫀 Données de réanimation", C.rose, C.roseSoft, `
+      ${row("Heure ACR", acrTime || "Inconnue")}
+      ${row("No-flow", noFlow ? noFlow+" min" : "Inconnu")}
+      ${row("Low-flow", lowFlow ? lowFlow+" min" : "—")}
+      ${row("Durée RCP", fmtSec(totalSec))}
+      ${row("Chocs électriques", chocs2 || "Aucun")}
+      ${row("Adrénaline", adrs2 ? adrs2+" × 1 mg = "+adrs2+" mg" : "Non administrée")}
+      ${row("Issue", rosc2 ? "RACS à "+rosc2.time : deces2 ? deces2.label : "Non renseignée", rosc2?C.greenText:deces2?C.textSoft:C.amberText)}
+    `);
+
+    // Intubation
+    if (iot?.sonde) {
+      html += section("🫁 Intubation oro-trachéale", C.violet, C.violetSoft, `
+        ${iot.cormack ? row("Cormack", iot.cormack) : ""}
+        ${row("Sonde", iot.sonde+" mm")}
+        ${iot.repere ? row("Repère", iot.repere+" cm") : ""}
+        ${iot.capno ? row("EtCO₂ initial", iot.capno+" mmHg") : ""}
+      `);
+    }
+
+    // Hemocue
+    if (hemocue && hemocue.length > 0) {
+      const hPts = hemocue.map(h => ({ v: parseFloat(String(h.val).replace(",",".")) })).filter(p=>!isNaN(p.v));
+      html += section("🩸 Hemocue (Hb)", C.rose, C.roseSoft,
+        sparkline(hPts, { color:C.rose, threshold:7, unit:" g/dL" }) +
+        `<div style="margin-top:8px">` + hemocue.map(h => row(h.time, h.val+" g/dL")).join("") + `</div>`
+      );
+    }
+
+    // Pré-SMUR
+    if (preSMUR2) {
+      html += section("📋 Phase pré-SMUR", C.slate || C.textSoft, C.surfaceAlt, `
+        <p style="margin:0;font-size:13px;color:${C.textMid};line-height:1.6">${esc(preSMUR2)}</p>
+      `);
+    }
+
+    // EtCO2
+    if (etco2 && etco2.length > 0) {
+      const ePts = etco2.map(e => ({ v: parseFloat(String(e.val).replace(",",".")) })).filter(p=>!isNaN(p.v));
+      html += section("📈 EtCO₂ — capnographie", C.teal, C.tealSoft,
+        sparkline(ePts, { color:C.teal, threshold:10, unit:" mmHg" })
+      );
+    }
+
+    // Hémodynamique post-RACS
+    if (hemo && hemo.length > 0) {
+      html += section("💓 Hémodynamique post-RACS", C.green, C.greenSoft,
+        hemoSvg(hemo, amines) +
+        (lastPam2 !== null ? `<p style="margin:8px 0 0;font-size:13px;font-weight:700;color:${lastPam2<65?C.roseText:C.greenText}">PAM actuelle : ${lastPam2} mmHg</p>` : "") +
+        (amines && amines.length>0 ? `<div style="margin-top:8px">` + amines.map(a=>row(a.time, a.label)).join("") + `</div>` : "")
+      );
+    }
+
+    // Chronologie
+    html += section(`🕐 Chronologie (${events.length} événements)`, C.blue, C.blueSoft,
+      `<div style="border:1px solid ${C.borderSoft};border-radius:8px;overflow:hidden">` +
+      events.map((e,i) => `
+        <div style="display:flex;gap:10px;align-items:center;padding:7px 10px;
+          background:${i%2===0?C.surface:C.surfaceAlt}">
+          <span style="font-family:'JetBrains Mono',monospace;color:${C.blueText};font-weight:700;font-size:12px;flex-shrink:0">${esc(e.time)}</span>
+          <span style="font-size:13px;color:${C.text};flex:1">${esc(e.label)}</span>
+        </div>`).join("") +
+      `</div>`
+    );
+
+    // SBAR
+    const sbarRows = [
+      { L:"S", title:"Situation", c:C.rose, soft:C.roseSoft, lines:[
+        `${patientDesc2||"Patient"} · ACR extra-hospitalier`,
+        `Heure arrêt : ${acrTime||"inconnue"} · No-flow : ${noFlow||"?"}min · Low-flow : ${lowFlow||"—"}min · Durée : ${fmtSec(totalSec)}`,
+      ]},
+      { L:"B", title:"Contexte", c:C.blue, soft:C.blueSoft, lines:[
+        patient?.atcd && `ATCD : ${patient.atcd}`,
+        patient?.histoire && `Circonstances : ${patient.histoire}`,
+        patient?.temp && `Température : ${patient.temp} °C`,
+        preSMUR2 && `Pré-SMUR : ${preSMUR2}`,
+      ].filter(Boolean)},
+      { L:"A", title:"Évaluation", c:C.amber, soft:C.amberSoft, lines:[
+        rv2 && `Rythme initial SMUR : ${rv2.label}`,
+        chocs2 ? `${chocs2} choc(s) électrique(s)` : "Aucun choc",
+        adrs2 ? `Adrénaline : ${adrs2} × 1 mg = ${adrs2} mg` : "Adrénaline non administrée",
+        cordEvts2.length>0 && cordEvts2.map(e=>e.label).join(" + "),
+        iot?.sonde && `Intubation : sonde ${iot.sonde} mm · repère ${iot.repere||"—"} cm${iot.capno?` · EtCO₂ initial ${iot.capno} mmHg`:""}`,
+        rosc2 ? `RACS à ${rosc2.time}` : deces2 ? deces2.label : "Issue non renseignée",
+      ].filter(Boolean)},
+      { L:"R", title:"Résultat / État actuel", c:C.green, soft:C.greenSoft, lines:[
+        lastH2 && `Hémodynamique : TA ${lastH2.pas||"—"}/${lastH2.pad||"—"} mmHg · FC ${lastH2.fc||"—"} bpm${lastPam2?` · PAM ${lastPam2} mmHg`:""}`,
+        amines&&amines.length>0 && `Amines : ${amines.map(a=>a.label).join(" + ")}`,
+        etco2&&etco2.length>0 && `EtCO₂ : ${etco2[etco2.length-1].val} mmHg`,
+        !rosc2 && "Pas de RACS obtenu à ce stade.",
+      ].filter(Boolean)},
+    ];
+    html += `<div style="margin-bottom:14px">
+      <p style="margin:0 0 10px;font-size:13px;font-weight:800;color:${C.text};font-family:'Archivo',sans-serif">
+        📡 Transmission SBAR — au réanimateur</p>
+      ${sbarRows.map(r => `
+        <div style="display:flex;gap:10px;background:${r.soft};border:1px solid ${r.c}33;border-radius:11px;
+          padding:11px 13px;margin-bottom:8px">
+          <div style="width:28px;height:28px;border-radius:9px;background:${r.c};flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;
+            font-family:'JetBrains Mono',monospace;font-size:13px">${r.L}</div>
+          <div style="flex:1;min-width:0">
+            <p style="margin:0 0 3px;font-size:10px;font-weight:700;color:${r.c};text-transform:uppercase;
+              letter-spacing:0.1em;font-family:'JetBrains Mono',monospace">${r.title}</p>
+            ${r.lines.length>0 ? r.lines.map((l,i)=>`<p style="margin:${i===0?0:"2px"} 0 0;font-size:13px;
+              font-weight:${i===0?700:400};color:${C.text};line-height:1.5">${esc(l)}</p>`).join("")
+              : `<p style="margin:0;font-size:12px;color:${C.textSoft};font-style:italic">Non renseigné</p>`}
+          </div>
+        </div>`).join("")}
+    </div>`;
+
+    html += `
+      <p style="text-align:center;font-size:10px;color:${C.textSoft};margin-top:18px;font-style:italic;line-height:1.6">
+        Usage professionnel exclusif · Outil d'aide cognitive — chaque professionnel demeure
+        responsable de ses prescriptions et décisions thérapeutiques.
+      </p>
+    </div></body></html>`;
+
+    return html;
+  };
+
   const handleShare = async () => {
     const text = buildText();
+    const html = buildHtml();
     const date = new Date().toISOString().slice(0,10);
     const nom  = patient?.nom ? `_${patient.nom}` : "";
-    const filename = `ACR${nom}_${date}.txt`;
+    const filenameHtml = `Compte-rendu-SMUR${nom}_${date}.html`;
+    const filenameTxt  = `ACR${nom}_${date}.txt`;
 
-    // Méthode 1 : Web Share API (iOS Safari, Android Chrome) — partage natif
+    // Méthode 1 : Web Share API — partage le rapport HTML coloré et structuré
     if (navigator.share) {
       try {
-        const file = new File([text], filename, { type: "text/plain" });
-        if (navigator.canShare && navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title: "Compte-rendu ACR" });
+        const fileHtml = new File([html], filenameHtml, { type: "text/html" });
+        if (navigator.canShare && navigator.canShare({ files: [fileHtml] })) {
+          await navigator.share({ files: [fileHtml], title: "Compte-rendu SMUR" });
+          return;
+        }
+        // Si le partage de fichier HTML n'est pas supporté, tenter le texte brut en fichier
+        const fileTxt = new File([text], filenameTxt, { type: "text/plain" });
+        if (navigator.canShare && navigator.canShare({ files: [fileTxt] })) {
+          await navigator.share({ files: [fileTxt], title: "Compte-rendu ACR" });
           return;
         }
         // Partage sans fichier (texte seul)
@@ -955,22 +1216,24 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       }
     }
 
-    // Méthode 2 : data URI (fallback Android)
+    // Méthode 2 : téléchargement du rapport HTML coloré (fallback Android / desktop)
     try {
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = "data:text/plain;charset=utf-8," + encodeURIComponent(text);
-      a.download = filename;
+      a.href = url;
+      a.download = filenameHtml;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
       return;
     } catch(e) {}
 
-    // Méthode 3 : ouvrir dans un nouvel onglet (dernier recours)
+    // Méthode 3 : ouvrir le rapport HTML coloré dans un nouvel onglet (dernier recours)
     const w = window.open("", "_blank");
     if (w) {
-      w.document.write("<pre style='font-family:monospace;font-size:13px;padding:16px;white-space:pre-wrap'>" +
-        text.replace(/</g,"&lt;").replace(/>/g,"&gt;") + "</pre>");
+      w.document.write(html);
       w.document.close();
     }
   };
@@ -5590,7 +5853,8 @@ export default function App() {
     setModalTrans(false);
     setAdrTimerStart(0); setAdrInterval(4);
     setMainTab("actions"); setSuspectedAd([]); setModalEcmo(false); setModalDdac(false);
-    setModalFastTrauma(false); setFastTr({ morrison:"", kohler:"", douglas:"", pleureD:"", pleureG:"", pericarde:"" });
+    setModalFastTrauma(false); setFastTr({ morrison:"", kohler:"", douglas:"", pleureD:"", pleureG:"", pericarde:"",
+      morrisonMode:"", kohlerMode:"", douglasMode:"", pleureDMode:"", pleureGMode:"", pericardeMode:"" });
     setModalThoraco(null); setModalHemocue(false); setHemocueVal(""); setModalTransfu(false); setTransfu({ cgr:"", pfc:"", plaq:"" });
     setModalExacyl(false); setModalHemoExt(false); setGarrotSite(""); setGarrotHeure(""); setHemocueHist([]); setModalPat(false);
     clearSession("acr_adulte_");
@@ -5642,7 +5906,8 @@ export default function App() {
 
   // États spécifiques trauma (FAST, thoracostomies, hemocue, transfusion)
   const [modalFastTrauma, setModalFastTrauma] = useState(false);
-  const [fastTr, setFastTr] = useLocalState("acr_adulte_fastTr", { morrison:"", kohler:"", douglas:"", pleureD:"", pleureG:"", pericarde:"" });
+  const [fastTr, setFastTr] = useLocalState("acr_adulte_fastTr", { morrison:"", kohler:"", douglas:"", pleureD:"", pleureG:"", pericarde:"",
+    morrisonMode:"", kohlerMode:"", douglasMode:"", pleureDMode:"", pleureGMode:"", pericardeMode:"" });
   const sft = k => v => setFastTr(p => ({ ...p, [k]: v }));
   const [modalThoraco, setModalThoraco] = useState(null); // null | "d" | "g"
   const [modalHemocue, setModalHemocue] = useState(false);
@@ -6623,18 +6888,48 @@ export default function App() {
           </p>
 
           {[
-            { k:"morrison", label:"Espace de Morrison",  ph:"hépato-rénal" },
-            { k:"kohler",   label:"Espace de Köhler",    ph:"spléno-rénal" },
-            { k:"douglas",  label:"Cul-de-sac de Douglas", ph:"pelvien" },
-            { k:"pleureD",  label:"Plèvre droite",        ph:"épanchement ?" },
-            { k:"pleureG",  label:"Plèvre gauche",        ph:"épanchement ?" },
-            { k:"pericarde",label:"Péricarde",            ph:"épanchement / tamponnade ?" },
-          ].map(s => (
-            <div key={s.k} style={{ marginBottom:8 }}>
-              <Lbl>{s.label}</Lbl>
-              <TInput value={fastTr[s.k]} onChange={sft(s.k)} placeholder={s.ph} />
-            </div>
-          ))}
+            { k:"morrison", label:"Espace de Morrison",    sub:"hépato-rénal", pneumo:false },
+            { k:"kohler",   label:"Espace de Köhler",      sub:"spléno-rénal", pneumo:false },
+            { k:"douglas",  label:"Cul-de-sac de Douglas", sub:"pelvien",      pneumo:false },
+            { k:"pleureD",  label:"Plèvre droite",         sub:"",             pneumo:true },
+            { k:"pleureG",  label:"Plèvre gauche",         sub:"",             pneumo:true },
+            { k:"pericarde",label:"Péricarde",             sub:"",             pneumo:false },
+          ].map(s => {
+            const modeKey = s.k + "Mode";
+            const mode = fastTr[modeKey] || "";
+            const opts = [
+              { id:"epanchement", label:"Épanchement", c:P.rose },
+              ...(s.pneumo ? [{ id:"pneumo", label:"Pneumothorax", c:P.amber }] : []),
+              { id:"normal", label:"Normal", c:P.green },
+              { id:"note",   label:"Note libre", c:P.blue },
+            ];
+            return (
+              <div key={s.k} style={{ marginBottom:13 }}>
+                <Lbl>{s.label}{s.sub ? ` — ${s.sub}` : ""}</Lbl>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginTop:4,
+                  marginBottom: mode === "note" ? 6 : 0 }}>
+                  {opts.map(o => (
+                    <button key={o.id} onClick={() => {
+                      sft(modeKey)(o.id);
+                      if (o.id === "note") { if (mode !== "note") sft(s.k)(""); }
+                      else { sft(s.k)(o.label); }
+                    }}
+                      style={{
+                        background: mode === o.id ? o.c : P.surfaceAlt,
+                        border:`1.5px solid ${mode === o.id ? o.c : P.border}`,
+                        borderRadius:9, padding:"7px 12px", cursor:"pointer",
+                        fontFamily:sans, fontSize:11.5, fontWeight:700,
+                        color: mode === o.id ? "#fff" : P.text, whiteSpace:"nowrap" }}>
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                {mode === "note" && (
+                  <TInput value={fastTr[s.k]} onChange={sft(s.k)} placeholder="Décrire la trouvaille..." />
+                )}
+              </div>
+            );
+          })}
 
           <button onClick={() => {
             const parts = [];
