@@ -2380,6 +2380,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   // CCF pédiatrique (réglage partagé)
   const [ccfEnabled] = useLocalState("acr_ccf_enabled", false);
   const [debriefEnabled] = useLocalState("acr_debrief_enabled", false);
+  const [pedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
+  const [pedDiluMode] = useLocalState("acr_ped_dilu_mode", "1");
   const [showDebriefPed, setShowDebriefPed] = useState(false);
   const [ccfPausedTotalPed, setCcfPausedTotalPed] = useLocalState("acr_ped_ccfPaused", 0);
   const [ccfPausedSincePed, setCcfPausedSincePed] = useLocalState("acr_ped_ccfSince", null);
@@ -4383,6 +4385,8 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
   const [mode,     setMode]     = useState("poids"); // "poids" | "age"
   const [idx,      setIdx]      = useState(0);
   const [showRcp,  setShowRcp]  = useState(false);
+  const [pedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
+  const [pedDiluMode]    = useLocalState("acr_ped_dilu_mode", "1");
 
   const row   = PED_TABLE[idx];
   const poids = row.p;
@@ -4613,6 +4617,121 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
                 </div>
               </div>
             </div>
+
+            {/* ── Guide de dilution (protocole local activé) ── */}
+            {pedDiluEnabled && (() => {
+              const p = poids;
+
+              // ── PROTOCOLE 2 : dilution simple universelle ──
+              if (pedDiluMode === "2") {
+                const volInj = (Math.round(p * 0.1 * 100) / 100).toString().replace(".", ",");
+                const mgInj  = (Math.round(p * 0.01 * 1000) / 1000).toString().replace(".", ",");
+                const Step2 = ({ num, bold, rest }) => (
+                  <div style={{ display:"flex", gap:8, padding:"5px 0", borderBottom:`1px solid ${P.borderSoft}`, alignItems:"baseline" }}>
+                    <span style={{ width:18, height:18, borderRadius:5, background:P.tealText,
+                      display:"inline-flex", alignItems:"center", justifyContent:"center",
+                      fontSize:10, fontWeight:800, color:"#fff", flexShrink:0, fontFamily:mono }}>{num}</span>
+                    <p style={{ margin:0, fontSize:12, color:P.text, lineHeight:1.4 }}>
+                      {bold && <span style={{ fontWeight:700, color:P.tealText }}>{bold}</span>}
+                      {rest && <span>{rest}</span>}
+                    </p>
+                  </div>
+                );
+                return (
+                  <div style={{ background:P.tealSoft, borderRadius:10, padding:"10px 12px", marginBottom:8,
+                    border:`1px solid ${P.teal}` }}>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                      <p style={{ margin:0, fontSize:9, fontWeight:800, color:P.tealText, fontFamily:mono,
+                        textTransform:"uppercase", letterSpacing:"0.08em" }}>💉 Protocole 2 — Dilution simple universelle</p>
+                      <div style={{ display:"flex", gap:6 }}>
+                        <div style={{ background:P.roseSoft, border:`1px solid ${P.rose}`, borderRadius:7,
+                          padding:"3px 8px", textAlign:"center" }}>
+                          <span style={{ fontSize:14, fontWeight:800, color:P.roseText, fontFamily:mono }}>{volInj} mL</span>
+                          <span style={{ fontSize:9, color:P.roseText, display:"block" }}>/ 4 min</span>
+                        </div>
+                        <div style={{ background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:7,
+                          padding:"3px 8px", textAlign:"center" }}>
+                          <span style={{ fontSize:14, fontWeight:800, color:P.amberText, fontFamily:mono }}>{mgInj} mg</span>
+                          <span style={{ fontSize:9, color:P.amberText, display:"block" }}>0,01 mg/kg</span>
+                        </div>
+                      </div>
+                    </div>
+                    <p style={{ margin:"0 0 6px", fontSize:10, color:P.tealText, fontStyle:"italic" }}>
+                      Préparation identique pour tous les poids
+                    </p>
+                    <Step2 num="1" bold="Prélever 1 mL (1 mg)" rest=" d'adrénaline 1 mg/mL" />
+                    <Step2 num="2" bold="Compléter à 10 mL" rest=" (+ 9 mL NaCl 0,9 %)" />
+                    <div style={{ marginTop:6, padding:"5px 0" }}>
+                      <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>→ Concentration : 0,1 mg/mL</p>
+                      <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:800, color:P.roseText }}>
+                        → Injecter {volInj} mL = {mgInj} mg = 0,01 mg/kg ✓
+                      </p>
+                    </div>
+                  </div>
+                );
+              }
+
+              // ── PROTOCOLE 1 : double/simple selon le poids ──
+              const isInfant = p < 10;
+              const vol1Inf  = p;
+              const mg1Inf   = Math.round(p * 0.1 * 100) / 100;
+              const naclInf  = Math.round((10 - p) * 10) / 10;
+              const concInf  = (mg1Inf / 10).toFixed(3);
+              const volSup   = Math.round(p / 10 * 100) / 100;
+              const naclSup  = Math.round((10 - volSup) * 100) / 100;
+              const concSup  = (volSup / 10).toFixed(3);
+              const Step1 = ({ num, bold, rest }) => (
+                <div style={{ display:"flex", gap:8, padding:"5px 0", borderBottom:`1px solid ${P.borderSoft}`, alignItems:"baseline" }}>
+                  {num !== undefined && (
+                    <span style={{ width:18, height:18, borderRadius:5, background:P.tealText,
+                      display:"inline-flex", alignItems:"center", justifyContent:"center",
+                      fontSize:10, fontWeight:800, color:"#fff", flexShrink:0, fontFamily:mono }}>{num}</span>
+                  )}
+                  <p style={{ margin:0, fontSize:12, color:P.text, lineHeight:1.4 }}>
+                    {bold && <span style={{ fontWeight:700, color:P.tealText }}>{bold}</span>}
+                    {rest && <span>{rest}</span>}
+                  </p>
+                </div>
+              );
+              return (
+                <div style={{ background:P.tealSoft, borderRadius:10, padding:"10px 12px", marginBottom:8,
+                  border:`1px solid ${P.teal}` }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                    <p style={{ margin:0, fontSize:9, fontWeight:800, color:P.tealText, fontFamily:mono,
+                      textTransform:"uppercase", letterSpacing:"0.08em" }}>
+                      💉 Protocole 1 — {isInfant ? "< 10 kg (nourrisson)" : "≥ 10 kg (enfant)"}
+                    </p>
+                    <div style={{ background:P.roseSoft, border:`1px solid ${P.rose}`, borderRadius:7,
+                      padding:"3px 8px", display:"flex", alignItems:"center", gap:4 }}>
+                      <span style={{ fontSize:13, fontWeight:800, color:P.roseText, fontFamily:mono }}>1 mL</span>
+                      <span style={{ fontSize:9, color:P.roseText }}>/ 4 min</span>
+                    </div>
+                  </div>
+                  {isInfant ? (
+                    <>
+                      <Step1 num="1" bold="Ampoule 1 mg → diluer à 10 mL" rest=" (+ 9 mL NaCl 0,9 %) = 0,1 mg/mL" />
+                      <Step1 num="2" bold={`Prélever ${vol1Inf} mL`} rest={` = ${mg1Inf} mg`} />
+                      <Step1 num="3" bold="Compléter à 10 mL" rest={` (+ ${naclInf} mL NaCl 0,9 %)`} />
+                      <div style={{ marginTop:6, padding:"5px 0" }}>
+                        <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>
+                          → {concInf} mg/mL · 1 mL = 10 µg/kg ✓
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <Step1 num="1" bold={`Prélever ${volSup} mL`} rest=" d'adrénaline 1 mg/mL" />
+                      <Step1 num="2" bold="Compléter à 10 mL" rest={` (+ ${naclSup} mL NaCl 0,9 %)`} />
+                      <div style={{ marginTop:6, padding:"5px 0" }}>
+                        <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>
+                          → {concSup} mg/mL · 1 mL = 10 µg/kg ✓
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Amiodarone */}
             <div style={{ background:P.amberSoft, borderRadius:8, padding:"8px 12px", marginBottom:8,
@@ -5896,6 +6015,8 @@ export default function App() {
   const [modalSettings, setModalSettings] = useState(false);
   const [ccfEnabled, setCcfEnabled] = useLocalState("acr_ccf_enabled", false);
   const [debriefEnabled, setDebriefEnabled] = useLocalState("acr_debrief_enabled", false);
+  const [pedDiluEnabled, setPedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
+  const [pedDiluMode, setPedDiluMode] = useLocalState("acr_ped_dilu_mode", "1"); // "1" ou "2"
 
   // Déverrouille l'audio dès le 1er contact (requis par iOS pour jouer un son ensuite)
   useEffect(() => {
@@ -6192,6 +6313,75 @@ export default function App() {
                 borderRadius:"50%", background:"#fff", transition:"left 0.15s",
                 boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
             </button>
+          </div>
+
+          {/* Protocoles de dilution pédiatrique */}
+          <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom: pedDiluEnabled ? 14 : 0 }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Protocoles de dilution pédiatrique</p>
+                <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+                  Affiche un <b>guide de préparation étape par étape</b> (volumes calculés selon le poids)
+                  avant chaque injection d'Adrénaline en pédiatrie.
+                </p>
+              </div>
+              <button onClick={() => setPedDiluEnabled(v => !v)}
+                style={{ flexShrink:0, width:50, height:30, borderRadius:15, border:"none", cursor:"pointer",
+                  background: pedDiluEnabled ? P.teal : P.border, position:"relative", transition:"background 0.15s",
+                  padding:0 }}>
+                <span style={{ position:"absolute", top:3, left: pedDiluEnabled ? 23 : 3, width:24, height:24,
+                  borderRadius:"50%", background:"#fff", transition:"left 0.15s",
+                  boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
+              </button>
+            </div>
+            {/* Choix du protocole quand le toggle est activé */}
+            {pedDiluEnabled && (
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {/* Protocole 1 */}
+                <button onClick={() => setPedDiluMode("1")}
+                  style={{ display:"flex", gap:10, background: pedDiluMode==="1" ? P.tealSoft : P.surface,
+                    border:`1.5px solid ${pedDiluMode==="1" ? P.teal : P.border}`, borderRadius:12,
+                    padding:"11px 13px", cursor:"pointer", textAlign:"left", fontFamily:sans }}>
+                  <span style={{ width:20, height:20, borderRadius:"50%", flexShrink:0, marginTop:1,
+                    border:`2px solid ${pedDiluMode==="1" ? P.teal : P.border}`,
+                    background: pedDiluMode==="1" ? P.teal : "transparent",
+                    display:"flex", alignItems:"center", justifyContent:"center" }}>
+                    {pedDiluMode==="1" && <span style={{ width:8, height:8, borderRadius:"50%", background:"#fff" }} />}
+                  </span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:700, color:P.text }}>
+                      Protocole 1 — Double/simple dilution selon le poids
+                    </p>
+                    <p style={{ margin:0, fontSize:11, color:P.textSoft, lineHeight:1.4 }}>
+                      {"< 10 kg : double dilution (1 mL / 4 min)"}
+                      <br/>{"≥ 10 kg : dilution simple (1 mL / 4 min)"}
+                    </p>
+                  </div>
+                </button>
+
+                {/* Protocole 2 */}
+                <button onClick={() => setPedDiluMode("2")}
+                  style={{ display:"flex", gap:10, background: pedDiluMode==="2" ? P.tealSoft : P.surface,
+                    border:`1.5px solid ${pedDiluMode==="2" ? P.teal : P.border}`, borderRadius:12,
+                    padding:"11px 13px", cursor:"pointer", textAlign:"left", fontFamily:sans }}>
+                  <span style={{ width:20, height:20, borderRadius:"50%", flexShrink:0, marginTop:1,
+                    border:`2px solid ${pedDiluMode==="2" ? P.teal : P.border}`,
+                    background: pedDiluMode==="2" ? P.teal : "transparent",
+                    display:"flex", alignItems:"center", justifyContent:"center" }}>
+                    {pedDiluMode==="2" && <span style={{ width:8, height:8, borderRadius:"50%", background:"#fff" }} />}
+                  </span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:700, color:P.text }}>
+                      Protocole 2 — Dilution simple universelle
+                    </p>
+                    <p style={{ margin:0, fontSize:11, color:P.textSoft, lineHeight:1.4 }}>
+                      {"1 mL (1 mg) + 9 mL NaCl = 0,1 mg/mL"}
+                      <br/>{"Volume = poids × 0,1 mL · 0,01 mg/kg (max 1 mg) / 4 min"}
+                    </p>
+                  </div>
+                </button>
+              </div>
+            )}
           </div>
           <p style={{ margin:"14px 2px 0", fontSize:10, color:P.textSoft, fontFamily:mono, letterSpacing:"0.04em" }}>
             D'autres réglages viendront ici.
