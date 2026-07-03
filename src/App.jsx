@@ -281,6 +281,42 @@ function _acrBeep() {
   } catch {}
   try { if ("vibrate" in navigator) navigator.vibrate([300, 150, 300]); } catch {}
 }
+
+// ── Bip changement de cycle (double bip grave, distinct de l'alarme) ──────────
+function playCycleBip() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const play = (t, freq, dur) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = "sine"; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.35, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.start(t); o.stop(t + dur + 0.01);
+    };
+    const t = ctx.currentTime;
+    play(t,       523, 0.08); // C5
+    play(t + 0.14, 659, 0.08); // E5
+    try { if ("vibrate" in navigator) navigator.vibrate([40, 60, 40]); } catch {}
+  } catch {}
+}
+
+// ── Tick métronome CPR 100 bpm (tick court aigu) ─────────────────────────────
+function playMetronomeTick() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = "square"; o.frequency.value = 1000;
+    const t = ctx.currentTime;
+    g.gain.setValueAtTime(0.12, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.025);
+    o.start(t); o.stop(t + 0.03);
+  } catch {}
+}
+
 // Démarre l'alarme en boucle jusqu'à acquittement (plafond ~30 s de sécurité).
 function startAlarm() {
   stopAlarm();
@@ -347,18 +383,9 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
           <span style={{ fontSize:13, color:P.roseText, fontFamily:mono, fontWeight:700 }}>
             {fmtSec(remaining)}
           </span>
-          <div style={{ display:"flex", gap:2, marginLeft:4 }}>
-            {[3,4,5].map(m => (
-              <button key={m} onClick={() => setIntervalMin(m)}
-                style={{
-                  background: intervalMin===m ? P.rose : "transparent",
-                  border:"none", borderRadius:99, padding:"2px 6px",
-                  fontSize:10, fontWeight:600, fontFamily:mono,
-                  color: intervalMin===m ? "#fff" : P.roseText,
-                  cursor:"pointer",
-                }}>{m}</button>
-            ))}
-          </div>
+          <span style={{ fontSize:10, color:P.roseText, fontFamily:mono, opacity:0.7 }}>
+            ({intervalMin} min)
+          </span>
           <button onClick={onCancel}
             style={{ background:"transparent", border:"none", color:P.roseText,
               fontSize:13, cursor:"pointer", padding:"0 2px", lineHeight:1, opacity:0.6 }}>×</button>
@@ -2382,7 +2409,32 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   const [debriefEnabled] = useLocalState("acr_debrief_enabled", false);
   const [pedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
   const [pedDiluMode] = useLocalState("acr_ped_dilu_mode", "1");
+  const [metronomeEnabled] = useLocalState("acr_metronome_enabled", false);
+  const [adrIntervalGlobal] = useLocalState("acr_adr_interval", 4);
+  const [metronomeMutedPed, setMetronomeMutedPed] = useState(false);
   const [showDebriefPed, setShowDebriefPed] = useState(false);
+
+  // Métronome pédiatrique
+  const metronomeMutedPedRef = useRef(false);
+  useEffect(() => { metronomeMutedPedRef.current = metronomeMutedPed; }, [metronomeMutedPed]);
+  const hasRoscPedRef = useRef(!!events.find(e=>e.id==="rosc"));
+  useEffect(() => { hasRoscPedRef.current = !!events.find(e=>e.id==="rosc"); }, [events]);
+  useEffect(() => {
+    if (!metronomeEnabled || !running) return;
+    const id = setInterval(() => {
+      if (!metronomeMutedPedRef.current && !hasRoscPedRef.current) playMetronomeTick();
+    }, 600);
+    return () => clearInterval(id);
+  }, [metronomeEnabled, running]);
+
+  // Bip cycle pédiatrique
+  const prevCpPedRef = useRef(null);
+  useEffect(() => {
+    if (!running) { prevCpPedRef.current = null; return; }
+    const cp = (sec - cycleOffset) % 120;
+    if (prevCpPedRef.current !== null && prevCpPedRef.current > 0 && cp === 0) playCycleBip();
+    prevCpPedRef.current = cp;
+  }, [sec, cycleOffset, running]);
   const [ccfPausedTotalPed, setCcfPausedTotalPed] = useLocalState("acr_ped_ccfPaused", 0);
   const [ccfPausedSincePed, setCcfPausedSincePed] = useLocalState("acr_ped_ccfSince", null);
   const [transPed, setTransPed] = useLocalState("acr_ped_trans", {
@@ -2393,7 +2445,6 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   });
   // Minuteur Adrénaline pédiatrique
   const [adrTimerStartPed, setAdrTimerStartPed] = useLocalState("acr_ped_adrStart", 0);
-  const [adrIntervalPed,   setAdrIntervalPed]   = useLocalState("acr_ped_adrInterval", 4);
   // Onglets pédiatrique
   const [mainTabPed,       setMainTabPed]       = useLocalState("acr_ped_mainTab", "actions");
   const [suspectedPed,     setSuspectedPed]     = useLocalState("acr_ped_suspected", []);
@@ -2515,6 +2566,21 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   );
 
   // CCF pédiatrique — bascule pause/reprise des compressions
+  const prevCpRefPed = useRef(-1);
+  useEffect(() => {
+    if (!running) return;
+    const cp = (sec - cycleOffset) % 120;
+    if (prevCpRefPed.current > 0 && cp === 0) playCycleBip();
+    prevCpRefPed.current = cp;
+  }, [sec]);
+  const metroRefPed = useRef(null);
+  useEffect(() => {
+    clearInterval(metroRefPed.current);
+    if (running && metronomeEnabledPed && !metronomeMutedPed && !events.find(e=>e.id==="rosc")) {
+      metroRefPed.current = setInterval(() => playMetronomeTick(), 600);
+    }
+    return () => clearInterval(metroRefPed.current);
+  }, [running, metronomeEnabledPed, metronomeMutedPed, events]);
   const compPausedPed = ccfPausedSincePed != null;
   const ccfPausedNowPed = ccfPausedTotalPed + (compPausedPed ? Math.max(0, sec - ccfPausedSincePed) : 0);
   const ccfPctPed = sec > 0 ? Math.max(0, Math.min(100, Math.round(((sec - ccfPausedNowPed) / sec) * 100))) : 100;
@@ -3560,8 +3626,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
         {adrTimerStartPed > 0 && running && !events.find(e => e.id === "rosc") && (
           <AdrenalineTimer
             startSec={adrTimerStartPed}
-            intervalMin={adrIntervalPed}
-            setIntervalMin={setAdrIntervalPed}
+            intervalMin={adrIntervalGlobal}
+            setIntervalMin={null}
             onAdminister={() => { addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }}
             onCancel={() => setAdrTimerStartPed(0)}
             running={running}
@@ -3922,6 +3988,26 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
             </div>
           )}
         </div>
+
+        {/* ── Métronome pédiatrique : bouton sourdine ── */}
+        {metronomeEnabled && running && !events.find(e=>e.id==="rosc") && (
+          <button onClick={() => setMetronomeMutedPed(v => !v)}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+              background: metronomeMutedPed ? P.surfaceAlt : `color-mix(in srgb, ${P.blue} 10%, ${P.surface})`,
+              border:`1px solid ${metronomeMutedPed ? P.border : P.blue}`,
+              borderRadius:11, padding:"8px 14px", cursor:"pointer", fontFamily:sans,
+              marginBottom:8, textAlign:"left" }}>
+            <span style={{ fontSize:18, flexShrink:0 }}>{metronomeMutedPed ? "🔇" : "🎵"}</span>
+            <p style={{ margin:0, fontSize:12, fontWeight:700, flex:1,
+              color: metronomeMutedPed ? P.textMid : P.blueText }}>
+              Métronome 100/min — {metronomeMutedPed ? "Sourdine" : "Actif"}
+            </p>
+            <span style={{ fontSize:11, fontWeight:600, flexShrink:0,
+              color: metronomeMutedPed ? P.textSoft : P.blueText }}>
+              {metronomeMutedPed ? "Réactiver ▶" : "Sourdine 🔇"}
+            </span>
+          </button>
+        )}
 
         {/* Chronologie */}
         <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:14,overflow:"hidden",marginBottom:10}}>
@@ -4334,6 +4420,17 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
       <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:30,
         background:P.surface,borderTop:`1px solid ${P.border}`,
         padding:"7px 14px 10px",boxShadow:"0 -4px 16px rgba(0,0,0,0.08)"}}>
+        {metronomeEnabledPed && (
+          <button onClick={() => setMetronomeMutedPed(v => !v)}
+            style={{ width:"100%", marginBottom:8,
+              background: metronomeMutedPed ? P.surfaceAlt : `color-mix(in srgb, ${P.blue} 12%, ${P.surface})`,
+              border:`1px solid ${metronomeMutedPed ? P.border : P.blue}`, borderRadius:11,
+              padding:"8px", cursor:"pointer", fontFamily:sans, fontSize:11, fontWeight:600,
+              color: metronomeMutedPed ? P.textSoft : P.blueText,
+              display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+            {metronomeMutedPed ? "🔇 Métronome silencieux — Activer" : "🎵 Métronome 100/min — Couper le son"}
+          </button>
+        )}
         <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:8}}>
           <button onClick={() => setShowPdf(true)}
             style={{width:"100%",background:"linear-gradient(135deg,#3B82C4,#2563A8)",border:"none",
@@ -5749,6 +5846,8 @@ export default function App() {
   const [modalEtco2, setModalEtco2] = useState(false);
   const [etco2Val, setEtco2Val] = useState("");
   const [etco2Open, setEtco2Open] = useState(true);
+  // Métronome + undo
+  const [metronomeMuted, setMetronomeMuted] = useState(false);
   // Undo (annuler le dernier événement)
   const [undoToast, setUndoToast] = useState(null); // { event, label, key }
   const undoLast = () => {
@@ -5826,7 +5925,9 @@ export default function App() {
 
   // Minuteur Adrénaline (timestamp absolu pour survivre aux navigations)
   const [adrTimerStart, setAdrTimerStart] = useLocalState("acr_adulte_adrStart", 0);
-  const [adrInterval,   setAdrInterval]   = useLocalState("acr_adulte_adrInterval", 4);
+  // Réglages globaux lus ici pour être disponibles dans les effets ci-dessous
+  const [adrIntervalGlobal, setAdrIntervalGlobal] = useLocalState("acr_adr_interval", 4);
+  const [metronomeEnabled, setMetronomeEnabled] = useLocalState("acr_metronome_enabled", false);
 
   // Onglets : "actions" | "etiologie" | "therap"
   const [mainTab,        setMainTab]        = useLocalState("acr_adulte_mainTab", "actions");
@@ -5904,6 +6005,30 @@ export default function App() {
     }
   }, [cordReminderActive]);
 
+  // ── Métronome 100/min ──
+  const metronomeMutedRef = useRef(metronomeMuted);
+  useEffect(() => { metronomeMutedRef.current = metronomeMuted; }, [metronomeMuted]);
+  const hasRoscRef = useRef(!!events.find(e=>e.id==="rosc"));
+  useEffect(() => { hasRoscRef.current = !!events.find(e=>e.id==="rosc"); }, [events]);
+  useEffect(() => {
+    if (!metronomeEnabled || !started || !running) return;
+    const id = setInterval(() => {
+      if (!metronomeMutedRef.current && !hasRoscRef.current) playMetronomeTick();
+    }, 600); // 100 BPM
+    return () => clearInterval(id);
+  }, [metronomeEnabled, started, running]);
+
+  // ── Bip changement de masseur (détection passage cp → 0) ──
+  const prevCpRef = useRef(null);
+  useEffect(() => {
+    if (!started || !running) { prevCpRef.current = null; return; }
+    const cp = (sec - cycleOffset) % 120;
+    if (prevCpRef.current !== null && prevCpRef.current > 0 && cp === 0) {
+      playCycleBip();
+    }
+    prevCpRef.current = cp;
+  }, [sec, cycleOffset, started, running]);
+
   // CCF — bascule pause/reprise des compressions
   const compPaused = ccfPausedSince != null;
   const ccfPausedNow = ccfPausedTotal + (compPaused ? Math.max(0, sec - ccfPausedSince) : 0);
@@ -5970,7 +6095,7 @@ export default function App() {
     setIot({ cormack:"", sonde:"", repere:"", capno:"" });
     setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, rythmeDSA:"", gestesSecouristes:"", note:"", saved:false });
     setModalTrans(false);
-    setAdrTimerStart(0); setAdrInterval(4);
+    setAdrTimerStart(0);
     setMainTab("actions"); setSuspectedAd([]); setModalEcmo(false); setModalDdac(false);
     setModalFastTrauma(false); setFastTr({ morrison:"", kohler:"", douglas:"", pleureD:"", pleureG:"", pericarde:"",
       morrisonMode:"", kohlerMode:"", douglasMode:"", pleureDMode:"", pleureGMode:"", pericardeMode:"" });
@@ -6011,12 +6136,12 @@ export default function App() {
   const [viewArchive, setViewArchive] = useState(null); // snapshot consulté
   useEffect(() => { if (!module) setArchives(loadArchives()); }, [module]);
 
-  // Réglages
+  // Réglages globaux — doivent être déclarés tôt (utilisés dans des effets)
   const [modalSettings, setModalSettings] = useState(false);
   const [ccfEnabled, setCcfEnabled] = useLocalState("acr_ccf_enabled", false);
   const [debriefEnabled, setDebriefEnabled] = useLocalState("acr_debrief_enabled", false);
   const [pedDiluEnabled, setPedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
-  const [pedDiluMode, setPedDiluMode] = useLocalState("acr_ped_dilu_mode", "1"); // "1" ou "2"
+  const [pedDiluMode, setPedDiluMode] = useLocalState("acr_ped_dilu_mode", "1");
 
   // Déverrouille l'audio dès le 1er contact (requis par iOS pour jouer un son ensuite)
   useEffect(() => {
@@ -6315,6 +6440,49 @@ export default function App() {
             </button>
           </div>
 
+          {/* Intervalle adrénaline */}
+          <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <p style={{ margin:"0 0 8px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>
+              Intervalle adrénaline
+            </p>
+            <p style={{ margin:"0 0 10px", fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+              Délai entre chaque injection d'adrénaline. L'alarme se déclenche automatiquement.
+              Ce réglage remplace le choix en cours de réanimation.
+            </p>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+              {[3,4,5].map(m => (
+                <button key={m} onClick={() => setAdrIntervalGlobal(m)}
+                  style={{ background: adrIntervalGlobal===m ? P.rose : P.surface,
+                    border:`1.5px solid ${adrIntervalGlobal===m ? P.rose : P.border}`,
+                    borderRadius:11, padding:"10px 0", cursor:"pointer", fontFamily:mono,
+                    fontSize:16, fontWeight:800,
+                    color: adrIntervalGlobal===m ? "#fff" : P.text }}>
+                  {m} min
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Métronome CPR */}
+          <div style={{ display:"flex", alignItems:"flex-start", gap:12,
+            background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Métronome RCP</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+                Bip rythmique à <b>100 / min</b> (600 ms) pendant les compressions.
+                Désactivable (silencieux) directement depuis l'écran de réanimation.
+              </p>
+            </div>
+            <button onClick={() => setMetronomeEnabled(v => !v)}
+              style={{ flexShrink:0, width:50, height:30, borderRadius:15, border:"none", cursor:"pointer",
+                background: metronomeEnabled ? P.blue : P.border, position:"relative", transition:"background 0.15s",
+                padding:0 }}>
+              <span style={{ position:"absolute", top:3, left: metronomeEnabled ? 23 : 3, width:24, height:24,
+                borderRadius:"50%", background:"#fff", transition:"left 0.15s",
+                boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
+            </button>
+          </div>
+
           {/* Protocoles de dilution pédiatrique */}
           <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
             <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom: pedDiluEnabled ? 14 : 0 }}>
@@ -6383,9 +6551,45 @@ export default function App() {
               </div>
             )}
           </div>
-          <p style={{ margin:"14px 2px 0", fontSize:10, color:P.textSoft, fontFamily:mono, letterSpacing:"0.04em" }}>
-            D'autres réglages viendront ici.
-          </p>
+
+          {/* ── Intervalle adrénaline ── */}
+          <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <div style={{ marginBottom:10 }}>
+              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Intervalle adrénaline</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+                Délai entre chaque dose (affiché dans le chronomètre). Réglé ici, plus modifiable en réanimation.
+              </p>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+              {[3, 4, 5].map(m => (
+                <button key={m} onClick={() => setAdrIntervalGlobal(m)}
+                  style={{ background: adrIntervalGlobal===m ? P.rose : P.surface,
+                    border:`1.5px solid ${adrIntervalGlobal===m ? P.rose : P.border}`,
+                    borderRadius:11, padding:"11px 8px", cursor:"pointer", fontFamily:mono,
+                    fontSize:16, fontWeight:800, color: adrIntervalGlobal===m ? "#fff" : P.text }}>
+                  {m} min
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Métronome MCE (100/min) ── */}
+          <div style={{ display:"flex", alignItems:"flex-start", gap:12,
+            background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Métronome MCE (100/min)</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+                Tick sonore à <b>100/min</b> pendant les compressions. Un bouton sourdine est disponible
+                en réanimation pour le couper sans le désactiver.
+              </p>
+            </div>
+            <button onClick={() => setMetronomeEnabled(v => !v)}
+              style={{ flexShrink:0, width:50, height:30, borderRadius:15, border:"none", cursor:"pointer",
+                background: metronomeEnabled ? P.blue : P.border, position:"relative", transition:"background 0.15s", padding:0 }}>
+              <span style={{ position:"absolute", top:3, left: metronomeEnabled ? 23 : 3, width:24, height:24,
+                borderRadius:"50%", background:"#fff", transition:"left 0.15s", boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
+            </button>
+          </div>
         </Modal>
       )}
 
@@ -8064,12 +8268,12 @@ export default function App() {
           </div>
         )}
 
-        {/* Minuteur Adrénaline (option C : discret au repos, alerte si dépassé) */}
+        {/* Minuteur Adrénaline */}
         {adrTimerStart > 0 && started && !events.find(e => e.id === "rosc") && (
           <AdrenalineTimer
             startSec={adrTimerStart}
-            intervalMin={adrInterval}
-            setIntervalMin={setAdrInterval}
+            intervalMin={adrIntervalGlobal}
+            setIntervalMin={null}
             onAdminister={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }}
             onCancel={() => setAdrTimerStart(0)}
             running={running}
@@ -8490,6 +8694,26 @@ export default function App() {
           )}
         </div>
 
+          {/* ── Métronome : bouton sourdine si activé ── */}
+          {metronomeEnabled && started && !events.find(e=>e.id==="rosc") && (
+            <button onClick={() => setMetronomeMuted(v => !v)}
+              style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+                background: metronomeMuted ? P.surfaceAlt : `color-mix(in srgb, ${P.blue} 10%, ${P.surface})`,
+                border:`1px solid ${metronomeMuted ? P.border : P.blue}`,
+                borderRadius:11, padding:"8px 14px", cursor:"pointer", fontFamily:sans,
+                marginBottom:8, textAlign:"left" }}>
+              <span style={{ fontSize:18, flexShrink:0 }}>{metronomeMuted ? "🔇" : "🎵"}</span>
+              <p style={{ margin:0, fontSize:12, fontWeight:700, flex:1,
+                color: metronomeMuted ? P.textMid : P.blueText }}>
+                Métronome 100/min — {metronomeMuted ? "Sourdine" : "Actif"}
+              </p>
+              <span style={{ fontSize:11, fontWeight:600, flexShrink:0,
+                color: metronomeMuted ? P.textSoft : P.blueText }}>
+                {metronomeMuted ? "Réactiver ▶" : "Sourdine 🔇"}
+              </span>
+            </button>
+          )}
+
         {/* ── Critères d'arrêt de réanimation (>20 min, sans RACS) ── */}
         {started && sec >= 1200 && !events.find(e => e.id === "rosc") && !events.find(e => e.id === "deces") && (
           <button onClick={() => setModalCriteres(true)}
@@ -8627,7 +8851,7 @@ export default function App() {
         </div>
 
         {/* Contrôles */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:70 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom: metronomeEnabled ? 8 : 70 }}>
           <button onClick={() => setRunning(v => !v)}
             style={{ background:P.surface, border:`1.5px solid ${running ? P.amber : P.green}`,
               borderRadius:11, padding:"10px 6px",
@@ -8649,6 +8873,17 @@ export default function App() {
             ↺ Clôturer
           </button>
         </div>
+        {metronomeEnabled && (
+          <button onClick={() => setMetronomeMuted(v => !v)}
+            style={{ width:"100%", marginBottom:70,
+              background: metronomeMuted ? P.surfaceAlt : `color-mix(in srgb, ${P.blue} 12%, ${P.surface})`,
+              border:`1px solid ${metronomeMuted ? P.border : P.blue}`, borderRadius:11,
+              padding:"9px", cursor:"pointer", fontFamily:sans, fontSize:11, fontWeight:600,
+              color: metronomeMuted ? P.textSoft : P.blueText,
+              display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+            {metronomeMuted ? "🔇 Métronome silencieux — Activer" : "🎵 Métronome 100/min — Couper le son"}
+          </button>
+        )}
 
       </div>
 
