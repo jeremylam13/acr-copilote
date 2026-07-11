@@ -299,6 +299,138 @@ function useWakeLock(active) {
   }, [active]);
 }
 
+// ── COMMANDES VOCALES (Web Speech API) ─────────────────────────────────────────
+// Reconnaissance continue en français. Mots-clés cliniques → addEvent().
+// Chaque événement ajouté par la voix reste annulable (bouton "Annuler" existant),
+// même filet de sécurité qu'un ajout manuel — indispensable vu le risque de
+// mauvaise reconnaissance en environnement bruyant (ambulance, réanimation).
+// Non supporté hors Chrome/Edge/Android (pas de Firefox, très limité sur iOS
+// Safari) et nécessite une connexion internet (moteur cloud du navigateur).
+const VOICE_COMMANDS = [
+  { id:"adr",        match:/adr[ée]nalin/i,                         label:"Adrénaline (vocal)",                    icon:"💉" },
+  { id:"cord",       match:/amiodarone|cordarone/i,                 label:"Amiodarone (vocal)",                    icon:"💊" },
+  { id:"doublechoc", match:/double\s*d[ée]fib/i,                    label:"Double défibrillation (vocal)",         icon:"⚡⚡" },
+  { id:"choc",       match:/d[ée]fibrillat|choc\s*[ée]lectrique|\bchoc\b/i, label:"Défibrillation (vocal)",        icon:"⚡" },
+  { id:"iot",        match:/intubation|intub[ée]/i,                 label:"Intubation (vocal)",                    icon:"🫁" },
+  { id:"vvp",        match:/voie\s*veineuse|\bvvp\b/i,               label:"Voie veineuse (VVP) posée (vocal)",     icon:"🩹" },
+  { id:"vio",        match:/voie\s*intra.?osseuse|\bvio\b/i,         label:"Voie intra-osseuse (VIO) posée (vocal)", icon:"🦴" },
+  { id:"patchs",     match:/changement de patch|patchs?/i,           label:"Changement de patchs (vocal)",          icon:"🔄" },
+  { id:"planche",    match:/planche/i,                               label:"Planche à masser mise en place (vocal)", icon:"🦺" },
+  { id:"racs",       match:/reprise de pouls|retour.*circulation|\bracs\b/i, label:"Reprise d'activité circulatoire — RACS (vocal)", icon:"🫀" },
+  { id:"cycle",      match:/changement de masseur|change.*masseur/i, label:"Changement de masseur (vocal)",         icon:"↺" },
+];
+
+function useVoiceCommands(active, addEvent, onUndo) {
+  const recRef = useRef(null);
+  const activeRef = useRef(active);
+  const [listening, setListening] = useState(false);
+  const [lastHeard, setLastHeard] = useState(null); // { transcript, matched }
+  activeRef.current = active;
+
+  useEffect(() => {
+    if (!lastHeard) return;
+    const t = setTimeout(() => setLastHeard(null), 4000);
+    return () => clearTimeout(t);
+  }, [lastHeard]);
+
+  useEffect(() => {
+    if (!active) {
+      if (recRef.current) { try { recRef.current.stop(); } catch {} }
+      setListening(false);
+      return;
+    }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { setListening(false); return; }
+
+    const rec = new SR();
+    rec.lang = "fr-FR";
+    rec.continuous = true;
+    rec.interimResults = false;
+
+    rec.onresult = (e) => {
+      const res = e.results[e.results.length - 1];
+      if (!res || !res.isFinal) return;
+      const transcript = (res[0].transcript || "").trim();
+      if (!transcript) return;
+      if (/^annul/i.test(transcript)) {
+        setLastHeard({ transcript, matched:"Annulation du dernier événement" });
+        if (onUndo) onUndo();
+        return;
+      }
+      const cmd = VOICE_COMMANDS.find(c => c.match.test(transcript));
+      if (cmd) {
+        addEvent(cmd.id, cmd.label, cmd.icon);
+        setLastHeard({ transcript, matched: cmd.label });
+      } else {
+        setLastHeard({ transcript, matched: null });
+      }
+    };
+    rec.onerror = (e) => {
+      // "no-speech" / "aborted" sont fréquents et sans gravité (relance auto via onend).
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        activeRef.current = false;
+        setListening(false);
+      }
+    };
+    rec.onend = () => {
+      // Chrome coupe la reconnaissance après un silence : on relance si toujours actif.
+      if (activeRef.current) { try { rec.start(); } catch {} } else { setListening(false); }
+    };
+    try { rec.start(); setListening(true); } catch {}
+    recRef.current = rec;
+
+    return () => {
+      try { rec.onend = null; rec.stop(); } catch {}
+    };
+  }, [active]);
+
+  const supported = typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  return { listening, lastHeard, supported };
+}
+
+function VoiceCommandButton({ enabled, addEvent, onUndo }) {
+  const [voiceOn, setVoiceOn] = useLocalState("acr_voice_on", false);
+  const { listening, lastHeard, supported } = useVoiceCommands(voiceOn && enabled, addEvent, onUndo);
+
+  if (!supported) return null;
+
+  return (
+    <>
+      <button onClick={() => setVoiceOn(v => !v)}
+        title={voiceOn ? "Désactiver les commandes vocales" : "Activer les commandes vocales (mains libres)"}
+        style={{ display:"flex", alignItems:"center", justifyContent:"center",
+          width:34, height:34, borderRadius:"50%", cursor:"pointer", flexShrink:0,
+          border:`1px solid ${voiceOn ? P.rose : P.border}`,
+          background: voiceOn ? P.roseSoft : P.surfaceAlt,
+          color: voiceOn ? P.rose : P.textSoft,
+          animation: listening ? "pulse 1.6s infinite" : "none",
+          fontSize:15 }}>
+        {voiceOn ? "🎙️" : "🎤"}
+      </button>
+      {voiceOn && lastHeard && (
+        <div style={{ position:"fixed", top:8, left:"50%", transform:"translateX(-50%)", zIndex:97,
+          maxWidth:"90%", background:P.surface, border:`1px solid ${P.border}`, borderRadius:10,
+          padding:"6px 12px", boxShadow:"0 4px 14px rgba(0,0,0,0.22)",
+          display:"flex", alignItems:"center", gap:8 }}>
+          <span style={{ fontSize:13 }}>{lastHeard.matched ? "🎤" : "❓"}</span>
+          <div style={{ minWidth:0 }}>
+            <p style={{ margin:0, fontSize:10, color:P.textSoft, fontFamily:mono,
+              overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>« {lastHeard.transcript} »</p>
+            {lastHeard.matched && <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.text }}>{lastHeard.matched}</p>}
+          </div>
+        </div>
+      )}
+      {voiceOn && enabled && !listening && (
+        <div style={{ position:"fixed", top:8, left:"50%", transform:"translateX(-50%)", zIndex:97,
+          maxWidth:"90%", background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:10,
+          padding:"6px 12px", boxShadow:"0 4px 14px rgba(0,0,0,0.22)" }}>
+          <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.amberText }}>🎤 Micro en attente… vérifiez l'autorisation du navigateur</p>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── ALARME SONORE (Web Audio API) ──────────────────────────────────────────────
 // IMPORTANT : sur iPhone, le bouton silencieux physique coupe le son du Web Audio.
 // Aucune app web ne peut le contourner (seule une app native le peut). Sur Android,
@@ -3643,7 +3775,10 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
               </div>
             </div>
           </div>
-          <ThemeToggle theme={theme} setTheme={setTheme} compact />
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <VoiceCommandButton enabled={running} addEvent={addEvent} onUndo={undoLastPed} />
+            <ThemeToggle theme={theme} setTheme={setTheme} compact />
+          </div>
         </div>
 
         {/* Sélecteur poids — compact éditable */}
@@ -8582,7 +8717,10 @@ function App() {
               </div>
             </div>
           </div>
-          <ThemeToggle theme={theme} setTheme={setTheme} compact />
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <VoiceCommandButton enabled={running} addEvent={addEvent} onUndo={undoLast} />
+            <ThemeToggle theme={theme} setTheme={setTheme} compact />
+          </div>
         </div>
 
         {/* Grand timer — style moniteur */}
