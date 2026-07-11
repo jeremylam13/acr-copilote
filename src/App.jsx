@@ -1,4 +1,61 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
+
+// ── Error Boundary — filet de sécurité global ──────────────────────────────
+// Si un composant plante, l'app reste debout et les données localStorage
+// sont préservées (le médecin peut recharger sans perdre son dossier).
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null, info: null };
+  }
+  static getDerivedStateFromError(error) { return { hasError: true, error }; }
+  componentDidCatch(error, info) {
+    this.setState({ info });
+    try { console.error("[Copilote ACR] Erreur capturée :", error, info); } catch {}
+  }
+  render() {
+    if (!this.state.hasError) return this.props.children;
+    const sans = "'Inter','system-ui',sans-serif";
+    return (
+      <div style={{ minHeight:"100vh", background:"#0A111B", display:"flex",
+        flexDirection:"column", alignItems:"center", justifyContent:"center",
+        padding:"24px", fontFamily:sans, textAlign:"center" }}>
+        <div style={{ fontSize:52, marginBottom:16 }}>⚠️</div>
+        <p style={{ margin:"0 0 6px", fontSize:11, fontWeight:700, color:"#FC8181",
+          textTransform:"uppercase", letterSpacing:"0.15em" }}>
+          Copilote ACR — Erreur inattendue
+        </p>
+        <p style={{ margin:"0 0 24px", fontSize:20, fontWeight:800, color:"#fff" }}>
+          L'application a rencontré un problème
+        </p>
+        <p style={{ margin:"0 0 32px", fontSize:14, color:"rgba(255,255,255,0.6)",
+          maxWidth:320, lineHeight:1.6 }}>
+          Vos données de réanimation sont préservées.{"\n"}
+          Rechargez l'app pour continuer — vous retrouverez votre session.
+        </p>
+        <button onClick={() => window.location.reload()}
+          style={{ background:"linear-gradient(135deg,#E53E3E,#9B2C2C)", border:"none",
+            borderRadius:14, color:"#fff", fontSize:16, fontWeight:700,
+            padding:"16px 40px", cursor:"pointer", marginBottom:16 }}>
+          🔄 Recharger l'application
+        </button>
+        <button onClick={() => this.setState({ hasError:false, error:null, info:null })}
+          style={{ background:"transparent", border:"1px solid rgba(255,255,255,0.2)",
+            borderRadius:14, color:"rgba(255,255,255,0.6)", fontSize:13,
+            padding:"10px 24px", cursor:"pointer" }}>
+          Essayer sans recharger
+        </button>
+        {this.state.error && (
+          <details style={{ marginTop:24, color:"rgba(255,255,255,0.3)",
+            fontSize:11, fontFamily:"monospace", maxWidth:360, wordBreak:"break-all" }}>
+            <summary style={{ cursor:"pointer" }}>Détails techniques</summary>
+            <p style={{ margin:"8px 0 0" }}>{String(this.state.error)}</p>
+          </details>
+        )}
+      </div>
+    );
+  }
+}
 
 const fontLink = document.createElement("link");
 fontLink.rel = "stylesheet";
@@ -1976,7 +2033,45 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         background:P.surface, borderTop:`1px solid ${P.border}`,
         padding:"10px 14px 14px", boxShadow:"0 -4px 18px rgba(0,0,0,0.10)" }}>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, maxWidth:600, margin:"0 auto" }}>
-          <button onClick={() => window.print()}
+          <button onClick={async () => {
+            try {
+              const html = buildHtml();
+              const { default: jsPDF } = await import('jspdf');
+              const { default: html2canvas } = await import('html2canvas');
+              // Créer un iframe invisible pour rendre le HTML
+              const iframe = document.createElement('iframe');
+              iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:640px;height:1px;opacity:0;border:none';
+              document.body.appendChild(iframe);
+              iframe.contentDocument.write(html);
+              iframe.contentDocument.close();
+              await new Promise(r => setTimeout(r, 600));
+              const canvas = await html2canvas(iframe.contentDocument.body, {
+                scale: 1.5, useCORS: true, allowTaint: true,
+                backgroundColor: '#E9EEF5', width: 640,
+                height: iframe.contentDocument.body.scrollHeight
+              });
+              document.body.removeChild(iframe);
+              const pdf = new jsPDF({ format: 'a4', orientation: 'portrait', unit: 'pt' });
+              const w = pdf.internal.pageSize.getWidth();
+              const ratio = canvas.width / w;
+              const pageH = pdf.internal.pageSize.getHeight() * ratio;
+              let srcY = 0;
+              while (srcY < canvas.height) {
+                const pageCanvas = document.createElement('canvas');
+                pageCanvas.width = canvas.width;
+                pageCanvas.height = Math.min(pageH, canvas.height - srcY);
+                pageCanvas.getContext('2d').drawImage(canvas, 0, srcY, canvas.width, pageCanvas.height, 0, 0, canvas.width, pageCanvas.height);
+                if (srcY > 0) pdf.addPage();
+                pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, w, pageCanvas.height / ratio);
+                srcY += pageH;
+              }
+              const nom = patient?.nom ? `_${patient.nom}` : '';
+              pdf.save(`CR-SMUR${nom}_${new Date().toISOString().slice(0,10)}.pdf`);
+            } catch(e) {
+              // Fallback : impression navigateur
+              window.print();
+            }
+          }}
             style={{ background:`linear-gradient(135deg, ${P.blue}, ${P.blueText})`,
               border:"none", borderRadius:13, padding:"13px 8px", cursor:"pointer",
               fontFamily:disp, fontSize:13, fontWeight:800, color:"#fff",
@@ -2349,7 +2444,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   const [cycleOffset,  setCycleOffset]  = useLocalState("acr_ped_cycleOffset", 0);
   const [events,       setEvents]       = useLocalState("acr_ped_events", []);
   const [alert,        setAlert]        = useState(null);
-  const [showLog,      setShowLog]      = useState(true);
+  const [showLog,      setShowLog]      = useState(false);
   const [showPdf,      setShowPdf]      = useState(false);
   const initIdx = PED_TABLE.findIndex(r => r.p === parseFloat(poids));
   const [localPoidsIdx, setLocalPoidsIdx] = useLocalState("acr_ped_poidsIdx", initIdx >= 0 ? initIdx : 0);
@@ -2364,6 +2459,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   const [modalDecesPed, setModalDecesPed] = useState(false);
   const [omlStepPed,    setOmlStepPed]    = useState(0);
   const [omlTxtPed,     setOmlTxtPed]     = useState("");
+  const [decesRemisAPed, setDecesRemisAPed] = useState("");
   const [showPatPed,    setShowPatPed]    = useState(false);
   const [patPed, setPatPed] = useLocalState("acr_ped_pat", { nom:"", prenom:"", ddn:"", age:"", poids:"", temp:"", atcd:"", traitement:"", histoire:"" });
   const spf = k => v => setPatPed(p => ({ ...p, [k]: v }));
@@ -2570,17 +2666,60 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   useEffect(() => {
     if (!running) return;
     const cp = (sec - cycleOffset) % 120;
-    if (prevCpRefPed.current > 0 && cp === 0) playCycleBip();
+    if (prevCpRefPed.current > 0 && cp === 0) {
+      playCycleBip();
+      if (!events.find(e => e.id === "rosc") && !events.find(e => e.id === "deces")) {
+        setShowRythmFlashPed(true);
+      }
+    }
     prevCpRefPed.current = cp;
   }, [sec]);
-  const metroRefPed = useRef(null);
-  useEffect(() => {
-    clearInterval(metroRefPed.current);
-    if (running && metronomeEnabledPed && !metronomeMutedPed && !events.find(e=>e.id==="rosc")) {
-      metroRefPed.current = setInterval(() => playMetronomeTick(), 600);
+  // Métronome pédiatrique — scheduler Web Audio lookahead (robuste)
+  const [showRythmFlashPed, setShowRythmFlashPed] = useState(false);
+  const metroCtxPedRef   = useRef(null);
+  const metroNextPedRef  = useRef(0);
+  const metroTimerPedRef = useRef(null);
+  const mutedPedRef2     = useRef(metronomeMutedPed);
+  useEffect(() => { mutedPedRef2.current = metronomeMutedPed; }, [metronomeMutedPed]);
+  const roscPedRef2      = useRef(!!events.find(e=>e.id==="rosc"));
+  useEffect(() => { roscPedRef2.current = !!events.find(e=>e.id==="rosc"); }, [events]);
+
+  const schedulePed = () => {
+    const ctx = metroCtxPedRef.current;
+    if (!ctx || ctx.state === "closed") return;
+    while (metroNextPedRef.current < ctx.currentTime + 0.2) {
+      if (!mutedPedRef2.current && !roscPedRef2.current) {
+        const o = ctx.createOscillator(); const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = "square"; o.frequency.value = 1000;
+        const t = metroNextPedRef.current;
+        g.gain.setValueAtTime(0.15, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.025);
+        o.start(t); o.stop(t + 0.03);
+      }
+      metroNextPedRef.current += 0.6;
     }
-    return () => clearInterval(metroRefPed.current);
-  }, [running, metronomeEnabledPed, metronomeMutedPed, events]);
+  };
+
+  useEffect(() => {
+    if (!metronomeEnabledPed || !running) {
+      clearInterval(metroTimerPedRef.current);
+      if (metroCtxPedRef.current) { metroCtxPedRef.current.close().catch(()=>{}); metroCtxPedRef.current = null; }
+      return;
+    }
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      ctx.resume().catch(()=>{});
+      metroCtxPedRef.current = ctx;
+      metroNextPedRef.current = ctx.currentTime + 0.05;
+      schedulePed();
+      metroTimerPedRef.current = setInterval(schedulePed, 50);
+    } catch(e) {}
+    return () => {
+      clearInterval(metroTimerPedRef.current);
+      if (metroCtxPedRef.current) { metroCtxPedRef.current.close().catch(()=>{}); metroCtxPedRef.current = null; }
+    };
+  }, [metronomeEnabledPed, running]);
   const compPausedPed = ccfPausedSincePed != null;
   const ccfPausedNowPed = ccfPausedTotalPed + (compPausedPed ? Math.max(0, sec - ccfPausedSincePed) : 0);
   const ccfPctPed = sec > 0 ? Math.max(0, Math.min(100, Math.round(((sec - ccfPausedNowPed) / sec) * 100))) : 100;
@@ -3713,7 +3852,10 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
           <div style={{width:`${pct}%`,height:5,borderRadius:99,background:bar,transition:"width 1s linear,background 0.5s"}}/>
         </div>
         <p style={{margin:"6px 0 0",fontSize:10,color:P.textSoft,textAlign:"center"}}>
-          Nourrisson : 2 doigts · 4 cm · 15:2 · 100–120/min
+          {events.find(e => e.id === "iot")
+            ? <span style={{ color:P.violetText, fontWeight:700 }}>🫁 IOT — Compressions continues · 10/min</span>
+            : "Nourrisson : 2 doigts · 4 cm · 15:2 · 100–120/min"
+          }
         </p>
       </div>
 
@@ -4313,7 +4455,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
       {/* ── Modal Constat de décès — pédiatrique ── */}
       {modalDecesPed && (
         <Modal title="Constat de décès" icon="🕊️" soft={P.slateSoft}
-          onClose={() => { setModalDecesPed(false); setOmlStepPed(0); setOmlTxtPed(""); }}>
+          onClose={() => { setModalDecesPed(false); setOmlStepPed(0); setOmlTxtPed(""); setDecesRemisAPed(""); }}>
           {omlStepPed === 0 ? (
             <>
               <ChoiceBtn label="Avec OML" sub="Obstacle médico-légal — signalement nécessaire"
@@ -4321,7 +4463,39 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
                 onClick={() => setOmlStepPed(1)} />
               <ChoiceBtn label="Sans OML" sub="Pas d'obstacle médico-légal"
                 accent={P.slate} soft={P.slateSoft} textC={P.slateText}
-                onClick={() => { addEvent("deces","Constat de décès — sans OML","🕊️"); setModalDecesPed(false); setOmlStepPed(0); }} />
+                onClick={() => setOmlStepPed(2)} />
+            </>
+          ) : omlStepPed === 2 ? (
+            <>
+              <p style={{ margin:"0 0 10px", fontSize:12.5, fontWeight:600, color:P.text }}>
+                🕊️ Constat de décès — sans OML
+              </p>
+              <p style={{ margin:"0 0 8px", fontSize:12, color:P.textSoft }}>Certificat remis à (optionnel) :</p>
+              <div style={{ display:"flex", gap:8, marginBottom:12 }}>
+                <input value={decesRemisAPed} onChange={e => setDecesRemisAPed(e.target.value)}
+                  placeholder="Ex : famille, pompiers, gendarmerie..."
+                  style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                    borderRadius:9, padding:"10px 12px", fontSize:14, color:P.text,
+                    fontFamily:sans, outline:"none", boxSizing:"border-box" }}
+                  onFocus={e => e.target.style.borderColor = P.slate}
+                  onBlur={e  => e.target.style.borderColor = P.border} />
+              </div>
+              <button onClick={() => {
+                const remis = decesRemisAPed.trim();
+                addEvent("deces", remis
+                  ? `Constat de décès — sans OML · Certificat remis à : ${remis}`
+                  : "Constat de décès — sans OML", "🕊️");
+                setModalDecesPed(false); setOmlStepPed(0); setDecesRemisAPed("");
+              }} style={{ width:"100%", background:`linear-gradient(135deg, ${P.slate}, #374151)`,
+                border:"none", borderRadius:11, color:"#fff", fontSize:14, fontWeight:700,
+                fontFamily:disp, padding:"13px", cursor:"pointer", marginBottom:8 }}>
+                ✓ Confirmer le constat
+              </button>
+              <button onClick={() => setOmlStepPed(0)}
+                style={{ width:"100%", background:"transparent", border:"none",
+                  color:P.textSoft, fontSize:12, cursor:"pointer", fontFamily:sans, padding:"6px" }}>
+                ← Retour
+              </button>
             </>
           ) : (
             <>
@@ -4365,6 +4539,62 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
             </>
           )}
         </Modal>
+      )}
+
+      {/* ── Flash Analyse de rythme pédiatrique ── */}
+      {showRythmFlashPed && (
+        <div style={{ position:"fixed", inset:0, zIndex:95,
+          background:"rgba(8,15,35,0.88)", display:"flex", flexDirection:"column",
+          alignItems:"center", justifyContent:"center", fontFamily:sans,
+          backdropFilter:"blur(8px)" }}>
+          <style>{`@keyframes rythmPulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.08);opacity:0.85}}`}</style>
+          <div style={{ textAlign:"center", marginBottom:28 }}>
+            <div style={{ width:68, height:68, borderRadius:20, margin:"0 auto 14px",
+              background:"linear-gradient(135deg,#E53E3E,#9B2C2C)",
+              display:"flex", alignItems:"center", justifyContent:"center",
+              fontSize:34, animation:"rythmPulse 1.2s ease-in-out infinite",
+              boxShadow:"0 0 40px rgba(229,62,62,0.5)" }}>⚡</div>
+            <p style={{ margin:"0 0 4px", fontSize:10, fontWeight:800, color:"#FC8181",
+              textTransform:"uppercase", letterSpacing:"0.2em", fontFamily:mono }}>Fin de cycle — 2 min</p>
+            <p style={{ margin:"0 0 6px", fontSize:24, fontWeight:900, color:"#FFF", fontFamily:disp }}>
+              Analyse de rythme
+            </p>
+            <p style={{ margin:0, fontSize:13, color:"rgba(255,255,255,0.6)" }}>
+              Pause compressions · Identifier le rythme
+            </p>
+          </div>
+          <div style={{ width:"100%", maxWidth:340, padding:"0 20px", display:"flex", flexDirection:"column", gap:10 }}>
+            {[
+              { id:"rv_fvtv", label:"FV / TV", sub:"Rythme choquable → Défibrillation", icon:"⚡",
+                bg:"linear-gradient(135deg,#E53E3E,#9B2C2C)", shadow:"rgba(229,62,62,0.4)" },
+              { id:"rv_aesp", label:"AESP", sub:"Activité électrique sans pouls → Continuer", icon:"💔",
+                bg:"rgba(255,255,255,0.08)", shadow:"none" },
+              { id:"rv_asy", label:"Asystolie", sub:"Tracé plat → Continuer", icon:"📉",
+                bg:"rgba(255,255,255,0.08)", shadow:"none" },
+              { id:"rosc", label:"RACS", sub:"Retour à une circulation spontanée", icon:"💚",
+                bg:"linear-gradient(135deg,#276749,#1C4532)", shadow:"rgba(39,103,73,0.4)" },
+            ].map(r => (
+              <button key={r.id} onClick={() => {
+                addEvent(r.id, `Rythme : ${r.label}`, r.icon);
+                setShowRythmFlashPed(false);
+              }} style={{ background:r.bg, border:`1.5px solid rgba(255,255,255,0.15)`,
+                borderRadius:14, padding:"14px 16px", cursor:"pointer", fontFamily:disp,
+                display:"flex", alignItems:"center", gap:12, color:"#fff",
+                boxShadow: r.shadow!=="none" ? `0 6px 18px ${r.shadow}` : "none" }}>
+                <span style={{ fontSize:22 }}>{r.icon}</span>
+                <div style={{ textAlign:"left" }}>
+                  <p style={{ margin:0, fontSize:16, fontWeight:800 }}>{r.label}</p>
+                  <p style={{ margin:0, fontSize:10.5, opacity:0.75 }}>{r.sub}</p>
+                </div>
+              </button>
+            ))}
+            <button onClick={() => setShowRythmFlashPed(false)}
+              style={{ background:"transparent", border:"none", color:"rgba(255,255,255,0.4)",
+                fontSize:12, padding:"8px", cursor:"pointer", fontFamily:sans }}>
+              ✕ Fermer sans enregistrer
+            </button>
+          </div>
+        </div>
       )}
 
       {/* ── Débrief post-arrêt pédiatrique ── */}
@@ -5830,7 +6060,7 @@ function DebriefModal({ events, totalSec, noFlow, lowFlow, etco2List, ccfEnabled
 }
 
 // ── APP ────────────────────────────────────────────────────────────────────────
-export default function App() {
+function App() {
   const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"" });
   const sf = k => v => setPat(p => ({ ...p, [k]: v }));
 
@@ -5848,6 +6078,7 @@ export default function App() {
   const [etco2Open, setEtco2Open] = useState(true);
   // Métronome + undo
   const [metronomeMuted, setMetronomeMuted] = useState(false);
+  const [showRythmFlash, setShowRythmFlash] = useState(false);
   // Undo (annuler le dernier événement)
   const [undoToast, setUndoToast] = useState(null); // { event, label, key }
   const undoLast = () => {
@@ -5899,11 +6130,12 @@ export default function App() {
   const [events,      setEvents]      = useLocalState("acr_adulte_events", []);
   const [alert,       setAlert]       = useState(null);
   const [showPdf,     setShowPdf]     = useState(false);
-  const [showLog,     setShowLog]     = useState(true);
+  const [showLog,     setShowLog]     = useState(false);
 
   const [modalCord,   setModalCord]   = useState(false);
   const [modalDeces,  setModalDeces]  = useState(false);
   const [omlStep,     setOmlStep]     = useState(0); // 0=choix, 1=oml
+  const [decesRemisA, setDecesRemisA] = useState(""); // champ libre sans OML
 
   // Wake Lock — empêche le verrouillage écran pendant la réa
   useWakeLock(started);
@@ -6005,29 +6237,85 @@ export default function App() {
     }
   }, [cordReminderActive]);
 
-  // ── Métronome 100/min ──
-  const metronomeMutedRef = useRef(metronomeMuted);
-  useEffect(() => { metronomeMutedRef.current = metronomeMuted; }, [metronomeMuted]);
-  const hasRoscRef = useRef(!!events.find(e=>e.id==="rosc"));
-  useEffect(() => { hasRoscRef.current = !!events.find(e=>e.id==="rosc"); }, [events]);
+  // ── Métronome 100/min — scheduler Web Audio lookahead (robuste, fonctionne en background) ──
+  // Pattern : setInterval 50ms pour planifier les bips 200ms à l'avance via ctx.currentTime
+  // C'est la seule méthode fiable sur iOS/Android même quand l'app passe en arrière-plan.
+  const metroCtxRef    = useRef(null);
+  const metroNextRef   = useRef(0);   // prochain bip planifié (ctx.currentTime)
+  const metroTimerRef  = useRef(null);
+  const metronomeMutedRef2 = useRef(metronomeMuted);
+  useEffect(() => { metronomeMutedRef2.current = metronomeMuted; }, [metronomeMuted]);
+  const hasRoscRef2 = useRef(!!events.find(e=>e.id==="rosc"));
+  useEffect(() => { hasRoscRef2.current = !!events.find(e=>e.id==="rosc"); }, [events]);
+
+  const scheduleMetronome = () => {
+    const ctx = metroCtxRef.current;
+    if (!ctx || ctx.state === "closed") return;
+    const lookahead = 0.2;  // planifier 200 ms à l'avance
+    const interval  = 0.6;  // 100 BPM = 600 ms
+    while (metroNextRef.current < ctx.currentTime + lookahead) {
+      if (!metronomeMutedRef2.current && !hasRoscRef2.current) {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = "square"; o.frequency.value = 1000;
+        const t = metroNextRef.current;
+        g.gain.setValueAtTime(0.15, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.025);
+        o.start(t); o.stop(t + 0.03);
+      }
+      metroNextRef.current += interval;
+    }
+  };
+
   useEffect(() => {
-    if (!metronomeEnabled || !started || !running) return;
-    const id = setInterval(() => {
-      if (!metronomeMutedRef.current && !hasRoscRef.current) playMetronomeTick();
-    }, 600); // 100 BPM
-    return () => clearInterval(id);
+    // Arrêter le scheduler si conditions non remplies
+    if (!metronomeEnabled || !started || !running) {
+      clearInterval(metroTimerRef.current);
+      metroTimerRef.current = null;
+      if (metroCtxRef.current) {
+        metroCtxRef.current.close().catch(() => {});
+        metroCtxRef.current = null;
+      }
+      return;
+    }
+    // Démarrer le scheduler
+    const startScheduler = () => {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        ctx.resume().catch(() => {});
+        metroCtxRef.current = ctx;
+        metroNextRef.current = ctx.currentTime + 0.05;
+        scheduleMetronome();
+        metroTimerRef.current = setInterval(scheduleMetronome, 50);
+      } catch(e) {}
+    };
+    if (!metroCtxRef.current || metroCtxRef.current.state === "closed") {
+      startScheduler();
+    }
+    return () => {
+      clearInterval(metroTimerRef.current);
+      metroTimerRef.current = null;
+      if (metroCtxRef.current) {
+        metroCtxRef.current.close().catch(() => {});
+        metroCtxRef.current = null;
+      }
+    };
   }, [metronomeEnabled, started, running]);
 
-  // ── Bip changement de masseur (détection passage cp → 0) ──
+  // ── Bip changement de masseur + flash analyse de rythme ──
   const prevCpRef = useRef(null);
   useEffect(() => {
     if (!started || !running) { prevCpRef.current = null; return; }
     const cp = (sec - cycleOffset) % 120;
     if (prevCpRef.current !== null && prevCpRef.current > 0 && cp === 0) {
       playCycleBip();
+      if (!events.find(e => e.id === "rosc") && !events.find(e => e.id === "deces")) {
+        setShowRythmFlash(true);
+      }
     }
     prevCpRef.current = cp;
-  }, [sec, cycleOffset, started, running]);
+  }, [sec, cycleOffset, started, running, events]);
 
   // CCF — bascule pause/reprise des compressions
   const compPaused = ccfPausedSince != null;
@@ -6121,7 +6409,8 @@ export default function App() {
 
   // Pas de tableau ACTIONS_SIMPLE — tous les boutons sont gérés individuellement dans la grille
 
-  const [module, setModule] = useState(null); // null | "adulte_extra" | "adulte_intra" | "pediatrique" | "traumatique"
+  const [module, setModule] = useState(null);
+  const [showOnboarding, setShowOnboarding] = useLocalState("acr_onboarding_done", false);
   const isTrauma = module === "traumatique";
 
   // Thème jour/nuit — choisi par le médecin, persisté
@@ -6182,6 +6471,57 @@ export default function App() {
     <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans,
       display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
       padding:"64px 20px 20px", boxSizing:"border-box", position:"relative" }}>
+
+      {/* ── Onboarding — première ouverture uniquement ── */}
+      {!showOnboarding && (
+        <div style={{ position:"fixed", inset:0, zIndex:100,
+          background:"rgba(8,15,35,0.96)", backdropFilter:"blur(12px)",
+          display:"flex", flexDirection:"column", alignItems:"center",
+          justifyContent:"flex-end", fontFamily:sans, paddingBottom:"env(safe-area-inset-bottom,20px)" }}>
+          <div style={{ background:P.surface, borderRadius:"24px 24px 0 0",
+            padding:"28px 20px 36px", width:"100%", maxWidth:420 }}>
+            <div style={{ textAlign:"center", marginBottom:24 }}>
+              <div style={{ width:64, height:64, borderRadius:20, margin:"0 auto 16px",
+                background:`linear-gradient(135deg, ${P.rose}, #9B2C2C)`,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:32 }}>❤️‍🩹</div>
+              <p style={{ margin:"0 0 6px", fontSize:22, fontWeight:900, color:P.text, fontFamily:disp }}>
+                Copilote ACR
+              </p>
+              <p style={{ margin:0, fontSize:13, color:P.textSoft }}>
+                Aide cognitive SMUR — Arrêt cardiaque
+              </p>
+            </div>
+            {[
+              { icon:"⏱", title:"Chrono + Adrénaline", desc:"Timer automatique, alarme à chaque interval" },
+              { icon:"⚡", title:"Analyse de rythme", desc:"Flash toutes les 2 min, 4 choix en 1 tap" },
+              { icon:"📄", title:"Compte-rendu automatique", desc:"Rapport coloré prêt à partager en fin de réa" },
+              { icon:"👶", title:"Module pédiatrique", desc:"Doses calculées automatiquement par poids" },
+            ].map((s,i) => (
+              <div key={i} style={{ display:"flex", gap:12, padding:"10px 0",
+                borderBottom: i<3 ? `1px solid ${P.borderSoft}` : "none" }}>
+                <span style={{ width:36, height:36, borderRadius:10, background:P.surfaceAlt,
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                  fontSize:18, flexShrink:0 }}>{s.icon}</span>
+                <div>
+                  <p style={{ margin:0, fontSize:13, fontWeight:700, color:P.text }}>{s.title}</p>
+                  <p style={{ margin:0, fontSize:11.5, color:P.textSoft }}>{s.desc}</p>
+                </div>
+              </div>
+            ))}
+            <button onClick={() => setShowOnboarding(true)}
+              style={{ width:"100%", marginTop:20,
+                background:`linear-gradient(135deg, ${P.rose}, #9B2C2C)`,
+                border:"none", borderRadius:16, color:"#fff", fontSize:16, fontWeight:800,
+                fontFamily:disp, padding:"18px", cursor:"pointer",
+                boxShadow:`0 8px 24px color-mix(in srgb, ${P.rose} 35%, transparent)` }}>
+              Commencer →
+            </button>
+            <p style={{ margin:"12px 0 0", textAlign:"center", fontSize:11, color:P.textSoft }}>
+              Usage professionnel exclusif · Outil d'aide cognitive
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Réglages en haut à gauche */}
       <div style={{ position:"absolute", top:16, left:16, zIndex:5 }}>
@@ -6463,26 +6803,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Métronome CPR */}
-          <div style={{ display:"flex", alignItems:"flex-start", gap:12,
-            background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
-            <div style={{ flex:1, minWidth:0 }}>
-              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Métronome RCP</p>
-              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
-                Bip rythmique à <b>100 / min</b> (600 ms) pendant les compressions.
-                Désactivable (silencieux) directement depuis l'écran de réanimation.
-              </p>
-            </div>
-            <button onClick={() => setMetronomeEnabled(v => !v)}
-              style={{ flexShrink:0, width:50, height:30, borderRadius:15, border:"none", cursor:"pointer",
-                background: metronomeEnabled ? P.blue : P.border, position:"relative", transition:"background 0.15s",
-                padding:0 }}>
-              <span style={{ position:"absolute", top:3, left: metronomeEnabled ? 23 : 3, width:24, height:24,
-                borderRadius:"50%", background:"#fff", transition:"left 0.15s",
-                boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
-            </button>
-          </div>
-
           {/* Protocoles de dilution pédiatrique */}
           <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
             <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom: pedDiluEnabled ? 14 : 0 }}>
@@ -6550,27 +6870,6 @@ export default function App() {
                 </button>
               </div>
             )}
-          </div>
-
-          {/* ── Intervalle adrénaline ── */}
-          <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
-            <div style={{ marginBottom:10 }}>
-              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Intervalle adrénaline</p>
-              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
-                Délai entre chaque dose (affiché dans le chronomètre). Réglé ici, plus modifiable en réanimation.
-              </p>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
-              {[3, 4, 5].map(m => (
-                <button key={m} onClick={() => setAdrIntervalGlobal(m)}
-                  style={{ background: adrIntervalGlobal===m ? P.rose : P.surface,
-                    border:`1.5px solid ${adrIntervalGlobal===m ? P.rose : P.border}`,
-                    borderRadius:11, padding:"11px 8px", cursor:"pointer", fontFamily:mono,
-                    fontSize:16, fontWeight:800, color: adrIntervalGlobal===m ? "#fff" : P.text }}>
-                  {m} min
-                </button>
-              ))}
-            </div>
           </div>
 
           {/* ── Métronome MCE (100/min) ── */}
@@ -7049,9 +7348,60 @@ export default function App() {
               textAlign:"center", fontWeight:800, boxSizing:"border-box", outline:"none" }}
             onFocus={e => e.target.style.borderColor = P.teal}
             onBlur={e  => e.target.style.borderColor = P.border} />
-          <p style={{ margin:"10px 0 0", fontSize:11, color:P.textSoft, lineHeight:1.5 }}>
-            Repère : &lt; 10 mmHg → optimiser le MCE · remontée brutale → possible RACS · chute brutale → sonde déplacée
-          </p>
+
+          {/* Alertes intelligentes en temps réel */}
+          {(() => {
+            const v = parseFloat(String(etco2Val).replace(",","."));
+            if (isNaN(v) || etco2Val === "") return (
+              <p style={{ margin:"10px 0 0", fontSize:11, color:P.textSoft, lineHeight:1.6 }}>
+                Repère : &lt; 10 mmHg → optimiser MCE · &gt; 40 mmHg → RACS probable · chute brutale → sonde déplacée
+              </p>
+            );
+            if (v < 10) return (
+              <div style={{ margin:"10px 0 0", background:P.roseSoft, border:`1.5px solid ${P.rose}`,
+                borderRadius:10, padding:"10px 14px" }}>
+                <p style={{ margin:0, fontSize:12.5, fontWeight:800, color:P.roseText }}>
+                  ⚠️ EtCO₂ {v} mmHg — MCE insuffisant ou arrêt irréversible
+                </p>
+                <p style={{ margin:"4px 0 0", fontSize:11, color:P.roseText, lineHeight:1.5 }}>
+                  Vérifier qualité du MCE · positions mains · fréquence · profondeur 5–6 cm.
+                  Valeur &lt; 10 mmHg persistante après 20 min = critère d'arrêt (ERC 2021).
+                </p>
+              </div>
+            );
+            if (v >= 40) return (
+              <div style={{ margin:"10px 0 0", background:P.greenSoft, border:`1.5px solid ${P.green}`,
+                borderRadius:10, padding:"10px 14px" }}>
+                <p style={{ margin:0, fontSize:12.5, fontWeight:800, color:P.greenText }}>
+                  🟢 EtCO₂ {v} mmHg — RACS probable
+                </p>
+                <p style={{ margin:"4px 0 0", fontSize:11, color:P.greenText, lineHeight:1.5 }}>
+                  Remontée brutale ≥ 40 mmHg est fortement prédictive d'un retour de circulation.
+                  Réduire les compressions et vérifier le pouls.
+                </p>
+              </div>
+            );
+            if (v >= 10 && v < 20) return (
+              <div style={{ margin:"10px 0 0", background:P.amberSoft, border:`1px solid ${P.amber}`,
+                borderRadius:10, padding:"10px 14px" }}>
+                <p style={{ margin:0, fontSize:12.5, fontWeight:700, color:P.amberText }}>
+                  ⏱ EtCO₂ {v} mmHg — MCE à optimiser
+                </p>
+                <p style={{ margin:"4px 0 0", fontSize:11, color:P.amberText, lineHeight:1.5 }}>
+                  Objectif ≥ 20 mmHg avec un MCE de qualité. Vérifier fréquence et profondeur.
+                </p>
+              </div>
+            );
+            return (
+              <div style={{ margin:"10px 0 0", background:P.greenSoft, border:`1px solid ${P.green}`,
+                borderRadius:10, padding:"10px 14px" }}>
+                <p style={{ margin:0, fontSize:12.5, fontWeight:700, color:P.greenText }}>
+                  ✅ EtCO₂ {v} mmHg — MCE efficace
+                </p>
+              </div>
+            );
+          })()}
+
           <button onClick={() => {
             const v = parseFloat(String(etco2Val).replace(",", "."));
             if (!isNaN(v)) {
@@ -7137,7 +7487,41 @@ export default function App() {
                 onClick={() => setOmlStep(1)} />
               <ChoiceBtn label="Sans OML" sub="Pas d'obstacle médico-légal"
                 accent={P.slate} soft={P.slateSoft} textC={P.slateText}
-                onClick={() => { addEvent("deces","Constat de décès — sans OML","🕊️"); setModalDeces(false); setOmlStep(0); }} />
+                onClick={() => setOmlStep(2)} />
+            </>
+          ) : omlStep === 2 ? (
+            <>
+              <p style={{ margin:"0 0 10px", fontSize:12.5, fontWeight:600, color:P.text }}>
+                🕊️ Constat de décès — sans OML
+              </p>
+              <p style={{ margin:"0 0 8px", fontSize:12, color:P.textSoft }}>
+                Certificat remis à (optionnel) :
+              </p>
+              <div style={{ display:"flex", gap:8, marginBottom:12 }}>
+                <input value={decesRemisA} onChange={e => setDecesRemisA(e.target.value)}
+                  placeholder="Ex : famille, pompiers, gendarmerie..."
+                  style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                    borderRadius:9, padding:"10px 12px", fontSize:14, color:P.text,
+                    fontFamily:sans, outline:"none", boxSizing:"border-box" }}
+                  onFocus={e => e.target.style.borderColor = P.slate}
+                  onBlur={e  => e.target.style.borderColor = P.border} />
+              </div>
+              <button onClick={() => {
+                const remis = decesRemisA.trim();
+                addEvent("deces", remis
+                  ? `Constat de décès — sans OML · Certificat remis à : ${remis}`
+                  : "Constat de décès — sans OML", "🕊️");
+                setModalDeces(false); setOmlStep(0); setDecesRemisA("");
+              }} style={{ width:"100%", background:`linear-gradient(135deg, ${P.slate}, #374151)`,
+                border:"none", borderRadius:11, color:"#fff", fontSize:14, fontWeight:700,
+                fontFamily:disp, padding:"13px", cursor:"pointer", marginBottom:8 }}>
+                ✓ Confirmer le constat
+              </button>
+              <button onClick={() => setOmlStep(0)}
+                style={{ width:"100%", background:"transparent", border:"none",
+                  color:P.textSoft, fontSize:12, cursor:"pointer", fontFamily:sans, padding:"6px" }}>
+                ← Retour
+              </button>
             </>
           ) : (
             <>
@@ -8369,7 +8753,10 @@ export default function App() {
         {/* Rappel MCE discret */}
         <p style={{ margin:"8px 0 0", fontSize:10, color:P.textSoft, textAlign:"center",
           letterSpacing:"0.01em", lineHeight:1.5 }}>
-          100–120 /min · 5–6 cm · relâchement complet · ratio 30:2
+          {events.find(e => e.id === "iot")
+            ? <span style={{ color:P.violetText, fontWeight:700 }}>🫁 IOT — Compressions continues · Ventilations asynchrones 10/min</span>
+            : "100–120 /min · 5–6 cm · relâchement complet · ratio 30:2"
+          }
         </p>
       </div>
 
@@ -8851,7 +9238,7 @@ export default function App() {
         </div>
 
         {/* Contrôles */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom: metronomeEnabled ? 8 : 70 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:70 }}>
           <button onClick={() => setRunning(v => !v)}
             style={{ background:P.surface, border:`1.5px solid ${running ? P.amber : P.green}`,
               borderRadius:11, padding:"10px 6px",
@@ -8873,18 +9260,6 @@ export default function App() {
             ↺ Clôturer
           </button>
         </div>
-        {metronomeEnabled && (
-          <button onClick={() => setMetronomeMuted(v => !v)}
-            style={{ width:"100%", marginBottom:70,
-              background: metronomeMuted ? P.surfaceAlt : `color-mix(in srgb, ${P.blue} 12%, ${P.surface})`,
-              border:`1px solid ${metronomeMuted ? P.border : P.blue}`, borderRadius:11,
-              padding:"9px", cursor:"pointer", fontFamily:sans, fontSize:11, fontWeight:600,
-              color: metronomeMuted ? P.textSoft : P.blueText,
-              display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-            {metronomeMuted ? "🔇 Métronome silencieux — Activer" : "🎵 Métronome 100/min — Couper le son"}
-          </button>
-        )}
-
       </div>
 
       {/* ── Modal Dossier patient ── */}
@@ -9267,6 +9642,106 @@ export default function App() {
         );
       })()}
 
+      {/* ── Flash Analyse de rythme — toutes les 2 min ── */}
+      {showRythmFlash && (
+        <div style={{ position:"fixed", inset:0, zIndex:95,
+          background:"rgba(8,15,35,0.88)", display:"flex", flexDirection:"column",
+          alignItems:"center", justifyContent:"center", fontFamily:sans,
+          backdropFilter:"blur(8px)" }}>
+
+          {/* Animation pulsante */}
+          <style>{`@keyframes rythmPulse { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.08);opacity:0.85} }`}</style>
+
+          <div style={{ textAlign:"center", marginBottom:28 }}>
+            <div style={{ width:72, height:72, borderRadius:22, margin:"0 auto 14px",
+              background:"linear-gradient(135deg,#E53E3E,#9B2C2C)",
+              display:"flex", alignItems:"center", justifyContent:"center",
+              fontSize:36, animation:"rythmPulse 1.2s ease-in-out infinite",
+              boxShadow:"0 0 40px rgba(229,62,62,0.5)" }}>⚡</div>
+            <p style={{ margin:"0 0 4px", fontSize:11, fontWeight:800, color:"#FC8181",
+              textTransform:"uppercase", letterSpacing:"0.2em", fontFamily:mono }}>
+              Fin de cycle — 2 min
+            </p>
+            <p style={{ margin:"0 0 6px", fontSize:26, fontWeight:900, color:"#FFF",
+              fontFamily:disp, letterSpacing:"-0.02em" }}>
+              Analyse de rythme
+            </p>
+            <p style={{ margin:0, fontSize:14, color:"rgba(255,255,255,0.6)" }}>
+              Pause compressions · Identifier le rythme
+            </p>
+          </div>
+
+          {/* Boutons rythme */}
+          <div style={{ width:"100%", maxWidth:360, padding:"0 20px", display:"flex", flexDirection:"column", gap:10 }}>
+            {/* FV / TV */}
+            <button onClick={() => {
+              addEvent("rv_fvtv", "Rythme : FV/TV", "⚡");
+              setShowRythmFlash(false);
+              setModalChoc(true); // ouvrir directement le modal CEE
+            }} style={{ background:"linear-gradient(135deg,#E53E3E,#9B2C2C)", border:"none",
+              borderRadius:16, padding:"16px", cursor:"pointer", fontFamily:disp,
+              display:"flex", alignItems:"center", gap:14, color:"#fff",
+              boxShadow:"0 8px 24px rgba(229,62,62,0.4)" }}>
+              <span style={{ fontSize:28 }}>⚡</span>
+              <div style={{ textAlign:"left" }}>
+                <p style={{ margin:0, fontSize:17, fontWeight:900, letterSpacing:"-0.01em" }}>FV / TV</p>
+                <p style={{ margin:0, fontSize:12, opacity:0.8 }}>Rythme choquable → Défibrillation</p>
+              </div>
+            </button>
+
+            {/* AESP */}
+            <button onClick={() => {
+              addEvent("rv_aesp", "Rythme : AESP", "💔");
+              setShowRythmFlash(false);
+            }} style={{ background:"rgba(255,255,255,0.08)", border:"1.5px solid rgba(255,255,255,0.2)",
+              borderRadius:16, padding:"14px 16px", cursor:"pointer", fontFamily:disp,
+              display:"flex", alignItems:"center", gap:14, color:"#fff" }}>
+              <span style={{ fontSize:24 }}>💔</span>
+              <div style={{ textAlign:"left" }}>
+                <p style={{ margin:0, fontSize:16, fontWeight:800 }}>AESP</p>
+                <p style={{ margin:0, fontSize:11, opacity:0.7 }}>Activité électrique sans pouls → Continuer</p>
+              </div>
+            </button>
+
+            {/* Asystolie */}
+            <button onClick={() => {
+              addEvent("rv_asy", "Rythme : Asystolie", "📉");
+              setShowRythmFlash(false);
+            }} style={{ background:"rgba(255,255,255,0.08)", border:"1.5px solid rgba(255,255,255,0.2)",
+              borderRadius:16, padding:"14px 16px", cursor:"pointer", fontFamily:disp,
+              display:"flex", alignItems:"center", gap:14, color:"#fff" }}>
+              <span style={{ fontSize:24 }}>📉</span>
+              <div style={{ textAlign:"left" }}>
+                <p style={{ margin:0, fontSize:16, fontWeight:800 }}>Asystolie</p>
+                <p style={{ margin:0, fontSize:11, opacity:0.7 }}>Tracé plat → Vérifier branchements → Continuer</p>
+              </div>
+            </button>
+
+            {/* RACS */}
+            <button onClick={() => {
+              addEvent("rosc", "RACS", "💚");
+              setShowRythmFlash(false);
+            }} style={{ background:"linear-gradient(135deg,#276749,#1C4532)", border:"none",
+              borderRadius:16, padding:"14px 16px", cursor:"pointer", fontFamily:disp,
+              display:"flex", alignItems:"center", gap:14, color:"#fff",
+              boxShadow:"0 6px 18px rgba(39,103,73,0.4)" }}>
+              <span style={{ fontSize:24 }}>💚</span>
+              <div style={{ textAlign:"left" }}>
+                <p style={{ margin:0, fontSize:16, fontWeight:800 }}>RACS</p>
+                <p style={{ margin:0, fontSize:11, opacity:0.8 }}>Retour à une circulation spontanée</p>
+              </div>
+            </button>
+
+            {/* Continuer sans logguer */}
+            <button onClick={() => setShowRythmFlash(false)}
+              style={{ background:"transparent", border:"none", color:"rgba(255,255,255,0.4)",
+                fontSize:12, padding:"10px", cursor:"pointer", fontFamily:sans }}>
+              ✕ Fermer sans enregistrer
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Modal Critères d'arrêt de réanimation ── */}
       {modalCriteres && (
         <div style={{ position:"fixed", inset:0, zIndex:80, background:"rgba(0,0,0,0.55)",
@@ -9408,5 +9883,13 @@ export default function App() {
       )}
 
     </div>
+  );
+}
+
+export default function AppWithBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   );
 }
