@@ -28,7 +28,8 @@ function mergeEvents(localList, remoteList) {
 // Hook de synchronisation d'équipe multi-device (édition collaborative, dernier écrit gagne
 // sauf pour la chronologie qui est fusionnée pour ne perdre aucun événement)
 function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoFlowMin,
-  lowFlowMin, setLowFlowMin, trans, setTrans }) {
+  lowFlowMin, setLowFlowMin, trans, setTrans, pat, setPat,
+  module, setModule, started, setStarted, running, setRunning, sec, setSec }) {
   const [teamCode, setTeamCode] = useState("");
   const [teamConnected, setTeamConnected] = useState(false);
   const [teamDeviceCount, setTeamDeviceCount] = useState(1);
@@ -37,7 +38,17 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
   const applyingRemoteRef = useRef(false);
   const lastPushedRef = useRef("");
 
-  const buildState = () => ({ events, acrTime, noFlowMin, lowFlowMin, trans });
+  // timerAnchor = instant (epoch ms) correspondant à sec=0, recalculé à chaque
+  // envoi à partir du sec courant : permet aux autres appareils de recalculer
+  // un chrono qui continue de tourner sans avoir à pousser une mise à jour
+  // chaque seconde (uniquement quand running/started/module changent, ou que
+  // du contenu change pour une autre raison).
+  const buildState = () => ({
+    events, acrTime, noFlowMin, lowFlowMin, trans, pat,
+    module, started, running,
+    timerAnchor: Date.now() - sec * 1000,
+    secSnapshot: sec,
+  });
 
   const applyRemote = (remote) => {
     if (!remote) return;
@@ -47,6 +58,15 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
     if (remote.noFlowMin !== undefined) setNoFlowMin(v => remote.noFlowMin || v);
     if (remote.lowFlowMin !== undefined) setLowFlowMin(v => remote.lowFlowMin || v);
     if (remote.trans) setTrans(prev => ({ ...prev, ...remote.trans }));
+    if (remote.pat) setPat(prev => ({ ...prev, ...remote.pat }));
+    if (remote.module) setModule(remote.module);
+    if (remote.started !== undefined) setStarted(remote.started);
+    if (remote.running !== undefined) setRunning(remote.running);
+    if (remote.running && remote.timerAnchor) {
+      setSec(Math.max(0, Math.round((Date.now() - remote.timerAnchor) / 1000)));
+    } else if (remote.secSnapshot !== undefined) {
+      setSec(remote.secSnapshot);
+    }
     setTimeout(() => { applyingRemoteRef.current = false; }, 50);
   };
 
@@ -95,6 +115,7 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
     setTeamConnected(false); setTeamCode(""); setTeamDeviceCount(1);
   };
 
+  // Poussée du contenu (chronologie, dossier patient, transmission...) — débounce 700ms
   useEffect(() => {
     if (!teamConnected || !teamCode || applyingRemoteRef.current) return;
     const snapshot = JSON.stringify(buildState());
@@ -107,8 +128,12 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
         .then(() => {});
     }, 700);
     return () => clearTimeout(pushTimerRef.current);
+    // Volontairement SANS `sec` dans les dépendances : le chrono ne doit pas
+    // déclencher un envoi à chaque seconde. Il est recalculé (via closure) au
+    // moment où un envoi se produit pour une autre raison, ou quand
+    // running/started/module changent (play/pause, démarrage de la réa...).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, acrTime, noFlowMin, lowFlowMin, trans, teamConnected, teamCode]);
+  }, [events, acrTime, noFlowMin, lowFlowMin, trans, pat, module, started, running, teamConnected, teamCode]);
 
   useEffect(() => () => { if (channelRef.current) supabaseTeam.removeChannel(channelRef.current); }, []);
 
@@ -6459,6 +6484,7 @@ function App() {
 
   const [started,     setStarted]     = useLocalState("acr_adulte_started", false);
   const [running,     setRunning]     = useState(false); // pas persisté : repart en pause
+  const [module, setModule] = useState(null);
   const [secStored,   setSecStored]   = useLocalState("acr_adulte_sec", 0);
   const [sec,         setSec]         = useTimer(running);
   // Restaurer le chrono au premier rendu
@@ -6499,7 +6525,8 @@ function App() {
   const [teamJoinCode, setTeamJoinCode] = useState("");
   const [teamJoinError, setTeamJoinError] = useState("");
   const team = useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoFlowMin,
-    lowFlowMin, setLowFlowMin, trans, setTrans });
+    lowFlowMin, setLowFlowMin, trans, setTrans, pat, setPat,
+    module, setModule, started, setStarted, running, setRunning, sec, setSec });
 
   // Rejoindre automatiquement une session si l'app est ouverte via un lien
   // de type .../?team=123456 (généré par le scan du QR code)
@@ -6824,6 +6851,12 @@ function App() {
   };
 
   const reset = () => {
+    // Quitter la session d'équipe AVANT de vider les données locales : sinon la
+    // prochaine réanimation continuerait de recevoir/pousser vers l'ancien code
+    // et hériterait de la chronologie de l'arrêt précédent via la fusion d'événements.
+    team.disconnect();
+    setModalTeam(false);
+
     // Archiver la session si elle a du contenu (avant effacement)
     const hasContent = (events && events.length > 1) || pat.nom || sec > 0;
     if (hasContent) {
@@ -6879,7 +6912,6 @@ function App() {
 
   // Pas de tableau ACTIONS_SIMPLE — tous les boutons sont gérés individuellement dans la grille
 
-  const [module, setModule] = useState(null);
   const [showOnboarding, setShowOnboarding] = useLocalState("acr_onboarding_done", false);
   const [showDashboard, setShowDashboard] = useState(false);
   const isTrauma = module === "traumatique";
@@ -9857,8 +9889,8 @@ function App() {
           {!team.teamConnected ? (
             <>
               <p style={{ margin:"0 0 16px", fontSize:12.5, color:P.textSoft, lineHeight:1.5 }}>
-                Synchronise la chronologie, l'heure d'ACR, le no-flow/low-flow et la transmission
-                entre plusieurs appareils de l'équipe en temps réel.
+                Synchronise la chronologie, le chrono de RCP, le dossier patient, l'heure d'ACR,
+                le no-flow/low-flow et la transmission entre plusieurs appareils de l'équipe en temps réel.
               </p>
               <button onClick={async () => { await team.startSession(); }}
                 style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
