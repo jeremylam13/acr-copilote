@@ -25,11 +25,21 @@ function mergeEvents(localList, remoteList) {
   return [...map.values()].sort((a, b) => (a.time || "").localeCompare(b.time || ""));
 }
 
+// Fusionne deux listes de mesures horodatées (EtCO₂, hémodynamique, amines) sans
+// perdre de valeur ajoutée en parallèle sur un autre device
+function mergeBySec(localList, remoteList, extraKey) {
+  const key = e => `${e.sec}|${extraKey ? extraKey(e) : ""}`;
+  const map = new Map();
+  [...(localList || []), ...(remoteList || [])].forEach(e => map.set(key(e), e));
+  return [...map.values()].sort((a, b) => (a.sec || 0) - (b.sec || 0));
+}
+
 // Hook de synchronisation d'équipe multi-device (édition collaborative, dernier écrit gagne
-// sauf pour la chronologie qui est fusionnée pour ne perdre aucun événement)
+// sauf pour la chronologie et les mesures qui sont fusionnées pour ne perdre aucune donnée)
 function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoFlowMin,
   lowFlowMin, setLowFlowMin, trans, setTrans, pat, setPat,
-  module, setModule, started, setStarted, running, setRunning, sec, setSec }) {
+  module, setModule, started, setStarted, running, setRunning, sec, setSec,
+  etco2List, setEtco2List, hemoList, setHemoList, amineList, setAmineList, racs, setRacs }) {
   const [teamCode, setTeamCode] = useState("");
   const [teamConnected, setTeamConnected] = useState(false);
   const [teamDeviceCount, setTeamDeviceCount] = useState(1);
@@ -48,6 +58,7 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
     module, started, running,
     timerAnchor: Date.now() - sec * 1000,
     secSnapshot: sec,
+    etco2List, hemoList, amineList, racs,
   });
 
   const applyRemote = (remote) => {
@@ -62,6 +73,10 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
     if (remote.module) setModule(remote.module);
     if (remote.started !== undefined) setStarted(remote.started);
     if (remote.running !== undefined) setRunning(remote.running);
+    if (remote.etco2List) setEtco2List(prev => mergeBySec(prev, remote.etco2List, e => e.val));
+    if (remote.hemoList) setHemoList(prev => mergeBySec(prev, remote.hemoList, e => `${e.pas}|${e.pad}|${e.fc}`));
+    if (remote.amineList) setAmineList(prev => mergeBySec(prev, remote.amineList, e => e.label));
+    if (remote.racs) setRacs(prev => ({ ...prev, ...remote.racs }));
     if (remote.running && remote.timerAnchor) {
       setSec(Math.max(0, Math.round((Date.now() - remote.timerAnchor) / 1000)));
     } else if (remote.secSnapshot !== undefined) {
@@ -133,7 +148,8 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
     // moment où un envoi se produit pour une autre raison, ou quand
     // running/started/module changent (play/pause, démarrage de la réa...).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, acrTime, noFlowMin, lowFlowMin, trans, pat, module, started, running, teamConnected, teamCode]);
+  }, [events, acrTime, noFlowMin, lowFlowMin, trans, pat, module, started, running,
+    etco2List, hemoList, amineList, racs, teamConnected, teamCode]);
 
   useEffect(() => () => { if (channelRef.current) supabaseTeam.removeChannel(channelRef.current); }, []);
 
@@ -6520,31 +6536,6 @@ function App() {
   });
   const st = k => v => setTrans(p => ({ ...p, [k]: v }));
 
-  // ── Mode équipe multi-device ──
-  const [modalTeam, setModalTeam] = useState(false);
-  const [teamJoinCode, setTeamJoinCode] = useState("");
-  const [teamJoinError, setTeamJoinError] = useState("");
-  const team = useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoFlowMin,
-    lowFlowMin, setLowFlowMin, trans, setTrans, pat, setPat,
-    module, setModule, started, setStarted, running, setRunning, sec, setSec });
-
-  // Rejoindre automatiquement une session si l'app est ouverte via un lien
-  // de type .../?team=123456 (généré par le scan du QR code)
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const codeFromUrl = params.get("team");
-    if (codeFromUrl && /^\d{6}$/.test(codeFromUrl)) {
-      team.joinSession(codeFromUrl).then(r => {
-        setModalTeam(true);
-        if (!r.ok) setTeamJoinError(r.error);
-      });
-      const url = new URL(window.location.href);
-      url.searchParams.delete("team");
-      window.history.replaceState({}, "", url.toString());
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // Minuteur Adrénaline (timestamp absolu pour survivre aux navigations)
   const [adrTimerStart, setAdrTimerStart] = useLocalState("acr_adulte_adrStart", 0);
   // Réglages globaux lus ici pour être disponibles dans les effets ci-dessous
@@ -6578,6 +6569,32 @@ function App() {
     tas:"", tad:"", fc:"", tempRacs:"", noradrV:"", dobut:"", autresHemo:"",
     remplissages:[]
   });
+
+  // ── Mode équipe multi-device ──
+  const [modalTeam, setModalTeam] = useState(false);
+  const [teamJoinCode, setTeamJoinCode] = useState("");
+  const [teamJoinError, setTeamJoinError] = useState("");
+  const team = useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoFlowMin,
+    lowFlowMin, setLowFlowMin, trans, setTrans, pat, setPat,
+    module, setModule, started, setStarted, running, setRunning, sec, setSec,
+    etco2List, setEtco2List, hemoList, setHemoList, amineList, setAmineList, racs, setRacs });
+
+  // Rejoindre automatiquement une session si l'app est ouverte via un lien
+  // de type .../?team=123456 (généré par le scan du QR code)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const codeFromUrl = params.get("team");
+    if (codeFromUrl && /^\d{6}$/.test(codeFromUrl)) {
+      team.joinSession(codeFromUrl).then(r => {
+        setModalTeam(true);
+        if (!r.ok) setTeamJoinError(r.error);
+      });
+      const url = new URL(window.location.href);
+      url.searchParams.delete("team");
+      window.history.replaceState({}, "", url.toString());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const sr = k => v => setRacs(p => ({ ...p, [k]: v }));
   const [activeTab,   setActiveTab]   = useState("actions"); // actions | etiologie | therapeutiques
 
