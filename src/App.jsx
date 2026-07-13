@@ -1,4 +1,120 @@
 import React, { useState, useEffect, useRef } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+// ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
+const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
+const supabaseAnonKey = "sb_publishable_hRxmJi9SIcrRtQUO4dwo0Q_rnXNmDJz";
+const supabaseTeam = createClient(supabaseUrl, supabaseAnonKey);
+
+function genSessionCode() {
+  return String(Math.floor(100000 + Math.random() * 900000)); // 6 chiffres
+}
+function buildJoinLink(code) {
+  return `${window.location.origin}${window.location.pathname}?team=${code}`;
+}
+function qrUrl(code) {
+  const joinLink = buildJoinLink(code);
+  return `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(joinLink)}`;
+}
+
+// Fusionne deux chronologies sans perdre d'entrées ajoutées en parallèle sur un autre device
+function mergeEvents(localList, remoteList) {
+  const key = e => `${e.id}|${e.time}|${e.label}`;
+  const map = new Map();
+  [...(localList || []), ...(remoteList || [])].forEach(e => map.set(key(e), e));
+  return [...map.values()].sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+}
+
+// Hook de synchronisation d'équipe multi-device (édition collaborative, dernier écrit gagne
+// sauf pour la chronologie qui est fusionnée pour ne perdre aucun événement)
+function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoFlowMin,
+  lowFlowMin, setLowFlowMin, trans, setTrans }) {
+  const [teamCode, setTeamCode] = useState("");
+  const [teamConnected, setTeamConnected] = useState(false);
+  const [teamDeviceCount, setTeamDeviceCount] = useState(1);
+  const channelRef = useRef(null);
+  const pushTimerRef = useRef(null);
+  const applyingRemoteRef = useRef(false);
+  const lastPushedRef = useRef("");
+
+  const buildState = () => ({ events, acrTime, noFlowMin, lowFlowMin, trans });
+
+  const applyRemote = (remote) => {
+    if (!remote) return;
+    applyingRemoteRef.current = true;
+    if (remote.events) setEvents(prev => mergeEvents(prev, remote.events));
+    if (remote.acrTime !== undefined) setAcrTime(v => remote.acrTime || v);
+    if (remote.noFlowMin !== undefined) setNoFlowMin(v => remote.noFlowMin || v);
+    if (remote.lowFlowMin !== undefined) setLowFlowMin(v => remote.lowFlowMin || v);
+    if (remote.trans) setTrans(prev => ({ ...prev, ...remote.trans }));
+    setTimeout(() => { applyingRemoteRef.current = false; }, 50);
+  };
+
+  const subscribeToCode = (code) => {
+    if (channelRef.current) supabaseTeam.removeChannel(channelRef.current);
+    const channel = supabaseTeam.channel(`acr_session_${code}`, {
+      config: { presence: { key: Math.random().toString(36).slice(2) } },
+    });
+    channel.on("postgres_changes",
+      { event: "UPDATE", schema: "public", table: "acr_team_sessions", filter: `code=eq.${code}` },
+      (payload) => applyRemote(payload.new?.state)
+    );
+    channel.on("presence", { event: "sync" }, () => {
+      setTeamDeviceCount(Object.keys(channel.presenceState()).length || 1);
+    });
+    channel.subscribe(async (status) => {
+      if (status === "SUBSCRIBED") {
+        setTeamConnected(true);
+        await channel.track({ joined_at: Date.now() });
+      }
+    });
+    channelRef.current = channel;
+  };
+
+  const startSession = async () => {
+    const code = genSessionCode();
+    await supabaseTeam.from("acr_team_sessions")
+      .upsert({ code, state: buildState(), updated_at: new Date().toISOString() });
+    setTeamCode(code);
+    subscribeToCode(code);
+    return code;
+  };
+
+  const joinSession = async (code) => {
+    const { data, error } = await supabaseTeam.from("acr_team_sessions")
+      .select("state").eq("code", code).maybeSingle();
+    if (error || !data) return { ok: false, error: "Code introuvable" };
+    applyRemote(data.state);
+    setTeamCode(code);
+    subscribeToCode(code);
+    return { ok: true };
+  };
+
+  const disconnect = () => {
+    if (channelRef.current) { supabaseTeam.removeChannel(channelRef.current); channelRef.current = null; }
+    setTeamConnected(false); setTeamCode(""); setTeamDeviceCount(1);
+  };
+
+  useEffect(() => {
+    if (!teamConnected || !teamCode || applyingRemoteRef.current) return;
+    const snapshot = JSON.stringify(buildState());
+    if (snapshot === lastPushedRef.current) return;
+    clearTimeout(pushTimerRef.current);
+    pushTimerRef.current = setTimeout(() => {
+      lastPushedRef.current = snapshot;
+      supabaseTeam.from("acr_team_sessions")
+        .upsert({ code: teamCode, state: buildState(), updated_at: new Date().toISOString() })
+        .then(() => {});
+    }, 700);
+    return () => clearTimeout(pushTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, acrTime, noFlowMin, lowFlowMin, trans, teamConnected, teamCode]);
+
+  useEffect(() => () => { if (channelRef.current) supabaseTeam.removeChannel(channelRef.current); }, []);
+
+  return { teamCode, teamConnected, teamDeviceCount, startSession, joinSession, disconnect };
+}
+
 
 // ── Error Boundary — filet de sécurité global ──────────────────────────────
 // Si un composant plante, l'app reste debout et les données localStorage
@@ -139,6 +255,37 @@ const disp = "'Archivo', 'Inter', system-ui, sans-serif";
 
 const getNow = () => new Date().toTimeString().slice(0, 5);
 const fmtSec = s => `${Math.floor(s/60).toString().padStart(2,"0")}:${(s%60).toString().padStart(2,"0")}`;
+
+// ── Reconnaissance vocale ─────────────────────────────────────────────────────
+const SpeechRecognitionAPI = typeof window !== "undefined"
+  ? (window.SpeechRecognition || window.webkitSpeechRecognition || null)
+  : null;
+
+// Normalise le texte pour la reconnaissance (supprime accents, minuscules)
+function normalizeVoice(txt) {
+  return txt.toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ");
+}
+
+// Convertit un mot-nombre français en entier
+function parseFrNumber(txt) {
+  const map = {
+    zero:0,un:1,une:1,deux:2,trois:3,quatre:4,cinq:5,six:6,sept:7,huit:8,neuf:9,
+    dix:10,onze:11,douze:12,treize:13,quatorze:14,quinze:15,seize:16,
+    "dix sept":17,"dix huit":18,"dix neuf":19,vingt:20,
+    "vingt et un":21,"vingt deux":22,"vingt trois":23,"vingt quatre":24,
+    "vingt cinq":25,"vingt six":26,"vingt sept":27,"vingt huit":28,"vingt neuf":29,
+    trente:30,"trente et un":31,"trente cinq":35,quarante:40,cinquante:50,soixante:60,
+  };
+  const norm = normalizeVoice(txt);
+  const digit = norm.match(/\d+/);
+  if (digit) return parseInt(digit[0]);
+  for (const [w, n] of Object.entries(map)) {
+    if (norm.includes(w)) return n;
+  }
+  return null;
+}
 
 // Chronomètre basé sur l'HORLOGE RÉELLE (pas un compteur de ticks).
 // → Continue de tourner juste même si l'app passe en arrière-plan (où les
@@ -297,138 +444,6 @@ function useWakeLock(active) {
       if (wakeLock) { try { wakeLock.release(); } catch {} }
     };
   }, [active]);
-}
-
-// ── COMMANDES VOCALES (Web Speech API) ─────────────────────────────────────────
-// Reconnaissance continue en français. Mots-clés cliniques → addEvent().
-// Chaque événement ajouté par la voix reste annulable (bouton "Annuler" existant),
-// même filet de sécurité qu'un ajout manuel — indispensable vu le risque de
-// mauvaise reconnaissance en environnement bruyant (ambulance, réanimation).
-// Non supporté hors Chrome/Edge/Android (pas de Firefox, très limité sur iOS
-// Safari) et nécessite une connexion internet (moteur cloud du navigateur).
-const VOICE_COMMANDS = [
-  { id:"adr",        match:/adr[ée]nalin/i,                         label:"Adrénaline (vocal)",                    icon:"💉" },
-  { id:"cord",       match:/amiodarone|cordarone/i,                 label:"Amiodarone (vocal)",                    icon:"💊" },
-  { id:"doublechoc", match:/double\s*d[ée]fib/i,                    label:"Double défibrillation (vocal)",         icon:"⚡⚡" },
-  { id:"choc",       match:/d[ée]fibrillat|choc\s*[ée]lectrique|\bchoc\b/i, label:"Défibrillation (vocal)",        icon:"⚡" },
-  { id:"iot",        match:/intubation|intub[ée]/i,                 label:"Intubation (vocal)",                    icon:"🫁" },
-  { id:"vvp",        match:/voie\s*veineuse|\bvvp\b/i,               label:"Voie veineuse (VVP) posée (vocal)",     icon:"🩹" },
-  { id:"vio",        match:/voie\s*intra.?osseuse|\bvio\b/i,         label:"Voie intra-osseuse (VIO) posée (vocal)", icon:"🦴" },
-  { id:"patchs",     match:/changement de patch|patchs?/i,           label:"Changement de patchs (vocal)",          icon:"🔄" },
-  { id:"planche",    match:/planche/i,                               label:"Planche à masser mise en place (vocal)", icon:"🦺" },
-  { id:"racs",       match:/reprise de pouls|retour.*circulation|\bracs\b/i, label:"Reprise d'activité circulatoire — RACS (vocal)", icon:"🫀" },
-  { id:"cycle",      match:/changement de masseur|change.*masseur/i, label:"Changement de masseur (vocal)",         icon:"↺" },
-];
-
-function useVoiceCommands(active, addEvent, onUndo) {
-  const recRef = useRef(null);
-  const activeRef = useRef(active);
-  const [listening, setListening] = useState(false);
-  const [lastHeard, setLastHeard] = useState(null); // { transcript, matched }
-  activeRef.current = active;
-
-  useEffect(() => {
-    if (!lastHeard) return;
-    const t = setTimeout(() => setLastHeard(null), 4000);
-    return () => clearTimeout(t);
-  }, [lastHeard]);
-
-  useEffect(() => {
-    if (!active) {
-      if (recRef.current) { try { recRef.current.stop(); } catch {} }
-      setListening(false);
-      return;
-    }
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { setListening(false); return; }
-
-    const rec = new SR();
-    rec.lang = "fr-FR";
-    rec.continuous = true;
-    rec.interimResults = false;
-
-    rec.onresult = (e) => {
-      const res = e.results[e.results.length - 1];
-      if (!res || !res.isFinal) return;
-      const transcript = (res[0].transcript || "").trim();
-      if (!transcript) return;
-      if (/^annul/i.test(transcript)) {
-        setLastHeard({ transcript, matched:"Annulation du dernier événement" });
-        if (onUndo) onUndo();
-        return;
-      }
-      const cmd = VOICE_COMMANDS.find(c => c.match.test(transcript));
-      if (cmd) {
-        addEvent(cmd.id, cmd.label, cmd.icon);
-        setLastHeard({ transcript, matched: cmd.label });
-      } else {
-        setLastHeard({ transcript, matched: null });
-      }
-    };
-    rec.onerror = (e) => {
-      // "no-speech" / "aborted" sont fréquents et sans gravité (relance auto via onend).
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        activeRef.current = false;
-        setListening(false);
-      }
-    };
-    rec.onend = () => {
-      // Chrome coupe la reconnaissance après un silence : on relance si toujours actif.
-      if (activeRef.current) { try { rec.start(); } catch {} } else { setListening(false); }
-    };
-    try { rec.start(); setListening(true); } catch {}
-    recRef.current = rec;
-
-    return () => {
-      try { rec.onend = null; rec.stop(); } catch {}
-    };
-  }, [active]);
-
-  const supported = typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-  return { listening, lastHeard, supported };
-}
-
-function VoiceCommandButton({ enabled, addEvent, onUndo }) {
-  const [voiceOn, setVoiceOn] = useLocalState("acr_voice_on", false);
-  const { listening, lastHeard, supported } = useVoiceCommands(voiceOn && enabled, addEvent, onUndo);
-
-  if (!supported) return null;
-
-  return (
-    <>
-      <button onClick={() => setVoiceOn(v => !v)}
-        title={voiceOn ? "Désactiver les commandes vocales" : "Activer les commandes vocales (mains libres)"}
-        style={{ display:"flex", alignItems:"center", justifyContent:"center",
-          width:34, height:34, borderRadius:"50%", cursor:"pointer", flexShrink:0,
-          border:`1px solid ${voiceOn ? P.rose : P.border}`,
-          background: voiceOn ? P.roseSoft : P.surfaceAlt,
-          color: voiceOn ? P.rose : P.textSoft,
-          animation: listening ? "pulse 1.6s infinite" : "none",
-          fontSize:15 }}>
-        {voiceOn ? "🎙️" : "🎤"}
-      </button>
-      {voiceOn && lastHeard && (
-        <div style={{ position:"fixed", top:8, left:"50%", transform:"translateX(-50%)", zIndex:97,
-          maxWidth:"90%", background:P.surface, border:`1px solid ${P.border}`, borderRadius:10,
-          padding:"6px 12px", boxShadow:"0 4px 14px rgba(0,0,0,0.22)",
-          display:"flex", alignItems:"center", gap:8 }}>
-          <span style={{ fontSize:13 }}>{lastHeard.matched ? "🎤" : "❓"}</span>
-          <div style={{ minWidth:0 }}>
-            <p style={{ margin:0, fontSize:10, color:P.textSoft, fontFamily:mono,
-              overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>« {lastHeard.transcript} »</p>
-            {lastHeard.matched && <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.text }}>{lastHeard.matched}</p>}
-          </div>
-        </div>
-      )}
-      {voiceOn && enabled && !listening && (
-        <div style={{ position:"fixed", top:8, left:"50%", transform:"translateX(-50%)", zIndex:97,
-          maxWidth:"90%", background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:10,
-          padding:"6px 12px", boxShadow:"0 4px 14px rgba(0,0,0,0.22)" }}>
-          <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.amberText }}>🎤 Micro en attente… vérifiez l'autorisation du navigateur</p>
-        </div>
-      )}
-    </>
-  );
 }
 
 // ── ALARME SONORE (Web Audio API) ──────────────────────────────────────────────
@@ -3775,10 +3790,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
               </div>
             </div>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <VoiceCommandButton enabled={running} addEvent={addEvent} onUndo={undoLastPed} />
-            <ThemeToggle theme={theme} setTheme={setTheme} compact />
-          </div>
+          <ThemeToggle theme={theme} setTheme={setTheme} compact />
         </div>
 
         {/* Sélecteur poids — compact éditable */}
@@ -6195,6 +6207,198 @@ function DebriefModal({ events, totalSec, noFlow, lowFlow, etco2List, ccfEnabled
 }
 
 // ── APP ────────────────────────────────────────────────────────────────────────
+// ── Algorithme ALS interactif ────────────────────────────────────────────────
+// ── Dashboard Analytics ──────────────────────────────────────────────────────
+function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
+  const stats = archives.map(a => {
+    const evts = a.props?.events || [];
+    const start = evts.find(e => e.id === "start")?.sec || 0;
+    const firstChoc = evts.find(e => e.id === "choc");
+    const firstAdr  = evts.find(e => e.id === "adr");
+    const rosc      = evts.find(e => e.id === "rosc");
+    return {
+      outcome:    a.outcome,
+      durationSec: a.durationSec || 0,
+      type:       a.type || "Adulte",
+      label:      a.label || "Sans nom",
+      date:       a.archivedAt,
+      delaiChoc:  firstChoc ? firstChoc.sec - start : null,
+      delaiAdr:   firstAdr  ? firstAdr.sec  - start : null,
+      nbChocs:    evts.filter(e => e.id === "choc").length,
+      nbAdrs:     evts.filter(e => e.id === "adr").length,
+      roscSec:    rosc ? rosc.sec - start : null,
+    };
+  });
+
+  const n = stats.length;
+  if (n === 0) return (
+    <div style={{ position:"fixed", inset:0, zIndex:90, background:P.bg,
+      display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+      fontFamily:sans, padding:20 }}>
+      <p style={{ fontSize:40, margin:"0 0 16px" }}>📊</p>
+      <p style={{ fontSize:18, fontWeight:700, color:P.text, margin:"0 0 8px" }}>Aucune donnée</p>
+      <p style={{ fontSize:13, color:P.textSoft, textAlign:"center" }}>
+        Les statistiques apparaissent après votre premier cas archivé.
+      </p>
+      <button onClick={onClose} style={{ marginTop:24, background:P.rose, border:"none",
+        borderRadius:12, color:"#fff", padding:"12px 28px", fontSize:14, fontWeight:700,
+        cursor:"pointer", fontFamily:sans }}>Fermer</button>
+    </div>
+  );
+
+  const roscCases   = stats.filter(s => s.outcome === "RACS");
+  const deathCases  = stats.filter(s => s.outcome === "Décès");
+  const roscRate    = Math.round(roscCases.length / n * 100);
+  const avgDur      = stats.reduce((a,s) => a + s.durationSec, 0) / n;
+  const chocStats   = stats.filter(s => s.delaiChoc !== null);
+  const avgDelaiChoc= chocStats.length ? chocStats.reduce((a,s) => a + s.delaiChoc, 0) / chocStats.length : null;
+  const adrStats    = stats.filter(s => s.delaiAdr !== null);
+  const avgDelaiAdr = adrStats.length ? adrStats.reduce((a,s) => a + s.delaiAdr, 0) / adrStats.length : null;
+  const avgChocs    = stats.reduce((a,s) => a + s.nbChocs, 0) / n;
+  const avgAdrs     = stats.reduce((a,s) => a + s.nbAdrs, 0) / n;
+
+  const Kard = ({ icon, label, value, sub, color }) => (
+    <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
+      padding:"14px 14px 12px", display:"flex", flexDirection:"column", gap:4 }}>
+      <p style={{ margin:0, fontSize:11, color:color || P.textSoft, fontWeight:700,
+        textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>{icon} {label}</p>
+      <p style={{ margin:0, fontSize:24, fontWeight:900, color:color || P.text,
+        fontFamily:mono, letterSpacing:"-0.02em", lineHeight:1 }}>{value}</p>
+      {sub && <p style={{ margin:0, fontSize:10.5, color:P.textSoft }}>{sub}</p>}
+    </div>
+  );
+
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:90, background:P.bg,
+      display:"flex", flexDirection:"column", fontFamily:sans, overflowY:"auto" }}>
+      {/* Header */}
+      <div style={{ position:"sticky", top:0, background:P.bg, zIndex:1,
+        borderBottom:`1px solid ${P.border}`, padding:"14px 16px",
+        display:"flex", alignItems:"center", gap:12 }}>
+        <div style={{ width:38, height:38, borderRadius:11,
+          background:`linear-gradient(135deg, ${P.blue}, ${P.blueText})`,
+          display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>📊</div>
+        <div style={{ flex:1 }}>
+          <p style={{ margin:0, fontSize:9, fontWeight:700, color:P.blue, fontFamily:mono,
+            textTransform:"uppercase", letterSpacing:"0.12em" }}>Copilote ACR</p>
+          <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp }}>
+            Dashboard — {n} cas archivés
+          </p>
+        </div>
+        <button onClick={onClose} style={{ background:"transparent", border:"none",
+          color:P.textSoft, fontSize:22, cursor:"pointer" }}>×</button>
+      </div>
+
+      <div style={{ padding:"16px 14px 40px", display:"flex", flexDirection:"column", gap:14 }}>
+
+        {/* Taux RACS — grand indicateur */}
+        <div style={{ background:`linear-gradient(135deg, ${P.greenSoft}, ${P.surface})`,
+          border:`1.5px solid ${P.green}`, borderRadius:18, padding:"18px 18px 16px" }}>
+          <p style={{ margin:"0 0 4px", fontSize:10, fontWeight:700, color:P.greenText,
+            textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>
+            💚 Taux de RACS global
+          </p>
+          <div style={{ display:"flex", alignItems:"flex-end", gap:10 }}>
+            <p style={{ margin:0, fontSize:52, fontWeight:900, color:P.greenText,
+              fontFamily:mono, lineHeight:1 }}>{roscRate}%</p>
+            <div style={{ paddingBottom:6 }}>
+              <p style={{ margin:0, fontSize:13, color:P.greenText }}>
+                {roscCases.length} RACS · {deathCases.length} Décès · {n - roscCases.length - deathCases.length} N/R
+              </p>
+              <p style={{ margin:0, fontSize:11, color:P.greenText, opacity:0.7 }}>
+                sur {n} arrêts archivés
+              </p>
+            </div>
+          </div>
+          {/* Barre */}
+          <div style={{ marginTop:12, height:8, background:`${P.green}30`, borderRadius:4, overflow:"hidden" }}>
+            <div style={{ width:`${roscRate}%`, height:"100%",
+              background:P.green, borderRadius:4, transition:"width 0.5s" }} />
+          </div>
+        </div>
+
+        {/* Grid stats */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          <Kard icon="⏱" label="Durée moy. RCP" value={fmtSec(Math.round(avgDur))} />
+          <Kard icon="⚡" label="Délai 1er choc"
+            value={avgDelaiChoc ? fmtSec(Math.round(avgDelaiChoc)) : "—"}
+            sub={chocStats.length + " cas avec choc"} color={P.blueText} />
+          <Kard icon="💉" label="Délai 1ère adré"
+            value={avgDelaiAdr ? fmtSec(Math.round(avgDelaiAdr)) : "—"}
+            sub={adrStats.length + " cas"} color={P.roseText} />
+          <Kard icon="💊" label="Doses/cas moy."
+            value={`${avgAdrs.toFixed(1)} mg`}
+            sub={`${avgChocs.toFixed(1)} choc(s)`} />
+        </div>
+
+        {/* Répartition types */}
+        <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, padding:"14px" }}>
+          <p style={{ margin:"0 0 10px", fontSize:10, fontWeight:700, color:P.textSoft,
+            textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>
+            Répartition des cas
+          </p>
+          {[
+            { label:"Adulte extra-hospitalier", count:stats.filter(s=>s.type==="Adulte").length, c:P.blue },
+            { label:"ACR Traumatique",           count:stats.filter(s=>s.type==="Traumatique").length, c:P.amber },
+            { label:"Pédiatrie",                 count:stats.filter(s=>s.type==="Pédiatrique").length, c:P.violet },
+          ].filter(r => r.count > 0).map(r => (
+            <div key={r.label} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+              <div style={{ width:8, height:8, borderRadius:2, background:r.c, flexShrink:0 }} />
+              <p style={{ margin:0, fontSize:12, color:P.text, flex:1 }}>{r.label}</p>
+              <p style={{ margin:0, fontSize:12, fontWeight:700, color:r.c, fontFamily:mono }}>
+                {r.count} ({Math.round(r.count/n*100)}%)
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {/* Liste des cas récents */}
+        <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, overflow:"hidden" }}>
+          <p style={{ margin:0, padding:"12px 14px 10px", fontSize:10, fontWeight:700,
+            color:P.textSoft, textTransform:"uppercase", letterSpacing:"0.1em",
+            fontFamily:mono, borderBottom:`1px solid ${P.borderSoft}` }}>
+            Derniers cas
+          </p>
+          {stats.slice(0, 15).map((s, i) => {
+            const isRasc = s.outcome === "RACS";
+            const isDeath = s.outcome === "Décès";
+            const dateStr = s.date ? new Date(s.date).toLocaleDateString("fr-FR", { day:"2-digit", month:"short", year:"2-digit" }) : "—";
+            return (
+              <div key={i} style={{ display:"flex", gap:10, alignItems:"center",
+                padding:"10px 14px", borderBottom: i<14 ? `1px solid ${P.borderSoft}` : "none",
+                background: i%2===0 ? P.surface : P.surfaceAlt }}>
+                <span style={{ fontSize:16 }}>{isRasc ? "💚" : isDeath ? "🕊️" : "—"}</span>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <p style={{ margin:0, fontSize:12.5, fontWeight:600, color:P.text,
+                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    {s.label}
+                  </p>
+                  <p style={{ margin:0, fontSize:10.5, color:P.textSoft }}>
+                    {s.type} · {dateStr}
+                  </p>
+                </div>
+                <div style={{ textAlign:"right", flexShrink:0 }}>
+                  <p style={{ margin:0, fontSize:11.5, fontWeight:700, fontFamily:mono,
+                    color: isRasc ? P.greenText : isDeath ? P.textSoft : P.amberText }}>
+                    {s.outcome}
+                  </p>
+                  <p style={{ margin:0, fontSize:10.5, color:P.textSoft }}>
+                    {fmtSec(s.durationSec)}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <p style={{ margin:0, textAlign:"center", fontSize:10.5, color:P.textSoft, lineHeight:1.5 }}>
+          Données anonymisées · Stockées localement sur cet appareil
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"" });
   const sf = k => v => setPat(p => ({ ...p, [k]: v }));
@@ -6290,6 +6494,30 @@ function App() {
   });
   const st = k => v => setTrans(p => ({ ...p, [k]: v }));
 
+  // ── Mode équipe multi-device ──
+  const [modalTeam, setModalTeam] = useState(false);
+  const [teamJoinCode, setTeamJoinCode] = useState("");
+  const [teamJoinError, setTeamJoinError] = useState("");
+  const team = useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoFlowMin,
+    lowFlowMin, setLowFlowMin, trans, setTrans });
+
+  // Rejoindre automatiquement une session si l'app est ouverte via un lien
+  // de type .../?team=123456 (généré par le scan du QR code)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const codeFromUrl = params.get("team");
+    if (codeFromUrl && /^\d{6}$/.test(codeFromUrl)) {
+      team.joinSession(codeFromUrl).then(r => {
+        setModalTeam(true);
+        if (!r.ok) setTeamJoinError(r.error);
+      });
+      const url = new URL(window.location.href);
+      url.searchParams.delete("team");
+      window.history.replaceState({}, "", url.toString());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Minuteur Adrénaline (timestamp absolu pour survivre aux navigations)
   const [adrTimerStart, setAdrTimerStart] = useLocalState("acr_adulte_adrStart", 0);
   // Réglages globaux lus ici pour être disponibles dans les effets ci-dessous
@@ -6362,6 +6590,113 @@ function App() {
   const cordReminderActive = started && !events.find(e => e.id === "rosc") &&
     ((_chocsTot >= 3 && _cordDone === 0) || (_chocsTot >= 5 && _cordDone === 1));
   const cordAlarmedRef = useRef(false);
+
+  // Reconnaissance vocale (déclaré ici, avant les effets qui l'utilisent, pour éviter le TDZ)
+  const [voiceActive,    setVoiceActive]    = useState(false);
+  const [voiceTranscript,setVoiceTranscript] = useState("");
+  const [voiceToast,     setVoiceToast]     = useState(null); // { label, icon, confirm, cancel }
+  const voiceRecRef = useRef(null);
+  const voiceToastRef = useRef(null);
+
+  // ── Commandes vocales — matching ──────────────────────────────────────────
+  const matchVoiceCommand = React.useCallback((raw) => {
+    const n = normalizeVoice(raw);
+
+    // EtCO2 avec valeur : "etco2 vingt-cinq" / "capno trente"
+    if (n.match(/etco|capno|co2/)) {
+      const val = parseFrNumber(raw);
+      if (val !== null && val >= 0 && val <= 100) {
+        return {
+          label: `EtCO₂ ${val} mmHg`, icon: "📈",
+          confirm: () => {
+            setEtco2List(prev => [...prev, { val: String(val), sec, time: getNow() }]);
+            addEvent("etco2_voice", `EtCO₂ ${val} mmHg`, "📈");
+          }
+        };
+      }
+    }
+    const cmds = [
+      { kw:["adrenaline","adre","epinephrine"], label:"Adrénaline 1 mg IV", icon:"💉",
+        confirm:()=>{ addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }},
+      { kw:["choc","defibrillation","defib","cardioversion","fibrillation"], label:"Défibrillation", icon:"⚡",
+        confirm:()=> setModalChoc(true) },
+      { kw:["racs","pouls","circulation","retour","spontane"], label:"RACS", icon:"💚",
+        confirm:()=> addEvent("rosc","RACS","💚") },
+      { kw:["cordarone","amiodarone","amio"], label:"Cordarone 300 mg", icon:"💊",
+        confirm:()=> addEvent("cord300","Cordarone 300 mg IV","💊") },
+      { kw:["intubation","intuber","sonde"], label:"Intubation", icon:"🫁",
+        confirm:()=> setModalIot(true) },
+      { kw:["pause","stoppe","stop compressions"], label:"Pause compressions", icon:"⏸",
+        confirm:()=> setRunning(false) },
+      { kw:["reprendre","continuer","resume","relancer"], label:"Reprendre compressions", icon:"▶",
+        confirm:()=> setRunning(true) },
+      { kw:["deces","constat","mort","decede"], label:"Constat de décès", icon:"🕊️",
+        confirm:()=> setModalDeces(true) },
+      { kw:["analyse","rythme","check","verification"], label:"Analyse de rythme", icon:"⚡",
+        confirm:()=> setShowRythmFlash(true) },
+    ];
+    for (const cmd of cmds) {
+      if (cmd.kw.some(k => n.includes(k))) return cmd;
+    }
+    return null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sec, events]);
+
+  // ── Démarrage / arrêt de la session de reconnaissance ─────────────────────
+  useEffect(() => {
+    if (!voiceActive || !SpeechRecognitionAPI) return;
+
+    const rec = new SpeechRecognitionAPI();
+    rec.lang = "fr-FR";
+    rec.continuous = true;        // écoute continue
+    rec.interimResults = true;
+    rec.maxAlternatives = 3;
+    voiceRecRef.current = rec;
+
+    rec.onresult = (e) => {
+      const results = Array.from(e.results);
+      const interim = results.map(r => r[0].transcript).join(" ");
+      setVoiceTranscript(interim);
+
+      const finalResult = results.find(r => r.isFinal);
+      if (finalResult) {
+        const text = Array.from(e.results).map(r => r[0].transcript).join(" ");
+        const cmd = matchVoiceCommand(text);
+        setVoiceTranscript("");
+        if (cmd) {
+          clearTimeout(voiceToastRef.current);
+          setVoiceToast({ ...cmd, cancel: () => { setVoiceToast(null); clearTimeout(voiceToastRef.current); } });
+          voiceToastRef.current = setTimeout(() => {
+            cmd.confirm();
+            setVoiceToast(null);
+          }, 2500);
+        }
+      }
+    };
+
+    rec.onerror = (e) => {
+      if (e.error !== "no-speech" && e.error !== "aborted") {
+        setVoiceTranscript("Erreur micro : " + e.error);
+        setTimeout(() => setVoiceTranscript(""), 2000);
+      }
+    };
+
+    rec.onend = () => {
+      // Redémarrer automatiquement si toujours actif (iOS coupe après silence)
+      if (voiceRecRef.current === rec) {
+        try { rec.start(); } catch(e) {}
+      }
+    };
+
+    try { rec.start(); } catch(e) {}
+
+    return () => {
+      voiceRecRef.current = null;
+      try { rec.abort(); } catch(e) {}
+      clearTimeout(voiceToastRef.current);
+      setVoiceTranscript("");
+    };
+  }, [voiceActive, matchVoiceCommand]);
   useEffect(() => {
     if (cordReminderActive && !cordAlarmedRef.current) {
       cordAlarmedRef.current = true;
@@ -6546,6 +6881,7 @@ function App() {
 
   const [module, setModule] = useState(null);
   const [showOnboarding, setShowOnboarding] = useLocalState("acr_onboarding_done", false);
+  const [showDashboard, setShowDashboard] = useState(false);
   const isTrauma = module === "traumatique";
 
   // Thème jour/nuit — choisi par le médecin, persisté
@@ -6804,6 +7140,12 @@ function App() {
       </div>
 
       {/* ── Arrêts archivés ── */}
+      {/* Dashboard Analytics */}
+      {showDashboard && (
+        <DashboardView archives={archives} onClose={() => setShowDashboard(false)}
+          P={P} mono={mono} sans={sans} disp={disp} fmtSec={fmtSec} />
+      )}
+
       {archives.length > 0 && (
         <div style={{ width:"100%", maxWidth:420, marginTop:30 }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
@@ -6811,14 +7153,22 @@ function App() {
               letterSpacing:"0.12em", textTransform:"uppercase", fontFamily:mono }}>
               Arrêts archivés · {archives.length}
             </p>
-            <button onClick={() => {
-              if (typeof window !== "undefined" && window.confirm("Effacer définitivement tous les arrêts archivés ?")) {
-                setArchives(clearArchives());
-              }
-            }} style={{ background:"transparent", border:"none", color:P.roseText,
-              fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:sans }}>
-              Tout effacer
-            </button>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              <button onClick={() => setShowDashboard(true)}
+                style={{ background:P.blue, border:"none", borderRadius:8,
+                  color:"#fff", fontSize:11, fontWeight:700, cursor:"pointer",
+                  fontFamily:sans, padding:"5px 10px", display:"flex", alignItems:"center", gap:4 }}>
+                📊 Stats
+              </button>
+              <button onClick={() => {
+                if (typeof window !== "undefined" && window.confirm("Effacer définitivement tous les arrêts archivés ?")) {
+                  setArchives(clearArchives());
+                }
+              }} style={{ background:"transparent", border:"none", color:P.roseText,
+                fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:sans }}>
+                Tout effacer
+              </button>
+            </div>
           </div>
 
           <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
@@ -8718,7 +9068,16 @@ function App() {
             </div>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <VoiceCommandButton enabled={running} addEvent={addEvent} onUndo={undoLast} />
+            <button onClick={() => setModalTeam(true)}
+              style={{ background: team.teamConnected ? P.greenSoft : P.surfaceAlt,
+                border:`1px solid ${team.teamConnected ? P.green : P.border}`, borderRadius:10,
+                padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
+                alignItems:"center", gap:5 }}>
+              <span style={{ fontSize:13 }}>{team.teamConnected ? "🟢" : "👥"}</span>
+              <span style={{ fontSize:10.5, fontWeight:700, color: team.teamConnected ? P.greenText : P.textMid }}>
+                {team.teamConnected ? `${team.teamCode} · ${team.teamDeviceCount}` : "Équipe"}
+              </span>
+            </button>
             <ThemeToggle theme={theme} setTheme={setTheme} compact />
           </div>
         </div>
@@ -9176,8 +9535,6 @@ function App() {
               P={P} mono={mono} sans={sans} />
           )}
 
-        </>}
-
         {/* Bandeau Note libre — adulte */}
         <div style={{ marginBottom:10 }}>
           {!showNote ? (
@@ -9261,6 +9618,8 @@ function App() {
             <span style={{ fontSize:16, color:P.amberText, flexShrink:0 }}>›</span>
           </button>
         )}
+
+        </>}
 
         {/* Chronologie */}
         <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
@@ -9398,6 +9757,69 @@ function App() {
             ↺ Clôturer
           </button>
         </div>
+
+        {/* Bouton vocal + toast */}
+        {SpeechRecognitionAPI && (
+          <div style={{ position:"fixed", bottom:80, right:16, zIndex:50, display:"flex",
+            flexDirection:"column", alignItems:"flex-end", gap:10 }}>
+
+            {/* Toast commande reconnue */}
+            {voiceToast && (
+              <div style={{ background:P.surface, border:`1.5px solid ${P.green}`,
+                borderRadius:16, padding:"12px 14px", maxWidth:260,
+                boxShadow:"0 8px 28px rgba(0,0,0,0.2)",
+                display:"flex", alignItems:"center", gap:10 }}>
+                <span style={{ fontSize:22 }}>{voiceToast.icon}</span>
+                <div style={{ flex:1 }}>
+                  <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.greenText,
+                    fontFamily:mono, letterSpacing:"0.06em" }}>COMMANDE RECONNUE</p>
+                  <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.text }}>
+                    {voiceToast.label}
+                  </p>
+                  <p style={{ margin:"2px 0 0", fontSize:10, color:P.textSoft }}>
+                    Confirmation dans 2s…
+                  </p>
+                </div>
+                <button onClick={voiceToast.cancel}
+                  style={{ background:"transparent", border:"none", color:P.roseText,
+                    fontSize:18, cursor:"pointer", flexShrink:0, padding:0 }}>✕</button>
+              </div>
+            )}
+
+            {/* Transcript en cours */}
+            {voiceTranscript && !voiceToast && (
+              <div style={{ background:"rgba(0,0,0,0.75)", borderRadius:12,
+                padding:"8px 12px", maxWidth:260 }}>
+                <p style={{ margin:0, fontSize:12, color:"rgba(255,255,255,0.8)",
+                  fontFamily:mono }}>"{voiceTranscript}"</p>
+              </div>
+            )}
+
+            {/* Bouton micro */}
+            <button
+              onClick={() => {
+                if (!voiceActive) {
+                  // Déverrouiller l'audio sur iOS
+                  try { new (window.AudioContext||window.webkitAudioContext)().resume(); } catch(e){}
+                }
+                setVoiceActive(v => !v);
+              }}
+              style={{ width:56, height:56, borderRadius:"50%", border:"none",
+                cursor:"pointer", fontSize:26,
+                background: voiceActive
+                  ? `linear-gradient(135deg, ${P.rose}, #9B2C2C)`
+                  : P.surface,
+                boxShadow: voiceActive
+                  ? `0 0 0 4px ${P.roseSoft}, 0 8px 24px rgba(222,16,25,0.4)`
+                  : "0 4px 16px rgba(0,0,0,0.15)",
+                border: voiceActive ? "none" : `1.5px solid ${P.border}`,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                animation: voiceActive ? "rythmPulse 1.5s ease-in-out infinite" : "none",
+                color: voiceActive ? "#fff" : P.textMid }}>
+              🎤
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── Modal Dossier patient ── */}
@@ -9427,6 +9849,67 @@ function App() {
               fontFamily:sans, marginTop:14 }}>
             ✓ Enregistrer
           </button>
+        </Modal>
+      )}
+
+      {modalTeam && (
+        <Modal title="Mode équipe" icon="👥" soft={P.surfaceAlt} onClose={() => setModalTeam(false)}>
+          {!team.teamConnected ? (
+            <>
+              <p style={{ margin:"0 0 16px", fontSize:12.5, color:P.textSoft, lineHeight:1.5 }}>
+                Synchronise la chronologie, l'heure d'ACR, le no-flow/low-flow et la transmission
+                entre plusieurs appareils de l'équipe en temps réel.
+              </p>
+              <button onClick={async () => { await team.startSession(); }}
+                style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
+                  border:"none", borderRadius:13, color:"#fff", fontSize:14, fontWeight:700,
+                  padding:"14px", cursor:"pointer", fontFamily:sans, marginBottom:16,
+                  boxShadow:`0 5px 16px color-mix(in srgb, ${P.blue} 30%, transparent)` }}>
+                + Créer une session d'équipe
+              </button>
+              <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
+              <Lbl>Rejoindre avec un code (6 chiffres)</Lbl>
+              <div style={{ display:"flex", gap:8 }}>
+                <input inputMode="numeric" maxLength={6} value={teamJoinCode}
+                  onChange={e => { setTeamJoinCode(e.target.value.replace(/\D/g,"")); setTeamJoinError(""); }}
+                  placeholder="123456"
+                  style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                    borderRadius:10, padding:"12px", fontSize:20, color:P.text, fontFamily:mono,
+                    textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none" }}
+                  onFocus={e => e.target.style.borderColor = P.blue}
+                  onBlur={e  => e.target.style.borderColor = P.border} />
+                <button onClick={async () => {
+                  if (teamJoinCode.length !== 6) { setTeamJoinError("Code à 6 chiffres"); return; }
+                  const r = await team.joinSession(teamJoinCode);
+                  if (!r.ok) setTeamJoinError(r.error); else setModalTeam(false);
+                }} style={{ background:P.blue, border:"none", borderRadius:10, color:"#fff",
+                  padding:"0 18px", fontSize:14, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                  Rejoindre
+                </button>
+              </div>
+              {teamJoinError && <p style={{ margin:"8px 0 0", fontSize:12, color:P.roseText }}>{teamJoinError}</p>}
+            </>
+          ) : (
+            <>
+              <div style={{ textAlign:"center", marginBottom:16 }}>
+                <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:700, color:P.textSoft,
+                  textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Code de session</p>
+                <p style={{ margin:"0 0 14px", fontSize:38, fontWeight:900, color:P.text,
+                  fontFamily:mono, letterSpacing:"0.1em" }}>{team.teamCode}</p>
+                <img src={qrUrl(team.teamCode)} alt="QR code session"
+                  style={{ width:180, height:180, borderRadius:12, border:`1px solid ${P.border}` }} />
+                <p style={{ margin:"10px 0 0", fontSize:12, color:P.greenText, fontWeight:700 }}>
+                  🟢 {team.teamDeviceCount} appareil(s) connecté(s)
+                </p>
+              </div>
+              <button onClick={() => { team.disconnect(); setModalTeam(false); }}
+                style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                  borderRadius:12, color:P.textMid, fontSize:13, fontWeight:600,
+                  padding:"12px", cursor:"pointer", fontFamily:sans }}>
+                Quitter la session
+              </button>
+            </>
+          )}
         </Modal>
       )}
 
