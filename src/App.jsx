@@ -34,6 +34,27 @@ function mergeBySec(localList, remoteList, extraKey) {
   return [...map.values()].sort((a, b) => (a.sec || 0) - (b.sec || 0));
 }
 
+// Retourne le DERNIER événement d'un id donné (par ordre chronologique réel via `sec`),
+// utile quand un même type d'événement peut se reproduire (ex : plusieurs RACS
+// successifs après des récidives d'arrêt cardiaque).
+function lastEventOfId(events, id) {
+  const matches = (events || []).filter(e => e.id === id);
+  if (matches.length === 0) return null;
+  return matches.reduce((a, b) => (b.sec > a.sec ? b : a));
+}
+
+// Statut rythmique ACTUEL du patient, basé sur le DERNIER événement de rythme
+// loggé (RACS ou rythme d'arrêt), et non sur "un RACS a-t-il déjà eu lieu".
+// Permet de gérer un nombre illimité de cycles RACS ↔ récidive d'arrêt :
+// dès qu'un nouveau rythme d'arrêt est loggé après un RACS, l'app repasse
+// automatiquement en mode réanimation active (métronome, alarme adrénaline...).
+function getRhythmStatus(events) {
+  const ids = ["rosc", "rv_fvtv", "rv_aesp", "rv_asy"];
+  const matches = (events || []).filter(e => ids.includes(e.id));
+  if (matches.length === 0) return null;
+  return matches.reduce((a, b) => (b.sec > a.sec ? b : a)).id;
+}
+
 // Hook de synchronisation d'équipe multi-device (édition collaborative, dernier écrit gagne
 // sauf pour la chronologie et les mesures qui sont fusionnées pour ne perdre aucune donnée)
 function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoFlowMin,
@@ -1015,7 +1036,7 @@ function ChoiceBtn({ label, sub, accent, soft, textC, onClick }) {
 function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, trans, hemocue, hemo, amines, etco2, onClose }) {
   const chocs = events.filter(e => e.id === "choc").length;
   const adrs  = events.filter(e => e.id === "adr").length;
-  const rosc  = events.find(e => e.id === "rosc");
+  const rosc  = lastEventOfId(events, "rosc");
   const deces = events.find(e => e.id === "deces");
   const [copied, setCopied] = useState(false);
 
@@ -1220,7 +1241,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       teal:"#0C7B70", tealSoft:"#E4F4F2", tealText:"#085A52",
     };
 
-    const rosc2  = events.find(e => e.id === "rosc");
+    const rosc2  = lastEventOfId(events, "rosc");
     const deces2 = events.find(e => e.id === "deces");
     const chocs2 = events.filter(e => e.id === "choc").length;
     const adrs2  = events.filter(e => e.id === "adr").length;
@@ -1805,7 +1826,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
                 <span style={{ fontSize:9, color:P.textSoft, fontFamily:mono, marginLeft:"auto" }}>0 min = heure du RACS</span>
               </div>
               <HemoCurve hemoList={hemo} amineList={amines} P={P} mono={mono}
-                refSec={events.find(e=>e.id==="rosc")?.sec||0} />
+                refSec={lastEventOfId(events,"rosc")?.sec||0} />
             </div>
           </Section>
         )}
@@ -2112,7 +2133,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
                 <span style={{ fontSize:9, color:P.textSoft, fontFamily:mono, marginLeft:"auto" }}>0 min = heure du RACS</span>
               </div>
               <HemoCurve hemoList={hemo} amineList={amines} P={P} mono={mono}
-                refSec={events.find(e=>e.id==="rosc")?.sec||0} />
+                refSec={lastEventOfId(events,"rosc")?.sec||0} />
             </div>
           </Section>
         )}
@@ -2631,6 +2652,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
 
   const [cycleOffset,  setCycleOffset]  = useLocalState("acr_ped_cycleOffset", 0);
   const [events,       setEvents]       = useLocalState("acr_ped_events", []);
+  // Statut rythmique actuel — bascule automatiquement si récidive d'arrêt après un RACS
+  const isPostRacsPed = getRhythmStatus(events) === "rosc";
   const [alert,        setAlert]        = useState(null);
   const [showLog,      setShowLog]      = useState(false);
   const [showPdf,      setShowPdf]      = useState(false);
@@ -2701,8 +2724,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   // Métronome pédiatrique
   const metronomeMutedPedRef = useRef(false);
   useEffect(() => { metronomeMutedPedRef.current = metronomeMutedPed; }, [metronomeMutedPed]);
-  const hasRoscPedRef = useRef(!!events.find(e=>e.id==="rosc"));
-  useEffect(() => { hasRoscPedRef.current = !!events.find(e=>e.id==="rosc"); }, [events]);
+  const hasRoscPedRef = useRef(isPostRacsPed);
+  useEffect(() => { hasRoscPedRef.current = isPostRacsPed; }, [isPostRacsPed]);
   useEffect(() => {
     if (!metronomeEnabled || !running) return;
     const id = setInterval(() => {
@@ -2816,8 +2839,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   const _doCloture = () => {
     const hasContent = (events && events.length > 1) || patPed.nom || sec > 0;
     if (hasContent) {
-      const outcome = events.find(e => e.id === "rosc") ? "RACS"
-                    : events.find(e => e.id === "deces") ? "Décès" : "—";
+      const outcome = events.find(e => e.id === "deces") ? "Décès"
+                    : isPostRacsPed ? "RACS" : "—";
       saveArchive({
         key: Date.now(),
         archivedAt: new Date().toISOString(),
@@ -2856,7 +2879,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
     const cp = (sec - cycleOffset) % 120;
     if (prevCpRefPed.current > 0 && cp === 0) {
       playCycleBip();
-      if (!events.find(e => e.id === "rosc") && !events.find(e => e.id === "deces")) {
+      if (!isPostRacsPed && !events.find(e => e.id === "deces")) {
         setShowRythmFlashPed(true);
       }
     }
@@ -2869,8 +2892,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   const metroTimerPedRef = useRef(null);
   const mutedPedRef2     = useRef(metronomeMutedPed);
   useEffect(() => { mutedPedRef2.current = metronomeMutedPed; }, [metronomeMutedPed]);
-  const roscPedRef2      = useRef(!!events.find(e=>e.id==="rosc"));
-  useEffect(() => { roscPedRef2.current = !!events.find(e=>e.id==="rosc"); }, [events]);
+  const roscPedRef2      = useRef(isPostRacsPed);
+  useEffect(() => { roscPedRef2.current = isPostRacsPed; }, [isPostRacsPed]);
 
   const schedulePed = () => {
     const ctx = metroCtxPedRef.current;
@@ -2931,7 +2954,12 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   // Style bouton de rythme dans modal
   const RythmBtn = ({ r, extra }) => (
     <button
-      onClick={() => { addEvent(r.id, r.log || `Rythme : ${r.label}`, "📈"); setModalRythme(false); if(extra) extra(); }}
+      onClick={() => {
+        const arrestIds = ["rv_fvtv","rv_aesp","rv_asy"];
+        const label = (arrestIds.includes(r.id) && isPostRacsPed)
+          ? `🔴 Récidive d'ACR : ${r.label}` : (r.log || `Rythme : ${r.label}`);
+        addEvent(r.id, label, "📈"); setModalRythme(false); if(extra) extra();
+      }}
       style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
         borderRadius:12, padding:"12px 14px", cursor:"pointer", fontFamily:sans,
         textAlign:"left", marginBottom:10, display:"flex", alignItems:"center", gap:14 }}
@@ -3931,7 +3959,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
         </div>
 
         {/* ── Suivi CCF pédiatrique (si activé) ── */}
-        {ccfEnabled && running && !events.find(e => e.id === "rosc") && (
+        {ccfEnabled && running && !isPostRacsPed && (
           <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10,
             background:P.surface, border:`1.5px solid ${compPausedPed ? P.amber : P.border}`,
             borderRadius:12, padding:"9px 12px", boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
@@ -3950,7 +3978,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
         )}
 
         {/* Minuteur Adrénaline pédiatrique */}
-        {adrTimerStartPed > 0 && running && !events.find(e => e.id === "rosc") && (
+        {adrTimerStartPed > 0 && running && !isPostRacsPed && (
           <AdrenalineTimer
             startSec={adrTimerStartPed}
             intervalMin={adrIntervalGlobal}
@@ -4182,7 +4210,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
                 ))}
               </div>
             )}
-            {hemoOpenPed && <HemoCurve hemoList={hemoListPed} amineList={amineListPed} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />}
+            {hemoOpenPed && <HemoCurve hemoList={hemoListPed} amineList={amineListPed} P={P} mono={mono} refSec={lastEventOfId(events,"rosc")?.sec||0} />}
           </div>
         )}
 
@@ -4227,7 +4255,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
             onClick={()=>setModalFastPed(true)}/>
           <ActionBtn action={{label:"Soins post-RACS",icon:"🫀",accent:P.green,soft:P.greenSoft,textC:P.greenText}}
             onClick={()=>setModalRacsPed(true)}/>
-          <ActionBtn action={{label:"Constat de décès",svg:ICONS.deces,accent:P.slate,soft:P.slateSoft,textC:P.slateText}}
+          <ActionBtn action={{label:"Décès",svg:ICONS.deces,accent:P.slate,soft:P.slateSoft,textC:P.slateText}}
             onClick={()=>setModalDecesPed(true)}/>
         </div>
         )}
@@ -4320,7 +4348,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
         </div>
 
         {/* ── Métronome pédiatrique : bouton sourdine ── */}
-        {metronomeEnabled && running && !events.find(e=>e.id==="rosc") && (
+        {metronomeEnabled && running && !isPostRacsPed && (
           <button onClick={() => setMetronomeMutedPed(v => !v)}
             style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
               background: metronomeMutedPed ? P.surfaceAlt : `color-mix(in srgb, ${P.blue} 10%, ${P.surface})`,
@@ -6111,8 +6139,9 @@ function HemoCurve({ hemoList, amineList, P, mono, refSec = 0 }) {
 // ── DÉBRIEF POST-ARRÊT ────────────────────────────────────────────────────────
 function DebriefModal({ events, totalSec, noFlow, lowFlow, etco2List, ccfEnabled, ccfPct,
   onClose, P, mono, sans, disp, fmtSec }) {
-  const rosc   = events.find(e => e.id === "rosc");
+  const rosc   = lastEventOfId(events, "rosc");
   const deces  = events.find(e => e.id === "deces");
+  const isPostRacs = getRhythmStatus(events) === "rosc";
   const chocs  = events.filter(e => e.id === "choc");
   const adrs   = events.filter(e => e.id === "adr");
   const cords  = events.filter(e => e.id === "cord300" || e.id === "cord150");
@@ -6126,8 +6155,9 @@ function DebriefModal({ events, totalSec, noFlow, lowFlow, etco2List, ccfEnabled
     return m > 0 ? `+${m} min ${s > 0 ? s + " s" : ""}` : `+${s} s`;
   };
 
-  const issue = rosc ? { label:`RACS à ${rosc.time}`, c:P.green, icon:"✅" }
-              : deces ? { label: deces.label, c:P.textSoft, icon:"⬛" }
+  const issue = deces ? { label: deces.label, c:P.textSoft, icon:"⬛" }
+              : isPostRacs ? { label:`RACS à ${rosc.time}`, c:P.green, icon:"✅" }
+              : rosc ? { label:`Récidive d'ACR après RACS à ${rosc.time}`, c:P.amber, icon:"⚠️" }
               : { label:"Non renseignée", c:P.amber, icon:"❓" };
 
   const etcoFirst = etco2List?.[0];
@@ -6440,6 +6470,870 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
   );
 }
 
+// ── MODULE SIMULATION (entraînement) ──────────────────────────────────────────
+const RULE_CONDITION_TYPES = [
+  { id: "time_gte", label: "Temps écoulé ≥" },
+  { id: "time_lt",  label: "Temps écoulé <" },
+  { id: "count_gte", label: "Nombre d'actions ≥" },
+  { id: "count_lt",  label: "Nombre d'actions <" },
+];
+const SIM_ACTION_IDS = [
+  { id: "choc", label: "Chocs délivrés" },
+  { id: "adr", label: "Adrénalines données" },
+  { id: "amio", label: "Amiodarones données" },
+  { id: "vvp", label: "Voies d'abord posées" },
+  { id: "iot", label: "Intubations" },
+];
+const SIM_RHYTHMS = [
+  { id: "fv", label: "FV" },
+  { id: "tv", label: "TV" },
+  { id: "torsade", label: "Torsade de pointes" },
+  { id: "aesp", label: "AESP" },
+  { id: "asystolie", label: "Asystolie" },
+  { id: "rosc", label: "RACS" },
+];
+// Gestes proposés au stagiaire face à une complication — le scénario indique lequel
+// est correct (actionId), mais tous sont affichés pour que le choix soit un vrai
+// exercice diagnostique, pas juste un bouton "résoudre" qui donnerait la réponse.
+const SIM_COMPLICATION_ACTIONS = [
+  { id: "exsuf", label: "Exsufflation à l'aiguille" },
+  { id: "calcium", label: "Calcium / Bicarbonate" },
+  { id: "remplissage", label: "Remplissage vasculaire" },
+  { id: "peric", label: "Décompression péricardique" },
+];
+
+function evalSimCondition(cond, actions, sec) {
+  const count = id => actions.filter(a => a.id === id).length;
+  switch (cond.type) {
+    case "time_gte": return sec >= (cond.seconds || 0);
+    case "time_lt":  return sec < (cond.seconds || 0);
+    case "count_gte": return count(cond.actionId) >= (cond.count || 0);
+    case "count_lt":  return count(cond.actionId) < (cond.count ?? 999);
+    default: return false;
+  }
+}
+function evalSimRule(rule, actions, sec) {
+  if (!rule.conditions || rule.conditions.length === 0) return false;
+  const combinator = rule.logic === "any" ? "some" : "every"; // "any"=OU, défaut "all"=ET
+  return rule.conditions[combinator](c => evalSimCondition(c, actions, sec));
+}
+
+function useScenarioEngine(config, actions, sec, running, onEffect) {
+  const [rhythm, setRhythm] = useState(config?.initialRhythm || "fv");
+  const firedRef = useRef(new Set());
+  const configRef = useRef(config);
+  useEffect(() => {
+    if (configRef.current !== config) {
+      configRef.current = config;
+      setRhythm(config?.initialRhythm || "fv");
+      firedRef.current = new Set();
+    }
+  }, [config]);
+  useEffect(() => {
+    if (!running || !config) return;
+    for (const rule of (config.rules || [])) {
+      if (firedRef.current.has(rule.id)) continue;
+      if (evalSimRule(rule, actions, sec)) {
+        firedRef.current.add(rule.id);
+        const effect = rule.effect || {};
+        if (effect.type === "complication") {
+          if (onEffect) onEffect(effect, rule);
+        } else {
+          // rétrocompatible avec les scénarios créés avant l'ajout du champ "type"
+          if (effect.rhythm) setRhythm(effect.rhythm);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actions, sec, running]);
+  return rhythm;
+}
+
+function ScenarioEditor({ initial, onCancel, onSaved, P, mono, sans, disp }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [description, setDescription] = useState(initial?.description || "");
+  const [moduleSel, setModuleSel] = useState(initial?.module || "adulte");
+  const [config, setConfig] = useState(initial?.config || {
+    initialRhythm: "fv",
+    cycleDurationSec: 30,
+    rules: [],
+    targets: { firstShockSec: 120, firstAdrSec: 300, ccfPct: 60 },
+  });
+  const [saving, setSaving] = useState(false);
+
+  const addRule = () => {
+    setConfig(c => ({ ...c, rules: [...c.rules, {
+      id: `rule_${Date.now()}`, description: "", logic: "all",
+      conditions: [{ type: "time_gte", seconds: 60 }],
+      effect: { type: "rhythm", rhythm: "asystolie" },
+    }] }));
+  };
+  const updateRule = (idx, patch) => {
+    setConfig(c => ({ ...c, rules: c.rules.map((r,i) => i===idx ? { ...r, ...patch } : r) }));
+  };
+  const updateCondition = (ridx, cidx, patch) => {
+    setConfig(c => ({ ...c, rules: c.rules.map((r,i) => {
+      if (i !== ridx) return r;
+      return { ...r, conditions: r.conditions.map((cond,j) => j===cidx ? { ...cond, ...patch } : cond) };
+    })}));
+  };
+  const addCondition = (ridx) => {
+    setConfig(c => ({ ...c, rules: c.rules.map((r,i) => i===ridx ? { ...r, conditions: [...r.conditions, { type:"time_gte", seconds:60 }] } : r) }));
+  };
+  const removeCondition = (ridx, cidx) => {
+    setConfig(c => ({ ...c, rules: c.rules.map((r,i) => i===ridx ? { ...r, conditions: r.conditions.filter((_,j)=>j!==cidx) } : r) }));
+  };
+  const removeRule = (idx) => {
+    setConfig(c => ({ ...c, rules: c.rules.filter((_,i) => i !== idx) }));
+  };
+
+  const save = async () => {
+    if (!name.trim()) { alert("Donne un nom au scénario"); return; }
+    setSaving(true);
+    const payload = { name: name.trim(), description, module: moduleSel, config, updated_at: new Date().toISOString() };
+    if (initial?.id) {
+      await supabaseTeam.from("training_scenarios").update(payload).eq("id", initial.id);
+    } else {
+      await supabaseTeam.from("training_scenarios").insert(payload);
+    }
+    setSaving(false);
+    onSaved();
+  };
+
+  return (
+    <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans, paddingBottom:100 }}>
+      <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:"14px 16px",
+        display:"flex", alignItems:"center", gap:10 }}>
+        <button onClick={onCancel} style={{ background:"transparent", border:"none", color:P.textMid, fontSize:22, cursor:"pointer" }}>‹</button>
+        <p style={{ margin:0, fontSize:16, fontWeight:800, color:P.text, fontFamily:disp }}>
+          {initial ? "Modifier le scénario" : "Nouveau scénario"}
+        </p>
+      </div>
+
+      <div style={{ padding:"16px 14px" }}>
+        <Lbl>Nom du scénario</Lbl>
+        <TInput value={name} onChange={setName} placeholder="Ex : FV réfractaire" />
+
+        <div style={{ height:12 }} />
+        <Lbl>Description (optionnel)</Lbl>
+        <TArea value={description} onChange={setDescription} placeholder="Contexte, objectif pédagogique..." rows={2} />
+
+        <div style={{ height:12 }} />
+        <Lbl>Module</Lbl>
+        <div style={{ display:"flex", gap:8 }}>
+          {[["adulte","Adulte"],["trauma","Trauma"],["pediatrique","Pédiatrique"]].map(([id,label]) => (
+            <button key={id} onClick={() => setModuleSel(id)}
+              style={{ flex:1, padding:"9px 4px", borderRadius:9, fontSize:12, fontWeight:700,
+                border:`1.5px solid ${moduleSel===id ? P.violet : P.border}`,
+                background: moduleSel===id ? P.violetSoft : P.surface,
+                color: moduleSel===id ? P.violetText : P.textMid, cursor:"pointer", fontFamily:sans }}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ height:16 }} />
+        <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, padding:"14px" }}>
+          <Lbl>Rythme initial</Lbl>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, marginBottom:14 }}>
+            {SIM_RHYTHMS.filter(r=>r.id!=="rosc").map(r => (
+              <button key={r.id} onClick={() => setConfig(c => ({...c, initialRhythm:r.id}))}
+                style={{ padding:"9px 4px", borderRadius:9, fontSize:12, fontWeight:700,
+                  border:`1.5px solid ${config.initialRhythm===r.id ? P.rose : P.border}`,
+                  background: config.initialRhythm===r.id ? P.roseSoft : P.surfaceAlt,
+                  color: config.initialRhythm===r.id ? P.roseText : P.textMid, cursor:"pointer", fontFamily:sans }}>
+                {r.label}
+              </button>
+            ))}
+          </div>
+
+          <Lbl>Durée de cycle (analyse de rythme)</Lbl>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:6 }}>
+            {[20,30,60,120].map(s => (
+              <button key={s} onClick={() => setConfig(c => ({...c, cycleDurationSec:s}))}
+                style={{ padding:"9px 2px", borderRadius:9, fontSize:12, fontWeight:700,
+                  border:`1.5px solid ${config.cycleDurationSec===s ? P.blue : P.border}`,
+                  background: config.cycleDurationSec===s ? P.blueSoft : P.surfaceAlt,
+                  color: config.cycleDurationSec===s ? P.blueText : P.textMid, cursor:"pointer", fontFamily:mono }}>
+                {s}s
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ height:16 }} />
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+          <p style={{ margin:0, fontSize:13, fontWeight:700, color:P.text }}>Règles conditionnelles</p>
+          <button onClick={addRule}
+            style={{ background:P.violetSoft, border:`1px solid ${P.violet}`, borderRadius:9,
+              color:P.violetText, fontSize:12, fontWeight:700, padding:"6px 12px", cursor:"pointer", fontFamily:sans }}>
+            + Ajouter une règle
+          </button>
+        </div>
+
+        {config.rules.length === 0 && (
+          <p style={{ fontSize:12, color:P.textSoft, fontStyle:"italic", marginBottom:10 }}>
+            Aucune règle — le patient restera sur le rythme initial jusqu'à ce que tu ajoutes une évolution.
+          </p>
+        )}
+
+        {config.rules.map((rule, ridx) => (
+          <div key={rule.id} style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:12,
+            padding:"12px", marginBottom:10 }}>
+            <div style={{ display:"flex", gap:8, marginBottom:10 }}>
+              <input value={rule.description} onChange={e => updateRule(ridx, { description: e.target.value })}
+                placeholder="Description (ex : pas de choc à temps)"
+                style={{ flex:1, background:P.surface, border:`1px solid ${P.border}`, borderRadius:8,
+                  padding:"8px 10px", fontSize:12, color:P.text, fontFamily:sans, outline:"none" }} />
+              <button onClick={() => removeRule(ridx)}
+                style={{ background:"transparent", border:"none", color:P.roseText, fontSize:16, cursor:"pointer" }}>×</button>
+            </div>
+
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+              <p style={{ margin:0, fontSize:9, fontWeight:700, color:P.textSoft, textTransform:"uppercase",
+                letterSpacing:"0.08em", fontFamily:mono }}>Si les conditions sont réunies</p>
+              {rule.conditions.length > 1 && (
+                <div style={{ display:"flex", gap:4 }}>
+                  {[["all","ET"],["any","OU"]].map(([id,label]) => (
+                    <button key={id} onClick={() => updateRule(ridx, { logic: id })}
+                      style={{ padding:"3px 10px", borderRadius:6, fontSize:10, fontWeight:800,
+                        border:`1.5px solid ${(rule.logic||"all")===id ? P.blue : P.border}`,
+                        background: (rule.logic||"all")===id ? P.blueSoft : P.surface,
+                        color: (rule.logic||"all")===id ? P.blueText : P.textSoft,
+                        cursor:"pointer", fontFamily:mono }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {rule.conditions.map((cond, cidx) => (
+              <div key={cidx} style={{ display:"flex", gap:6, marginBottom:6, alignItems:"center" }}>
+                <select value={cond.type} onChange={e => updateCondition(ridx, cidx, { type: e.target.value })}
+                  style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:7,
+                    padding:"6px 4px", fontSize:11, color:P.text, fontFamily:sans, flex:1.2 }}>
+                  {RULE_CONDITION_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                </select>
+
+                {(cond.type === "time_gte" || cond.type === "time_lt") && (
+                  <input type="number" value={cond.seconds ?? ""} onChange={e => updateCondition(ridx, cidx, { seconds: parseInt(e.target.value)||0 })}
+                    placeholder="sec" style={{ width:60, background:P.surface, border:`1px solid ${P.border}`,
+                      borderRadius:7, padding:"6px 4px", fontSize:11, color:P.text, fontFamily:mono, textAlign:"center" }} />
+                )}
+                {(cond.type === "count_gte" || cond.type === "count_lt") && (
+                  <>
+                    <select value={cond.actionId || "choc"} onChange={e => updateCondition(ridx, cidx, { actionId: e.target.value })}
+                      style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:7,
+                        padding:"6px 4px", fontSize:11, color:P.text, fontFamily:sans, flex:1 }}>
+                      {SIM_ACTION_IDS.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+                    </select>
+                    <input type="number" value={cond.count ?? ""} onChange={e => updateCondition(ridx, cidx, { count: parseInt(e.target.value)||0 })}
+                      placeholder="n" style={{ width:44, background:P.surface, border:`1px solid ${P.border}`,
+                        borderRadius:7, padding:"6px 4px", fontSize:11, color:P.text, fontFamily:mono, textAlign:"center" }} />
+                  </>
+                )}
+                <button onClick={() => removeCondition(ridx, cidx)}
+                  style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:14, cursor:"pointer" }}>✕</button>
+              </div>
+            ))}
+            <button onClick={() => addCondition(ridx)}
+              style={{ background:"transparent", border:`1px dashed ${P.border}`, borderRadius:7,
+                color:P.textSoft, fontSize:11, padding:"5px 10px", cursor:"pointer", fontFamily:sans, marginBottom:10 }}>
+              + condition
+            </button>
+
+            <p style={{ margin:"4px 0 6px", fontSize:9, fontWeight:700, color:P.textSoft, textTransform:"uppercase",
+              letterSpacing:"0.08em", fontFamily:mono }}>Alors</p>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:5, marginBottom:10 }}>
+              {[["rhythm","Changer le rythme"],["complication","Déclencher une complication"]].map(([id,label]) => {
+                const effectType = rule.effect?.type || "rhythm";
+                return (
+                  <button key={id} onClick={() => updateRule(ridx, { effect: id==="rhythm"
+                      ? { type:"rhythm", rhythm: rule.effect?.rhythm || "asystolie" }
+                      : { type:"complication", label:"", actionId:"exsuf", resolveWithinSec:90 } })}
+                    style={{ padding:"8px 4px", borderRadius:8, fontSize:11, fontWeight:700,
+                      border:`1.5px solid ${effectType===id ? P.violet : P.border}`,
+                      background: effectType===id ? P.violetSoft : P.surface,
+                      color: effectType===id ? P.violetText : P.textMid, cursor:"pointer", fontFamily:sans }}>
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {(rule.effect?.type || "rhythm") === "rhythm" ? (
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5 }}>
+                {SIM_RHYTHMS.map(r => (
+                  <button key={r.id} onClick={() => updateRule(ridx, { effect: { type:"rhythm", rhythm: r.id } })}
+                    style={{ padding:"7px 2px", borderRadius:7, fontSize:10.5, fontWeight:700,
+                      border:`1.5px solid ${rule.effect?.rhythm===r.id ? P.green : P.border}`,
+                      background: rule.effect?.rhythm===r.id ? P.greenSoft : P.surface,
+                      color: rule.effect?.rhythm===r.id ? P.greenText : P.textMid, cursor:"pointer", fontFamily:sans }}>
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:9, padding:"10px" }}>
+                <Lbl>Signe clinique affiché au stagiaire</Lbl>
+                <input value={rule.effect?.label || ""}
+                  onChange={e => updateRule(ridx, { effect: { ...rule.effect, label: e.target.value } })}
+                  placeholder="Ex : désaturation brutale + turgescence jugulaire"
+                  style={{ width:"100%", background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:8,
+                    padding:"8px 10px", fontSize:12, color:P.text, fontFamily:sans, outline:"none",
+                    boxSizing:"border-box", marginBottom:10 }} />
+
+                <Lbl>Bon geste (caché au stagiaire, sert au score)</Lbl>
+                <select value={rule.effect?.actionId || "exsuf"}
+                  onChange={e => updateRule(ridx, { effect: { ...rule.effect, actionId: e.target.value } })}
+                  style={{ width:"100%", background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:8,
+                    padding:"8px", fontSize:12, color:P.text, fontFamily:sans, marginBottom:10 }}>
+                  {SIM_COMPLICATION_ACTIONS.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+                </select>
+
+                <Lbl>Délai pour réagir (s)</Lbl>
+                <input type="number" value={rule.effect?.resolveWithinSec ?? 90}
+                  onChange={e => updateRule(ridx, { effect: { ...rule.effect, resolveWithinSec: parseInt(e.target.value)||0 } })}
+                  style={{ width:"100%", background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:8,
+                    padding:"8px", fontSize:13, color:P.text, fontFamily:mono, textAlign:"center", boxSizing:"border-box" }} />
+              </div>
+            )}
+          </div>
+        ))}
+
+        <div style={{ height:16 }} />
+        <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, padding:"14px" }}>
+          <p style={{ margin:"0 0 10px", fontSize:13, fontWeight:700, color:P.text }}>Objectifs de score</p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            <div>
+              <Lbl>1er choc avant (s)</Lbl>
+              <input type="number" value={config.targets?.firstShockSec ?? 120}
+                onChange={e => setConfig(c => ({...c, targets:{...c.targets, firstShockSec: parseInt(e.target.value)||0}}))}
+                style={{ width:"100%", background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:8,
+                  padding:"8px", fontSize:13, color:P.text, fontFamily:mono, textAlign:"center", boxSizing:"border-box" }} />
+            </div>
+            <div>
+              <Lbl>1ère adré avant (s)</Lbl>
+              <input type="number" value={config.targets?.firstAdrSec ?? 300}
+                onChange={e => setConfig(c => ({...c, targets:{...c.targets, firstAdrSec: parseInt(e.target.value)||0}}))}
+                style={{ width:"100%", background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:8,
+                  padding:"8px", fontSize:13, color:P.text, fontFamily:mono, textAlign:"center", boxSizing:"border-box" }} />
+            </div>
+          </div>
+          <div style={{ marginTop:8 }}>
+            <Lbl>CCF cible (%)</Lbl>
+            <input type="number" value={config.targets?.ccfPct ?? 60}
+              onChange={e => setConfig(c => ({...c, targets:{...c.targets, ccfPct: parseInt(e.target.value)||0}}))}
+              style={{ width:"100%", background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:8,
+                padding:"8px", fontSize:13, color:P.text, fontFamily:mono, textAlign:"center", boxSizing:"border-box" }} />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ position:"fixed", bottom:0, left:0, right:0, background:P.surface,
+        borderTop:`1px solid ${P.border}`, padding:"12px 14px", display:"flex", gap:10 }}>
+        <button onClick={onCancel}
+          style={{ flex:1, background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:12,
+            color:P.textMid, fontSize:14, fontWeight:600, padding:"13px", cursor:"pointer", fontFamily:sans }}>
+          Annuler
+        </button>
+        <button onClick={save} disabled={saving}
+          style={{ flex:2, background:`linear-gradient(135deg,${P.violet},${P.violetText})`, border:"none",
+            borderRadius:12, color:"#fff", fontSize:14, fontWeight:700, padding:"13px", cursor:"pointer",
+            fontFamily:sans, opacity: saving ? 0.6 : 1 }}>
+          {saving ? "Enregistrement…" : "✓ Enregistrer le scénario"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Génère les points d'un tracé ECG stylisé pour un rythme donné, sur une largeur
+// "tuile" (w) répétable en boucle pour donner l'effet de défilement du scope.
+function genEcgPoints(rhythm, w, h) {
+  const mid = h / 2;
+  const pts = [];
+  for (let x = 0; x <= w; x += 2) {
+    let y = mid;
+    if (rhythm === "asystolie") {
+      y = mid + Math.sin(x / 50) * 1.5;
+    } else if (rhythm === "aesp") {
+      const beat = 60, t = x % beat;
+      if (t < 8) y = mid - 4 * Math.sin((t / 8) * Math.PI);
+      else if (t >= 20 && t < 23) y = mid - (t - 20) * 15;
+      else if (t >= 23 && t < 26) y = mid - (26 - t) * 15;
+      else if (t >= 34 && t < 50) y = mid - 6 * Math.sin(((t - 34) / 16) * Math.PI);
+      else y = mid;
+    } else if (rhythm === "tv") {
+      const beat = 22;
+      y = mid - 18 * Math.sin((x % beat) / beat * 2 * Math.PI);
+    } else if (rhythm === "torsade") {
+      const beat = 18, envPeriod = 150;
+      const envelope = Math.sin((x / envPeriod) * 2 * Math.PI);
+      y = mid - 20 * envelope * Math.sin((x % beat) / beat * 2 * Math.PI);
+    } else if (rhythm === "fv") {
+      y = mid
+        + 11 * Math.sin(x / 9.1 + 1)
+        + 7 * Math.sin(x / 5.3 + 2.4)
+        + 4 * Math.sin(x / 3.15 + 0.7)
+        + 2 * Math.sin(x / 1.7 + 3.1);
+    } else if (rhythm === "rosc") {
+      // rythme sinusal organisé, plus posé (repère visuel du retour de circulation)
+      const beat = 70, t = x % beat;
+      if (t < 6) y = mid - 3 * Math.sin((t / 6) * Math.PI);
+      else if (t >= 16 && t < 19) y = mid - (t - 16) * 14;
+      else if (t >= 19 && t < 22) y = mid - (22 - t) * 14;
+      else if (t >= 32 && t < 50) y = mid - 5 * Math.sin(((t - 32) / 18) * Math.PI);
+      else y = mid;
+    } else if (rhythm === "cpr_artifact") {
+      // Artefact de compression thoracique (~110/min à la vitesse de défilement du scope) :
+      // masque le vrai rythme pendant le massage, comme sur un vrai moniteur.
+      const period = 68, t = x % period, phase = t / period;
+      if (phase < 0.3) y = mid - 16 * Math.sin(phase / 0.3 * Math.PI / 2);
+      else if (phase < 0.5) y = mid - 16 * Math.cos((phase - 0.3) / 0.2 * Math.PI / 2) + 4 * Math.sin(x / 2.3);
+      else y = mid + 2 * Math.sin(x / 2.1) - 6 * Math.exp(-((phase - 0.5) * 8));
+    }
+    pts.push([x, y]);
+  }
+  return pts;
+}
+
+// Tracé façon scope de réanimation : trait vert, fond noir, défilement continu.
+// La même tuile est dessinée deux fois côte à côte puis translatée en boucle CSS,
+// ce qui donne un effet de défilement infini sans re-calcul JS à chaque frame.
+function MonitorTrace({ rhythm, width = 300, height = 72 }) {
+  const pts = genEcgPoints(rhythm, width, height);
+  const d = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ");
+  const animName = `ecgScroll_${width}`;
+  return (
+    <div style={{ width: "100%", height, background: "#000", borderRadius: 10,
+      overflow: "hidden", position: "relative" }}>
+      <style>{`
+        @keyframes ${animName} {
+          from { transform: translateX(0); }
+          to   { transform: translateX(-${width}px); }
+        }
+      `}</style>
+      <svg viewBox={`0 0 ${width * 2} ${height}`} width={width * 2} height={height}
+        style={{ display: "block", animation: `${animName} 2.4s linear infinite` }}>
+        <path d={d} fill="none" stroke="#22D67B" strokeWidth="2" />
+        <path d={d} fill="none" stroke="#22D67B" strokeWidth="2"
+          transform={`translate(${width}, 0)`} />
+      </svg>
+    </div>
+  );
+}
+
+function ScenarioPlayer({ scenario, onExit, P, mono, sans, disp }) {
+  const config = scenario.config;
+  const [running, setRunning] = useState(true);
+  const [sec, setSec] = useState(0);
+  const [actions, setActions] = useState([]);
+  const [cycleStart, setCycleStart] = useState(0);
+  const [showRhythmCheck, setShowRhythmCheck] = useState(false);
+  const [pulseChecked, setPulseChecked] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+  const [ended, setEnded] = useState(false);
+  const [traineeName, setTraineeName] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [complications, setComplications] = useState([]); // {id,label,actionId,triggeredSec,resolveWithinSec,resolvedSec}
+
+  const handleEngineEffect = (effect, rule) => {
+    if (effect.type === "complication") {
+      setComplications(prev => [...prev, {
+        id: rule.id, label: effect.label || "Complication non décrite",
+        actionId: effect.actionId, triggeredSec: sec,
+        resolveWithinSec: effect.resolveWithinSec || 999999, resolvedSec: null,
+      }]);
+    }
+  };
+
+  const currentRhythm = useScenarioEngine(config, actions, sec, running && !ended, handleEngineEffect);
+
+  useEffect(() => {
+    if (!running || ended) return;
+    const id = setInterval(() => setSec(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [running, ended]);
+
+  useEffect(() => {
+    if (!running || ended) return;
+    if (sec - cycleStart >= config.cycleDurationSec) {
+      setShowRhythmCheck(true);
+      setPulseChecked(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sec]);
+
+  useEffect(() => {
+    if (currentRhythm === "rosc" && !ended) {
+      setEnded(true);
+      setRunning(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRhythm]);
+
+  const addAction = (id, label) => {
+    setActions(prev => [...prev, { id, label, sec }]);
+    setComplications(prev => prev.map(c =>
+      (c.actionId === id && c.resolvedSec === null) ? { ...c, resolvedSec: sec } : c));
+    try { if (navigator.vibrate) navigator.vibrate(20); } catch(e) {}
+  };
+
+  const submitIdentification = (guess) => {
+    const needsPulseCheck = currentRhythm === "aesp" || currentRhythm === "rosc";
+    if (needsPulseCheck && !pulseChecked) {
+      setFeedback({ correct:false, message:"Vérifie le pouls avant de conclure !" });
+      return;
+    }
+    const correct = guess === currentRhythm;
+    const guessLabel = SIM_RHYTHMS.find(r=>r.id===guess)?.label;
+    setFeedback({ correct, message: correct ? "Bonne identification !" : `C'était : ${SIM_RHYTHMS.find(r=>r.id===currentRhythm)?.label}` });
+    addAction("rythme_" + guess, `Analyse : ${guessLabel} ${correct?"✓":"✗"}`);
+    setTimeout(() => {
+      setShowRhythmCheck(false);
+      setCycleStart(sec);
+      setFeedback(null);
+    }, 1400);
+  };
+
+  const computeScore = () => {
+    const firstShock = actions.find(a => a.id === "choc");
+    const firstAdr = actions.find(a => a.id === "adr");
+    const targets = config.targets || {};
+    let score = 0, max = 0;
+    const rows = [];
+    if (targets.firstShockSec) {
+      max += 100;
+      const ok = !!(firstShock && firstShock.sec <= targets.firstShockSec);
+      score += ok ? 100 : (firstShock ? 40 : 0);
+      rows.push({ label:"1er choc", value: firstShock ? `${firstShock.sec}s` : "jamais", target:`≤ ${targets.firstShockSec}s`, ok });
+    }
+    if (targets.firstAdrSec) {
+      max += 100;
+      const ok = !!(firstAdr && firstAdr.sec <= targets.firstAdrSec);
+      score += ok ? 100 : (firstAdr ? 40 : 0);
+      rows.push({ label:"1ère adrénaline", value: firstAdr ? `${firstAdr.sec}s` : "jamais", target:`≤ ${targets.firstAdrSec}s`, ok });
+    }
+    const rhythmChecks = actions.filter(a => a.id.startsWith("rythme_"));
+    if (rhythmChecks.length > 0) {
+      const correctChecks = rhythmChecks.filter(a => a.label.includes("✓")).length;
+      max += 100;
+      const pct = Math.round((correctChecks / rhythmChecks.length) * 100);
+      score += pct;
+      rows.push({ label:"Identifications correctes", value:`${correctChecks}/${rhythmChecks.length}`, target:"100%", ok: pct===100 });
+    }
+    complications.forEach(c => {
+      max += 100;
+      const delay = c.resolvedSec !== null ? c.resolvedSec - c.triggeredSec : null;
+      const ok = delay !== null && delay <= c.resolveWithinSec;
+      score += ok ? 100 : (delay !== null ? 30 : 0);
+      rows.push({
+        label: c.label,
+        value: delay !== null ? `résolu à +${delay}s` : "jamais résolu",
+        target: `bon geste ≤ ${c.resolveWithinSec}s`,
+        ok,
+      });
+    });
+    const pctScore = max > 0 ? Math.round((score/max)*100) : 0;
+    return { pctScore, rows };
+  };
+
+  const saveAttempt = async () => {
+    const { pctScore, rows } = computeScore();
+    await supabaseTeam.from("training_attempts").insert({
+      scenario_id: scenario.id, scenario_name: scenario.name,
+      trainee_name: traineeName || "Anonyme", score: pctScore,
+      details: { rows, actions }, duration_sec: sec,
+    });
+    setSaved(true);
+  };
+
+
+
+  if (ended) {
+    const { pctScore, rows } = computeScore();
+    return (
+      <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans, padding:"20px 16px" }}>
+        <div style={{ textAlign:"center", marginBottom:20 }}>
+          <div style={{ fontSize:44, marginBottom:8 }}>{pctScore >= 80 ? "🏆" : pctScore >= 50 ? "👍" : "📋"}</div>
+          <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.violet, textTransform:"uppercase",
+            letterSpacing:"0.14em", fontFamily:mono }}>Débrief — {scenario.name}</p>
+          <p style={{ margin:"4px 0 0", fontSize:40, fontWeight:900, color:P.text, fontFamily:mono }}>{pctScore}%</p>
+        </div>
+
+        {rows.map((r,i) => (
+          <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+            background:P.surface, border:`1px solid ${P.border}`, borderRadius:11, padding:"10px 14px", marginBottom:8 }}>
+            <div>
+              <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>{r.label}</p>
+              <p style={{ margin:0, fontSize:10.5, color:P.textSoft }}>Objectif : {r.target}</p>
+            </div>
+            <span style={{ fontSize:15, fontWeight:800, fontFamily:mono, color: r.ok ? P.greenText : P.roseText }}>{r.value}</span>
+          </div>
+        ))}
+
+        <div style={{ marginTop:16 }}>
+          <Lbl>Ton nom (pour le classement, optionnel)</Lbl>
+          <TInput value={traineeName} onChange={setTraineeName} placeholder="Prénom" />
+        </div>
+
+        <div style={{ display:"flex", gap:10, marginTop:16 }}>
+          <button onClick={onExit}
+            style={{ flex:1, background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:12,
+              color:P.textMid, fontSize:14, fontWeight:600, padding:"13px", cursor:"pointer", fontFamily:sans }}>
+            ← Bibliothèque
+          </button>
+          <button onClick={saveAttempt} disabled={saved}
+            style={{ flex:2, background: saved ? P.greenSoft : `linear-gradient(135deg,${P.violet},${P.violetText})`,
+              border:"none", borderRadius:12, color: saved ? P.greenText : "#fff", fontSize:14, fontWeight:700,
+              padding:"13px", cursor: saved ? "default" : "pointer", fontFamily:sans }}>
+            {saved ? "✓ Score enregistré" : "Enregistrer le score"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans, paddingBottom:30 }}>
+      <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:"14px 16px",
+        display:"flex", alignItems:"center", gap:10 }}>
+        <button onClick={() => { if(typeof window!=="undefined" && window.confirm("Quitter la simulation ?")) onExit(); }}
+          style={{ background:"transparent", border:"none", color:P.textMid, fontSize:22, cursor:"pointer" }}>‹</button>
+        <div>
+          <p style={{ margin:0, fontSize:13, fontWeight:700, color:P.text }}>{scenario.name}</p>
+          <p style={{ margin:0, fontSize:10, color:P.violetText, fontFamily:mono, textTransform:"uppercase" }}>🎮 Simulation</p>
+        </div>
+        <div style={{ marginLeft:"auto" }}>
+          <span style={{ fontSize:28, fontWeight:800, fontFamily:mono, color:P.text }}>{fmtSec(sec)}</span>
+        </div>
+      </div>
+
+      <div style={{ padding:"14px" }}>
+        <div style={{ marginBottom:14 }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+            <span style={{ fontSize:10, fontWeight:700, color:P.textSoft, textTransform:"uppercase",
+              letterSpacing:"0.08em", fontFamily:mono }}>Moniteur</span>
+            <span style={{ fontSize:10, fontWeight:700, color: showRhythmCheck ? "#22D67B" : P.textSoft,
+              fontFamily:mono }}>
+              {showRhythmCheck ? "● Rythme réel (pause compressions)" : "● Artefact de masse — 110/min"}
+            </span>
+          </div>
+          <MonitorTrace rhythm={showRhythmCheck ? currentRhythm : "cpr_artifact"} width={300} height={70} />
+        </div>
+
+        <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"10px 14px", marginBottom:14,
+          display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <span style={{ fontSize:11, color:P.textSoft, fontFamily:mono }}>Prochain contrôle rythme</span>
+          <span style={{ fontSize:13, fontWeight:700, color:P.text, fontFamily:mono }}>
+            {Math.max(0, config.cycleDurationSec - (sec - cycleStart))}s
+          </span>
+        </div>
+
+        {complications.filter(c => c.resolvedSec === null).map(c => {
+          const elapsed = sec - c.triggeredSec;
+          const late = elapsed > c.resolveWithinSec;
+          return (
+            <div key={c.id} style={{ background: late ? P.roseSoft : P.amberSoft,
+              border:`1.5px solid ${late ? P.rose : P.amber}`, borderRadius:12,
+              padding:"10px 14px", marginBottom:10 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+                <span style={{ fontSize:18 }}>⚠️</span>
+                <p style={{ margin:0, fontSize:12.5, fontWeight:700, color: late ? P.roseText : P.amberText, flex:1 }}>
+                  {c.label}
+                </p>
+                <span style={{ fontSize:10.5, fontWeight:700, fontFamily:mono, color: late ? P.roseText : P.amberText }}>
+                  +{elapsed}s
+                </span>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+                {SIM_COMPLICATION_ACTIONS.map(a => (
+                  <button key={a.id} onClick={() => addAction(a.id, a.label)}
+                    style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:8,
+                      padding:"7px 4px", fontSize:10.5, fontWeight:600, color:P.text,
+                      cursor:"pointer", fontFamily:sans }}>
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:9 }}>
+          <ActionBtn action={{ label:"Choc", dose:"200 J", vital:true, svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
+            onClick={() => addAction("choc","Défibrillation 200 J")} />
+          <ActionBtn action={{ label:"Adrénaline", dose:"1 mg", vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText }}
+            onClick={() => addAction("adr","Adrénaline 1 mg")} />
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:9 }}>
+          <ActionBtn action={{ label:"Amiodarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
+            onClick={() => addAction("amio","Amiodarone")} />
+          <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+            onClick={() => addAction("vvp","Voie d'abord posée")} />
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:16 }}>
+          <ActionBtn action={{ label:"Intubation", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
+            onClick={() => addAction("iot","Intubation")} />
+          <ActionBtn action={{ label:"Vérifier pouls", icon:"🫀", accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
+            onClick={() => { setPulseChecked(true); addAction("pouls","Vérification du pouls"); }} />
+        </div>
+
+        <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, overflow:"hidden" }}>
+          <p style={{ margin:0, padding:"10px 14px", fontSize:11, fontWeight:700, color:P.textSoft,
+            textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono,
+            borderBottom:`1px solid ${P.borderSoft}` }}>Chronologie ({actions.length})</p>
+          <div style={{ maxHeight:180, overflowY:"auto" }}>
+            {[...actions].reverse().map((a,i) => (
+              <div key={i} style={{ display:"flex", gap:10, padding:"7px 14px",
+                background: i%2===0 ? P.surface : P.surfaceAlt }}>
+                <span style={{ fontSize:11, color:P.blueText, fontFamily:mono, fontWeight:700 }}>{fmtSec(a.sec)}</span>
+                <span style={{ fontSize:12, color:P.textMid }}>{a.label}</span>
+              </div>
+            ))}
+            {actions.length === 0 && <p style={{ padding:"12px 14px", fontSize:12, color:P.textSoft }}>Aucune action</p>}
+          </div>
+        </div>
+      </div>
+
+      {showRhythmCheck && (
+        <div style={{ position:"fixed", inset:0, zIndex:90, background:"rgba(8,15,35,0.92)",
+          display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+          fontFamily:sans, padding:20 }}>
+          <p style={{ margin:"0 0 6px", fontSize:11, fontWeight:800, color:"#FC8181",
+            textTransform:"uppercase", letterSpacing:"0.2em", fontFamily:mono }}>Contrôle rythme</p>
+          <div style={{ width:280, marginBottom:20 }}>
+            <MonitorTrace rhythm={currentRhythm} width={280} height={90} />
+          </div>
+
+          {(currentRhythm === "aesp" || currentRhythm === "rosc") && !pulseChecked && (
+            <button onClick={() => { setPulseChecked(true); addAction("pouls","Vérification du pouls"); }}
+              style={{ background:P.tealText, border:"none", borderRadius:12, color:"#fff",
+                fontSize:14, fontWeight:700, padding:"12px 20px", cursor:"pointer", marginBottom:14, fontFamily:sans }}>
+              🫀 Vérifier le pouls
+            </button>
+          )}
+
+          {feedback ? (
+            <div style={{ background: feedback.correct ? "rgba(34,214,123,0.15)" : "rgba(255,59,71,0.15)",
+              border:`1.5px solid ${feedback.correct ? "#22D67B" : "#FF3B47"}`, borderRadius:12,
+              padding:"14px 20px", color:"#fff", fontWeight:700, textAlign:"center" }}>
+              {feedback.message}
+            </div>
+          ) : (
+            <div style={{ width:"100%", maxWidth:340, display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              {SIM_RHYTHMS.map(r => (
+                <button key={r.id} onClick={() => submitIdentification(r.id)}
+                  style={{ background:"rgba(255,255,255,0.08)", border:"1.5px solid rgba(255,255,255,0.2)",
+                    borderRadius:12, padding:"12px 8px", color:"#fff", fontSize:12.5, fontWeight:700,
+                    cursor:"pointer", fontFamily:sans }}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SimulationModule({ onBack, theme, setTheme, P, mono, sans, disp }) {
+  const [view, setView] = useState("library");
+  const [scenarios, setScenarios] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+  const [playing, setPlaying] = useState(null);
+
+  const loadScenarios = async () => {
+    setLoading(true);
+    const { data } = await supabaseTeam.from("training_scenarios").select("*").order("created_at", { ascending: false });
+    setScenarios(data || []);
+    setLoading(false);
+  };
+  useEffect(() => { loadScenarios(); }, []);
+
+  if (view === "editor") return (
+    <ScenarioEditor
+      initial={editing}
+      onCancel={() => { setView("library"); setEditing(null); }}
+      onSaved={() => { setView("library"); setEditing(null); loadScenarios(); }}
+      P={P} mono={mono} sans={sans} disp={disp}
+    />
+  );
+
+  if (view === "player" && playing) return (
+    <ScenarioPlayer
+      scenario={playing}
+      onExit={() => { setView("library"); setPlaying(null); loadScenarios(); }}
+      P={P} mono={mono} sans={sans} disp={disp}
+    />
+  );
+
+  return (
+    <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans, paddingBottom:40 }}>
+      <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:"14px 16px",
+        display:"flex", alignItems:"center", gap:10, boxShadow:"0 2px 10px rgba(0,0,0,0.04)" }}>
+        <button onClick={onBack} style={{ background:"transparent", border:"none", color:P.textMid, fontSize:22, cursor:"pointer", padding:"0 6px" }}>‹</button>
+        <div style={{ width:38, height:38, borderRadius:11, background:P.violetSoft, display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>🎮</div>
+        <div>
+          <p style={{ margin:0, fontSize:15, fontWeight:800, color:P.text, fontFamily:disp }}>Simulation</p>
+          <p style={{ margin:0, fontSize:10, color:P.textSoft, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Entraînement ACR</p>
+        </div>
+        <div style={{ marginLeft:"auto" }}><ThemeToggle theme={theme} setTheme={setTheme} compact /></div>
+      </div>
+
+      <div style={{ padding:"14px 14px 0" }}>
+        <button onClick={() => { setEditing(null); setView("editor"); }}
+          style={{ width:"100%", background:`linear-gradient(135deg,${P.violet},${P.violetText})`,
+            border:"none", borderRadius:16, color:"#fff", fontSize:15, fontWeight:700, padding:"16px",
+            cursor:"pointer", fontFamily:sans, marginBottom:16,
+            display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+          + Créer un scénario
+        </button>
+
+        {loading && <p style={{ textAlign:"center", color:P.textSoft, fontSize:13 }}>Chargement…</p>}
+        {!loading && scenarios.length === 0 && (
+          <p style={{ textAlign:"center", color:P.textSoft, fontSize:13, marginTop:30 }}>
+            Aucun scénario pour l'instant. Crée le premier ↑
+          </p>
+        )}
+
+        {scenarios.map(s => (
+          <div key={s.id} style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
+            padding:"14px", marginBottom:10 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+              <span style={{ fontSize:9, fontWeight:700, color:P.violetText, background:P.violetSoft,
+                borderRadius:6, padding:"2px 8px", fontFamily:mono, textTransform:"uppercase" }}>{s.module}</span>
+              <p style={{ margin:0, fontSize:15, fontWeight:700, color:P.text, flex:1 }}>{s.name}</p>
+            </div>
+            {s.description && <p style={{ margin:"0 0 10px", fontSize:12, color:P.textSoft }}>{s.description}</p>}
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={() => { setPlaying(s); setView("player"); }}
+                style={{ flex:1, background:P.violet, border:"none", borderRadius:10, color:"#fff",
+                  fontSize:13, fontWeight:700, padding:"10px", cursor:"pointer", fontFamily:sans }}>
+                ▶ Lancer
+              </button>
+              <button onClick={() => { setEditing(s); setView("editor"); }}
+                style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:10,
+                  color:P.textMid, fontSize:13, fontWeight:600, padding:"10px 14px", cursor:"pointer", fontFamily:sans }}>
+                Modifier
+              </button>
+              <button onClick={async () => {
+                if (typeof window!=="undefined" && window.confirm(`Supprimer le scénario « ${s.name} » ?`)) {
+                  await supabaseTeam.from("training_scenarios").delete().eq("id", s.id);
+                  loadScenarios();
+                }
+              }} style={{ background:"transparent", border:"none", color:P.roseText, fontSize:18, cursor:"pointer", padding:"0 6px" }}>×</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"" });
   const sf = k => v => setPat(p => ({ ...p, [k]: v }));
@@ -6509,6 +7403,8 @@ function App() {
 
   const [cycleOffset, setCycleOffset] = useLocalState("acr_adulte_cycleOffset", 0);
   const [events,      setEvents]      = useLocalState("acr_adulte_events", []);
+  // Statut rythmique actuel — bascule automatiquement si récidive d'arrêt après un RACS
+  const isPostRacs = getRhythmStatus(events) === "rosc";
   const [alert,       setAlert]       = useState(null);
   const [showPdf,     setShowPdf]     = useState(false);
   const [showLog,     setShowLog]     = useState(false);
@@ -6631,7 +7527,7 @@ function App() {
   // Alarme sonore quand un rappel Cordarone apparaît (après 3ᵉ / 5ᵉ choc cumulé)
   const _chocsTot   = events.filter(e => e.id === "choc").length + (parseInt(trans.chocsPompiers) || 0);
   const _cordDone   = events.filter(e => e.id === "cord300" || e.id === "cord150").length;
-  const cordReminderActive = started && !events.find(e => e.id === "rosc") &&
+  const cordReminderActive = started && !isPostRacs &&
     ((_chocsTot >= 3 && _cordDone === 0) || (_chocsTot >= 5 && _cordDone === 1));
   const cordAlarmedRef = useRef(false);
 
@@ -6674,7 +7570,7 @@ function App() {
         confirm:()=> setRunning(false) },
       { kw:["reprendre","continuer","resume","relancer"], label:"Reprendre compressions", icon:"▶",
         confirm:()=> setRunning(true) },
-      { kw:["deces","constat","mort","decede"], label:"Constat de décès", icon:"🕊️",
+      { kw:["deces","constat","mort","decede"], label:"Décès", icon:"🕊️",
         confirm:()=> setModalDeces(true) },
       { kw:["analyse","rythme","check","verification"], label:"Analyse de rythme", icon:"⚡",
         confirm:()=> setShowRythmFlash(true) },
@@ -6759,8 +7655,8 @@ function App() {
   const metroTimerRef  = useRef(null);
   const metronomeMutedRef2 = useRef(metronomeMuted);
   useEffect(() => { metronomeMutedRef2.current = metronomeMuted; }, [metronomeMuted]);
-  const hasRoscRef2 = useRef(!!events.find(e=>e.id==="rosc"));
-  useEffect(() => { hasRoscRef2.current = !!events.find(e=>e.id==="rosc"); }, [events]);
+  const hasRoscRef2 = useRef(isPostRacs);
+  useEffect(() => { hasRoscRef2.current = isPostRacs; }, [isPostRacs]);
 
   const scheduleMetronome = () => {
     const ctx = metroCtxRef.current;
@@ -6824,7 +7720,7 @@ function App() {
     const cp = (sec - cycleOffset) % 120;
     if (prevCpRef.current !== null && prevCpRef.current > 0 && cp === 0) {
       playCycleBip();
-      if (!events.find(e => e.id === "rosc") && !events.find(e => e.id === "deces")) {
+      if (!isPostRacs && !events.find(e => e.id === "deces")) {
         setShowRythmFlash(true);
       }
     }
@@ -6877,8 +7773,8 @@ function App() {
     // Archiver la session si elle a du contenu (avant effacement)
     const hasContent = (events && events.length > 1) || pat.nom || sec > 0;
     if (hasContent) {
-      const outcome = events.find(e => e.id === "rosc") ? "RACS"
-                    : events.find(e => e.id === "deces") ? "Décès" : "—";
+      const outcome = events.find(e => e.id === "deces") ? "Décès"
+                    : isPostRacs ? "RACS" : "—";
       const snapshot = {
         key: Date.now(),
         archivedAt: new Date().toISOString(),
@@ -7186,6 +8082,24 @@ function App() {
           <span style={{ marginLeft:"auto", fontSize:20, color:P.slateText, fontWeight:700 }}>›</span>
         </button>
 
+        {/* Simulation / Entraînement */}
+        <button onClick={() => setModule("simulation")} style={{
+          background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
+          padding:"18px 20px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+          display:"flex", alignItems:"center", gap:16,
+          boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}
+          onPointerEnter={e => { e.currentTarget.style.borderColor = P.violet; }}
+          onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; }}>
+          <div style={{ width:50, height:50, borderRadius:14, background:P.violetSoft,
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🎮</div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <p style={{ margin:"0 0 2px", fontSize:9.5, fontWeight:700, color:P.violetText,
+              textTransform:"uppercase", letterSpacing:"0.13em", fontFamily:mono }}>Entraînement</p>
+            <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>Simulation</p>
+          </div>
+          <span style={{ marginLeft:"auto", fontSize:20, color:P.violetText, fontWeight:700 }}>›</span>
+        </button>
+
       </div>
 
       {/* ── Arrêts archivés ── */}
@@ -7435,6 +8349,10 @@ function App() {
 
   // Module pédiatrique
   if (module === "pediatrique") return <ModulePediatrique onBack={() => setModule(null)} theme={theme} setTheme={setTheme} />;
+
+  // Module Simulation / Entraînement
+  if (module === "simulation") return <SimulationModule onBack={() => setModule(null)} theme={theme} setTheme={setTheme}
+    P={P} mono={mono} sans={sans} disp={disp} />;
 
   // Modules non encore développés (intra-hospitalier uniquement)
   if (module && module !== "adulte_extra" && module !== "traumatique") return (
@@ -7715,7 +8633,12 @@ function App() {
             { id:"rosc",    label:"RACS",         sub:"Retour activité cardiaque spontanée",       svg:ICONS.racs,     accent:P.green, soft:P.greenSoft, textC:P.greenText, log:"RACS — Retour activité cardiaque spontanée" },
           ].map(r => (
             <button key={r.id}
-              onClick={() => { addEvent(r.id, r.log, "📈"); setModalRythme(false); }}
+              onClick={() => {
+                const arrestIds = ["rv_fvtv","rv_aesp","rv_asy"];
+                const label = (arrestIds.includes(r.id) && isPostRacs)
+                  ? `🔴 Récidive d'ACR : ${r.label}` : r.log;
+                addEvent(r.id, label, "📈"); setModalRythme(false);
+              }}
               style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
                 borderRadius:12, padding:"12px 14px", cursor:"pointer", fontFamily:sans,
                 textAlign:"left", marginBottom:10, display:"flex", alignItems:"center", gap:14,
@@ -9180,7 +10103,7 @@ function App() {
         </div>
 
         {/* ── Suivi CCF (si activé dans les réglages) ── */}
-        {ccfEnabled && started && !events.find(e => e.id === "rosc") && (
+        {ccfEnabled && started && !isPostRacs && (
           <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10,
             background:P.surface, border:`1.5px solid ${compPaused ? P.amber : P.border}`,
             borderRadius:12, padding:"9px 12px", boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
@@ -9199,7 +10122,7 @@ function App() {
         )}
 
         {/* Minuteur Adrénaline */}
-        {adrTimerStart > 0 && started && !events.find(e => e.id === "rosc") && (
+        {adrTimerStart > 0 && started && !isPostRacs && (
           <AdrenalineTimer
             startSec={adrTimerStart}
             intervalMin={adrIntervalGlobal}
@@ -9448,7 +10371,7 @@ function App() {
                   ))}
                 </div>
               )}
-              {hemoOpen && <HemoCurve hemoList={hemoList} amineList={amineList} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />}
+              {hemoOpen && <HemoCurve hemoList={hemoList} amineList={amineList} P={P} mono={mono} refSec={lastEventOfId(events,"rosc")?.sec||0} />}
             </div>
           )}
 
@@ -9504,7 +10427,7 @@ function App() {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Soins post-RACS", icon:"🫀", accent:P.green, soft:P.greenSoft, textC:P.greenText }}
                 onClick={() => setModalRacs(true)} />
-              <ActionBtn action={{ label:"Constat de décès", svg:ICONS.deces, accent:P.slate, soft:P.slateSoft, textC:P.slateText }}
+              <ActionBtn action={{ label:"Décès", svg:ICONS.deces, accent:P.slate, soft:P.slateSoft, textC:P.slateText }}
                 onClick={() => setModalDeces(true)} />
             </div>
           </div>
@@ -9626,7 +10549,7 @@ function App() {
         </div>
 
           {/* ── Métronome : bouton sourdine si activé ── */}
-          {metronomeEnabled && started && !events.find(e=>e.id==="rosc") && (
+          {metronomeEnabled && started && !isPostRacs && (
             <button onClick={() => setMetronomeMuted(v => !v)}
               style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
                 background: metronomeMuted ? P.surfaceAlt : `color-mix(in srgb, ${P.blue} 10%, ${P.surface})`,
@@ -9646,7 +10569,7 @@ function App() {
           )}
 
         {/* ── Critères d'arrêt de réanimation (>20 min, sans RACS) ── */}
-        {started && sec >= 1200 && !events.find(e => e.id === "rosc") && !events.find(e => e.id === "deces") && (
+        {started && sec >= 1200 && !isPostRacs && !events.find(e => e.id === "deces") && (
           <button onClick={() => setModalCriteres(true)}
             style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
               background:`color-mix(in srgb, ${P.amber} 12%, ${P.surface})`,
