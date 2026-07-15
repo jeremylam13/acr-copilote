@@ -9,11 +9,12 @@ const supabaseTeam = createClient(supabaseUrl, supabaseAnonKey);
 function genSessionCode() {
   return String(Math.floor(100000 + Math.random() * 900000)); // 6 chiffres
 }
-function buildJoinLink(code) {
-  return `${window.location.origin}${window.location.pathname}?team=${code}`;
+function buildJoinLink(code, moduleParam) {
+  const base = `${window.location.origin}${window.location.pathname}?team=${code}`;
+  return moduleParam ? `${base}&m=${moduleParam}` : base;
 }
-function qrUrl(code) {
-  const joinLink = buildJoinLink(code);
+function qrUrl(code, moduleParam) {
+  const joinLink = buildJoinLink(code, moduleParam);
   return `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(joinLink)}`;
 }
 
@@ -91,8 +92,8 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
     if (remote.lowFlowMin !== undefined) setLowFlowMin(v => remote.lowFlowMin || v);
     if (remote.trans) setTrans(prev => ({ ...prev, ...remote.trans }));
     if (remote.pat) setPat(prev => ({ ...prev, ...remote.pat }));
-    if (remote.module) setModule(remote.module);
-    if (remote.started !== undefined) setStarted(remote.started);
+    if (remote.module && setModule) setModule(remote.module);
+    if (remote.started !== undefined && setStarted) setStarted(remote.started);
     if (remote.running !== undefined) setRunning(remote.running);
     if (remote.etco2List) setEtco2List(prev => mergeBySec(prev, remote.etco2List, e => e.val));
     if (remote.hemoList) setHemoList(prev => mergeBySec(prev, remote.hemoList, e => `${e.pas}|${e.pad}|${e.fc}`));
@@ -138,8 +139,10 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
 
   const joinSession = async (code) => {
     const { data, error } = await supabaseTeam.from("acr_team_sessions")
-      .select("state").eq("code", code).maybeSingle();
+      .select("state, created_at").eq("code", code).maybeSingle();
     if (error || !data) return { ok: false, error: "Code introuvable" };
+    const ageHours = (Date.now() - new Date(data.created_at).getTime()) / 3600000;
+    if (ageHours > 12) return { ok: false, error: "Session expirée (>12h) — crée-en une nouvelle" };
     applyRemote(data.state);
     setTeamCode(code);
     subscribeToCode(code);
@@ -1038,6 +1041,8 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
   const adrs  = events.filter(e => e.id === "adr").length;
   const rosc  = lastEventOfId(events, "rosc");
   const deces = events.find(e => e.id === "deces");
+  const recidiveEvents = events.filter(e => e.label && e.label.includes("Récidive d'ACR"));
+  const currentlyPostRacs = getRhythmStatus(events) === "rosc";
   const [copied, setCopied] = useState(false);
 
   // Génère le texte complet du compte-rendu
@@ -1161,7 +1166,10 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       (chocs ? ` ${chocs} choc(s).` : "") +
       (adrs  ? ` Adrénaline ${adrs} fois.` : "") +
       (iot?.sonde ? ` IOT sonde ${iot.sonde} mm.` : "") +
-      (rosc  ? ` ROSC à ${rosc.time}.` : deces ? ` ${deces.label}.` : " Issue non renseignée.")
+      (deces ? ` ${deces.label}.`
+        : currentlyPostRacs ? ` ROSC à ${rosc.time}${recidiveEvents.length ? ` (après ${recidiveEvents.length} récidive(s) d'ACR)` : ""}.`
+        : recidiveEvents.length ? ` Récidive d'ACR en cours${rosc ? ` après RACS initial à ${rosc.time}` : ""} — patient non stabilisé à la clôture.`
+        : " Issue non renseignée.")
     );
     lines.push("");
 
@@ -1216,6 +1224,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     if (amines && amines.length > 0) lines.push(`Amines : ${amines.map(a => a.label).join(" + ")}`);
     if (etco2 && etco2.length > 0) lines.push(`EtCO₂ : ${etco2[etco2.length-1].val} mmHg`);
     if (!rosc) lines.push("Pas de RACS obtenu à ce stade.");
+    else if (!currentlyPostRacs) lines.push(`Récidive d'ACR après RACS initial à ${rosc.time} — patient non stabilisé à ce stade.`);
     lines.push("");
     lines.push("───────────────────────────────────");
     lines.push("Usage professionnel exclusif");
@@ -1440,13 +1449,14 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         adrs2 ? `Adrénaline : ${adrs2} × 1 mg = ${adrs2} mg` : "Adrénaline non administrée",
         cordEvts2.length>0 && cordEvts2.map(e=>e.label).join(" + "),
         iot?.sonde && `Intubation : sonde ${iot.sonde} mm · repère ${iot.repere||"—"} cm${iot.capno?` · EtCO₂ initial ${iot.capno} mmHg`:""}`,
-        rosc2 ? `RACS à ${rosc2.time}` : deces2 ? deces2.label : "Issue non renseignée",
+        rosc2 ? `RACS à ${rosc2.time}${!currentlyPostRacs ? " (récidive d'ACR depuis)" : ""}` : deces2 ? deces2.label : "Issue non renseignée",
       ].filter(Boolean)},
       { L:"R", title:"Résultat / État actuel", c:C.green, soft:C.greenSoft, lines:[
         lastH2 && `Hémodynamique : TA ${lastH2.pas||"—"}/${lastH2.pad||"—"} mmHg · FC ${lastH2.fc||"—"} bpm${lastPam2?` · PAM ${lastPam2} mmHg`:""}`,
         amines&&amines.length>0 && `Amines : ${amines.map(a=>a.label).join(" + ")}`,
         etco2&&etco2.length>0 && `EtCO₂ : ${etco2[etco2.length-1].val} mmHg`,
         !rosc2 && "Pas de RACS obtenu à ce stade.",
+        rosc2 && !currentlyPostRacs && `Récidive d'ACR après RACS initial à ${rosc2.time} — patient non stabilisé à ce stade.`,
       ].filter(Boolean)},
     ];
     html += `<div style="margin-bottom:14px">
@@ -1898,7 +1908,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
                   adrs ? `Adrénaline : ${adrs} × 1 mg = ${adrs} mg` : "Adrénaline non administrée",
                   cordEvts.length>0 && cordEvts.map(e=>e.label).join(" + "),
                   iot?.sonde && `Intubation : sonde ${iot.sonde} mm · repère ${iot.repere||"—"} cm${iot.capno?` · EtCO₂ initial ${iot.capno} mmHg`:""}`,
-                  rosc ? `RACS à ${rosc.time}` : deces ? deces.label : "Issue non renseignée",
+                  rosc ? `RACS à ${rosc.time}${!currentlyPostRacs ? " (récidive d'ACR depuis)" : ""}` : deces ? deces.label : "Issue non renseignée",
                 ].filter(Boolean),
               },
               {
@@ -1908,6 +1918,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
                   amines&&amines.length>0 && `Amines : ${amines.map(a=>a.label).join(" + ")}`,
                   etco2&&etco2.length>0 && `EtCO₂ : ${etco2[etco2.length-1].val} mmHg`,
                   !rosc && "Pas de RACS obtenu à ce stade.",
+                  rosc && !currentlyPostRacs && `Récidive d'ACR après RACS initial à ${rosc.time} — patient non stabilisé à ce stade.`,
                 ].filter(Boolean),
               },
             ];
@@ -2195,13 +2206,14 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
                 adrs ? `Adrénaline : ${adrs} × 1 mg = ${adrs} mg` : "Adrénaline non administrée",
                 cordEvts.length>0 && cordEvts.map(e=>e.label).join(" + "),
                 iot?.sonde && `Intubation : sonde ${iot.sonde} mm · repère ${iot.repere||"—"} cm${iot.capno?` · EtCO₂ initial ${iot.capno} mmHg`:""}`,
-                rosc ? `RACS à ${rosc.time}` : deces ? deces.label : "Issue non renseignée",
+                rosc ? `RACS à ${rosc.time}${!currentlyPostRacs ? " (récidive d'ACR depuis)" : ""}` : deces ? deces.label : "Issue non renseignée",
               ].filter(Boolean)},
               { label:"R", title:"Résultat / État actuel", c:P.green, soft:P.greenSoft, lines:[
                 lastH && `Hémodynamique : TA ${lastH.pas||"—"}/${lastH.pad||"—"} mmHg · FC ${lastH.fc||"—"} bpm${lastPam?` · PAM ${lastPam} mmHg`:""}`,
                 amines&&amines.length>0 && `Amines : ${amines.map(a=>a.label).join(" + ")}`,
                 etco2&&etco2.length>0 && `EtCO₂ : ${etco2[etco2.length-1].val} mmHg`,
                 !rosc && "Pas de RACS obtenu à ce stade.",
+                  rosc && !currentlyPostRacs && `Récidive d'ACR après RACS initial à ${rosc.time} — patient non stabilisé à ce stade.`,
               ].filter(Boolean)},
             ];
             return (
@@ -2792,6 +2804,38 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   });
   const srp = k => v => setRacsPed(p => ({ ...p, [k]: v }));
 
+  // ── Mode équipe multi-device (pédiatrie) ──
+  const [modalTeamPed, setModalTeamPed] = useState(false);
+  const [teamJoinCodePed, setTeamJoinCodePed] = useState("");
+  const [teamJoinErrorPed, setTeamJoinErrorPed] = useState("");
+  const teamPed = useTeamSync({
+    events, setEvents, acrTime: localAcrTime, setAcrTime: setLocalAcrTime,
+    noFlowMin, setNoFlowMin, lowFlowMin, setLowFlowMin,
+    trans: transPed, setTrans: setTransPed, pat: patPed, setPat: setPatPed,
+    running, setRunning, sec, setSec,
+    etco2List: etco2ListPed, setEtco2List: setEtco2ListPed,
+    hemoList: hemoListPed, setHemoList: setHemoListPed,
+    amineList: amineListPed, setAmineList: setAmineListPed,
+    racs: racsPed, setRacs: setRacsPed,
+  });
+
+  // Rejoindre automatiquement une session si l'app est ouverte via un lien
+  // .../?team=123456&m=pediatrique (généré par le scan du QR code)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const codeFromUrl = params.get("team");
+    if (codeFromUrl && /^\d{6}$/.test(codeFromUrl) && params.get("m") === "pediatrique") {
+      teamPed.joinSession(codeFromUrl).then(r => {
+        setModalTeamPed(true);
+        if (!r.ok) setTeamJoinErrorPed(r.error);
+      });
+      const url = new URL(window.location.href);
+      url.searchParams.delete("team"); url.searchParams.delete("m");
+      window.history.replaceState({}, "", url.toString());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Valeurs hémodynamique éditables — pré-remplies depuis localMat
   const [adrPalier,   setAdrPalier]   = useState(0); // index 0-3
   const [adrVitesse,  setAdrVitesse]  = useState("");
@@ -2837,6 +2881,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
     _doCloture();
   };
   const _doCloture = () => {
+    teamPed.disconnect();
+    setModalTeamPed(false);
     const hasContent = (events && events.length > 1) || patPed.nom || sec > 0;
     if (hasContent) {
       const outcome = events.find(e => e.id === "deces") ? "Décès"
@@ -2913,7 +2959,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   };
 
   useEffect(() => {
-    if (!metronomeEnabledPed || !running) {
+    if (!metronomeEnabled || !running) {
       clearInterval(metroTimerPedRef.current);
       if (metroCtxPedRef.current) { metroCtxPedRef.current.close().catch(()=>{}); metroCtxPedRef.current = null; }
       return;
@@ -2930,7 +2976,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
       clearInterval(metroTimerPedRef.current);
       if (metroCtxPedRef.current) { metroCtxPedRef.current.close().catch(()=>{}); metroCtxPedRef.current = null; }
     };
-  }, [metronomeEnabledPed, running]);
+  }, [metronomeEnabled, running]);
   const compPausedPed = ccfPausedSincePed != null;
   const ccfPausedNowPed = ccfPausedTotalPed + (compPausedPed ? Math.max(0, sec - ccfPausedSincePed) : 0);
   const ccfPctPed = sec > 0 ? Math.max(0, Math.min(100, Math.round(((sec - ccfPausedNowPed) / sec) * 100))) : 100;
@@ -3859,7 +3905,19 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
               </div>
             </div>
           </div>
-          <ThemeToggle theme={theme} setTheme={setTheme} compact />
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <button onClick={() => setModalTeamPed(true)}
+              style={{ background: teamPed.teamConnected ? P.greenSoft : P.surfaceAlt,
+                border:`1px solid ${teamPed.teamConnected ? P.green : P.border}`, borderRadius:10,
+                padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
+                alignItems:"center", gap:5 }}>
+              <span style={{ fontSize:13 }}>{teamPed.teamConnected ? "🟢" : "👥"}</span>
+              <span style={{ fontSize:10.5, fontWeight:700, color: teamPed.teamConnected ? P.greenText : P.textMid }}>
+                {teamPed.teamConnected ? `${teamPed.teamCode} · ${teamPed.teamDeviceCount}` : "Équipe"}
+              </span>
+            </button>
+            <ThemeToggle theme={theme} setTheme={setTheme} compact />
+          </div>
         </div>
 
         {/* Sélecteur poids — compact éditable */}
@@ -4470,6 +4528,68 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
         </div>
       </div>
 
+      {/* ── Modal Mode équipe (pédiatrie) ── */}
+      {modalTeamPed && (
+        <Modal title="Mode équipe" icon="👥" soft={P.surfaceAlt} onClose={() => setModalTeamPed(false)}>
+          {!teamPed.teamConnected ? (
+            <>
+              <p style={{ margin:"0 0 16px", fontSize:12.5, color:P.textSoft, lineHeight:1.5 }}>
+                Synchronise la chronologie, le chrono, le dossier patient, la transmission et les
+                données post-RACS entre plusieurs appareils de l'équipe en temps réel.
+              </p>
+              <button onClick={async () => { await teamPed.startSession(); }}
+                style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
+                  border:"none", borderRadius:13, color:"#fff", fontSize:14, fontWeight:700,
+                  padding:"14px", cursor:"pointer", fontFamily:sans, marginBottom:16,
+                  boxShadow:`0 5px 16px color-mix(in srgb, ${P.blue} 30%, transparent)` }}>
+                + Créer une session d'équipe
+              </button>
+              <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
+              <Lbl>Rejoindre avec un code (6 chiffres)</Lbl>
+              <div style={{ display:"flex", gap:8 }}>
+                <input inputMode="numeric" maxLength={6} value={teamJoinCodePed}
+                  onChange={e => { setTeamJoinCodePed(e.target.value.replace(/\D/g,"")); setTeamJoinErrorPed(""); }}
+                  placeholder="123456"
+                  style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                    borderRadius:10, padding:"12px", fontSize:20, color:P.text, fontFamily:mono,
+                    textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none" }}
+                  onFocus={e => e.target.style.borderColor = P.blue}
+                  onBlur={e  => e.target.style.borderColor = P.border} />
+                <button onClick={async () => {
+                  if (teamJoinCodePed.length !== 6) { setTeamJoinErrorPed("Code à 6 chiffres"); return; }
+                  const r = await teamPed.joinSession(teamJoinCodePed);
+                  if (!r.ok) setTeamJoinErrorPed(r.error); else setModalTeamPed(false);
+                }} style={{ background:P.blue, border:"none", borderRadius:10, color:"#fff",
+                  padding:"0 18px", fontSize:14, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                  Rejoindre
+                </button>
+              </div>
+              {teamJoinErrorPed && <p style={{ margin:"8px 0 0", fontSize:12, color:P.roseText }}>{teamJoinErrorPed}</p>}
+            </>
+          ) : (
+            <>
+              <div style={{ textAlign:"center", marginBottom:16 }}>
+                <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:700, color:P.textSoft,
+                  textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Code de session</p>
+                <p style={{ margin:"0 0 14px", fontSize:38, fontWeight:900, color:P.text,
+                  fontFamily:mono, letterSpacing:"0.1em" }}>{teamPed.teamCode}</p>
+                <img src={qrUrl(teamPed.teamCode, "pediatrique")} alt="QR code session"
+                  style={{ width:180, height:180, borderRadius:12, border:`1px solid ${P.border}` }} />
+                <p style={{ margin:"10px 0 0", fontSize:12, color:P.greenText, fontWeight:700 }}>
+                  🟢 {teamPed.teamDeviceCount} appareil(s) connecté(s)
+                </p>
+              </div>
+              <button onClick={() => { teamPed.disconnect(); setModalTeamPed(false); }}
+                style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                  borderRadius:12, color:P.textMid, fontSize:13, fontWeight:600,
+                  padding:"12px", cursor:"pointer", fontFamily:sans }}>
+                Quitter la session
+              </button>
+            </>
+          )}
+        </Modal>
+      )}
+
       {/* ── Modal Dossier patient pédiatrique ── */}
       {modalPatPed && (
         <Modal title="Dossier patient" icon="🪪" soft={P.surfaceAlt} onClose={() => setModalPatPed(false)}>
@@ -4866,7 +4986,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
       <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:30,
         background:P.surface,borderTop:`1px solid ${P.border}`,
         padding:"7px 14px 10px",boxShadow:"0 -4px 16px rgba(0,0,0,0.08)"}}>
-        {metronomeEnabledPed && (
+        {metronomeEnabled && (
           <button onClick={() => setMetronomeMutedPed(v => !v)}
             style={{ width:"100%", marginBottom:8,
               background: metronomeMutedPed ? P.surfaceAlt : `color-mix(in srgb, ${P.blue} 12%, ${P.surface})`,
@@ -7566,6 +7686,18 @@ function App() {
         confirm:()=> addEvent("cord300","Cordarone 300 mg IV","💊") },
       { kw:["intubation","intuber","sonde"], label:"Intubation", icon:"🫁",
         confirm:()=> setModalIot(true) },
+      { kw:["voie","abord","perfusion","veineuse","intraosseuse"], label:"Voie d'abord", icon:"🩹",
+        confirm:()=> setModalVvp(true) },
+      { kw:["planche","masser"], label:"Planche à masser", icon:"🦺",
+        confirm:()=> addEvent("planche","Planche à masser mise en place","🦺") },
+      { kw:["fast","echo","echographie"], label:"Fast-écho", icon:"🔊",
+        confirm:()=> setModalFast(true) },
+      { kw:["regulation","samu","appel medecin"], label:"Appel régulation", icon:"📞",
+        confirm:()=> setModalRegul(true) },
+      { kw:["patch","electrodes"], label:"Changement de patchs", icon:"🔄",
+        confirm:()=> addEvent("patchs","Changement de patchs — Position antéro-postérieure","🔄") },
+      { kw:["annule","annuler","undo","efface dernier"], label:"Annuler dernier événement", icon:"↩",
+        confirm:()=> undoLast() },
       { kw:["pause","stoppe","stop compressions"], label:"Pause compressions", icon:"⏸",
         confirm:()=> setRunning(false) },
       { kw:["reprendre","continuer","resume","relancer"], label:"Reprendre compressions", icon:"▶",
