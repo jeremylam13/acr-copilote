@@ -6412,6 +6412,12 @@ function App() {
   // Réglages globaux lus ici pour être disponibles dans les effets ci-dessous
   const [adrIntervalGlobal, setAdrIntervalGlobal] = useLocalState("acr_adr_interval", 4);
   const [metronomeEnabled, setMetronomeEnabled] = useLocalState("acr_metronome_enabled", false);
+  // Reconnaissance vocale — déclaré tôt (utilisé dans useEffect ligne suivante)
+  const [voiceActive,     setVoiceActive]     = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceToast,      setVoiceToast]      = useState(null);
+  const voiceRecRef  = useRef(null);
+  const voiceToastRef = useRef(null);
 
   // Onglets : "actions" | "etiologie" | "therap"
   const [mainTab,        setMainTab]        = useLocalState("acr_adulte_mainTab", "actions");
@@ -6764,13 +6770,7 @@ function App() {
   const [module, setModule] = useState(null);
   const [showOnboarding, setShowOnboarding] = useLocalState("acr_onboarding_done", false);
   const [showDashboard, setShowDashboard] = useState(false);
-  // Reconnaissance vocale
-  const [voiceActive,    setVoiceActive]    = useState(false);
   const [showSecondary, setShowSecondary] = useState(false);
-  const [voiceTranscript,setVoiceTranscript] = useState("");
-  const [voiceToast,     setVoiceToast]     = useState(null); // { label, icon, confirm, cancel }
-  const voiceRecRef = useRef(null);
-  const voiceToastRef = useRef(null);
   const isTrauma = module === "traumatique";
 
   // Thème jour/nuit — choisi par le médecin, persisté
