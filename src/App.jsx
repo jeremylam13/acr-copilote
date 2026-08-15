@@ -2821,6 +2821,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [adrTimerStartPed, setAdrTimerStartPed] = useLocalState("acr_ped_adrStart", 0);
   // Onglets pédiatrique
   const [mainTabPed,       setMainTabPed]       = useLocalState("acr_ped_mainTab", "actions");
+  const [showMoreActionsPed, setShowMoreActionsPed] = useState(false);
   const [suspectedPed,     setSuspectedPed]     = useLocalState("acr_ped_suspected", []);
   const [modalEcmoPed,     setModalEcmoPed]     = useState(false);
   const stp = k => v => setTransPed(p => ({ ...p, [k]: v }));
@@ -2911,6 +2912,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const voiceRecRefPed = useRef(null);
   const voiceToastRefPed = useRef(null);
   const voiceAnswerRefPed = useRef(null);
+  const lastWakeWordTimeRefPed = useRef(0);
 
   // ── Questions vocales pédiatriques — réponse immédiate parlée, ne modifie jamais rien ──
   const answerVoiceQuestionPed = React.useCallback((raw, n) => {
@@ -3018,11 +3020,12 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sec, events, hemoListPed, etco2ListPed, amineListPed, noFlowMin, racsPed, localMat, poids]);
 
-  const matchVoiceCommandPed = React.useCallback((raw) => {
+  const matchVoiceCommandPed = React.useCallback((raw, wakeWordActive) => {
     const n = normalizeVoice(raw);
-    // Mot-code : une commande n'est prise en compte que si "copilote" est
-    // prononcé dans la même phrase captée — filtre le brouhaha ambiant.
-    if (!/\bco\s?pilote\b/.test(n)) return null;
+    // Mot-code : tolérance de ~4s entre "copilote" et la commande (une pause
+    // naturelle après la virgule coupe souvent la phrase en deux segments
+    // distincts côté reconnaissance vocale).
+    if (!wakeWordActive) return null;
 
     // Question ? Toujours testé AVANT la liste de commandes, pour qu'une phrase
     // comme "combien de mg d'adrénaline" ne puisse jamais être interprétée comme
@@ -3085,15 +3088,21 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
       const results = Array.from(e.results);
       const interim = results.map(r => r[0].transcript).join(" ");
       setVoiceTranscriptPed(interim);
+      if (/\bco\s?pilote\b/.test(normalizeVoice(interim))) {
+        lastWakeWordTimeRefPed.current = Date.now();
+      }
 
       const finalResult = results.find(r => r.isFinal);
       if (finalResult) {
         const text = Array.from(e.results).map(r => r[0].transcript).join(" ");
-        if (/\bco\s?pilote\b/.test(normalizeVoice(text))) {
+        const hasWakeWordNow = /\bco\s?pilote\b/.test(normalizeVoice(text));
+        if (hasWakeWordNow) {
+          lastWakeWordTimeRefPed.current = Date.now();
           setVoiceWakeFlashPed(true);
           setTimeout(() => setVoiceWakeFlashPed(false), 700);
         }
-        const cmd = matchVoiceCommandPed(text);
+        const wakeWordActive = hasWakeWordNow || (Date.now() - lastWakeWordTimeRefPed.current < 4000);
+        const cmd = matchVoiceCommandPed(text, wakeWordActive);
         setVoiceTranscriptPed("");
         if (cmd) {
           if (cmd.isQuestion) {
@@ -4652,14 +4661,27 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             onClick={()=>addEvent("cord",`Amiodarone ${localMat?.amio||""}mg IV/IO (5mg/kg)`,"💊")}/>
           <ActionBtn action={{label:"Intubation",svg:ICONS.iot,accent:P.violet,soft:P.violetSoft,textC:P.violetText}}
             onClick={()=>setModalIotPed(true)}/>
-          <ActionBtn action={{label:"Planche à masser",svg:ICONS.planche,accent:P.teal,soft:P.tealSoft,textC:P.tealText}}
-            onClick={()=>addEvent("planche","Planche à masser mise en place","🦺")}/>
-          <ActionBtn action={{label:"Fast-écho",svg:ICONS.fast,accent:P.blue,soft:P.blueSoft,textC:P.blueText}}
-            onClick={()=>setModalFastPed(true)}/>
-          <ActionBtn action={{label:"Soins post-RACS",icon:"🫀",accent:P.green,soft:P.greenSoft,textC:P.greenText}}
-            onClick={()=>setModalRacsPed(true)}/>
-          <ActionBtn action={{label:"Constat de décès",svg:ICONS.deces,accent:P.slate,soft:P.slateSoft,textC:P.slateText}}
-            onClick={()=>setModalDecesPed(true)}/>
+
+          {/* ── Bouton + : révèle les actions secondaires ── */}
+          <button onClick={() => setShowMoreActionsPed(v => !v)}
+            style={{ gridColumn:"1 / -1", background:"transparent", border:`1.5px dashed ${P.border}`,
+              borderRadius:13, padding:"10px", cursor:"pointer", fontFamily:sans,
+              display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+              color:P.textMid, fontSize:12.5, fontWeight:700 }}>
+            <span style={{ fontSize:15 }}>{showMoreActionsPed ? "−" : "+"}</span>
+            {showMoreActionsPed ? "Moins d'actions" : "Plus d'actions"}
+          </button>
+
+          {showMoreActionsPed && (<>
+            <ActionBtn action={{label:"Planche à masser",svg:ICONS.planche,accent:P.teal,soft:P.tealSoft,textC:P.tealText}}
+              onClick={()=>addEvent("planche","Planche à masser mise en place","🦺")}/>
+            <ActionBtn action={{label:"Fast-écho",svg:ICONS.fast,accent:P.blue,soft:P.blueSoft,textC:P.blueText}}
+              onClick={()=>setModalFastPed(true)}/>
+            <ActionBtn action={{label:"Soins post-RACS",icon:"🫀",accent:P.green,soft:P.greenSoft,textC:P.greenText}}
+              onClick={()=>setModalRacsPed(true)}/>
+            <ActionBtn action={{label:"Constat de décès",svg:ICONS.deces,accent:P.slate,soft:P.slateSoft,textC:P.slateText}}
+              onClick={()=>setModalDecesPed(true)}/>
+          </>)}
         </div>
         )}
 
@@ -7169,6 +7191,7 @@ function App() {
 
   // Onglets : "actions" | "etiologie" | "therap"
   const [mainTab,        setMainTab]        = useLocalState("acr_adulte_mainTab", "actions");
+  const [showMoreActions, setShowMoreActions] = useState(false);
   const [suspectedAd,    setSuspectedAd]    = useLocalState("acr_adulte_suspected", []);
   const [modalEcmo,      setModalEcmo]      = useState(false);
   const [modalDdac,      setModalDdac]      = useState(false);
@@ -7243,6 +7266,7 @@ function App() {
   const voiceRecRef = useRef(null);
   const voiceToastRef = useRef(null);
   const voiceAnswerRef = useRef(null);
+  const lastWakeWordTimeRef = useRef(0);
 
   // ── Questions vocales — réponse immédiate parlée, ne modifie jamais rien ──
   const answerVoiceQuestion = React.useCallback((raw, n) => {
@@ -7375,14 +7399,15 @@ function App() {
   }, [sec, events, hemoList, etco2List, amineList, noFlowMin, racs, team]);
 
   // ── Commandes vocales — matching ──────────────────────────────────────────
-  const matchVoiceCommand = React.useCallback((raw) => {
+  const matchVoiceCommand = React.useCallback((raw, wakeWordActive) => {
     const n = normalizeVoice(raw);
 
-    // Mot-code : une commande n'est prise en compte que si "copilote" est
-    // prononcé dans la même phrase captée. Filtre le brouhaha d'une réanimation
-    // (discussions, régulation au téléphone, lecture de protocole à voix haute...)
-    // sans ajouter d'étape d'activation séparée — reste 100% mains libres.
-    if (!/\bco\s?pilote\b/.test(n)) return null;
+    // Mot-code : une commande n'est prise en compte que si "copilote" a été
+    // entendu dans cette phrase OU dans les ~4 dernières secondes (une pause
+    // naturelle après "Copilote," coupe souvent la phrase en deux segments
+    // distincts côté reconnaissance vocale — sans cette tolérance, dire
+    // "Copilote... adrénaline" avec une virgule ne déclenchait rien).
+    if (!wakeWordActive) return null;
 
     // Question ? Toujours testé AVANT la liste de commandes, pour qu'une phrase
     // comme "combien de mg d'adrénaline" ne puisse jamais être interprétée comme
@@ -7446,15 +7471,22 @@ function App() {
       const results = Array.from(e.results);
       const interim = results.map(r => r[0].transcript).join(" ");
       setVoiceTranscript(interim);
+      // Détection précoce du mot-code, même avant que le résultat soit "final"
+      if (/\bco\s?pilote\b/.test(normalizeVoice(interim))) {
+        lastWakeWordTimeRef.current = Date.now();
+      }
 
       const finalResult = results.find(r => r.isFinal);
       if (finalResult) {
         const text = Array.from(e.results).map(r => r[0].transcript).join(" ");
-        if (/\bco\s?pilote\b/.test(normalizeVoice(text))) {
+        const hasWakeWordNow = /\bco\s?pilote\b/.test(normalizeVoice(text));
+        if (hasWakeWordNow) {
+          lastWakeWordTimeRef.current = Date.now();
           setVoiceWakeFlash(true);
           setTimeout(() => setVoiceWakeFlash(false), 700);
         }
-        const cmd = matchVoiceCommand(text);
+        const wakeWordActive = hasWakeWordNow || (Date.now() - lastWakeWordTimeRef.current < 4000);
+        const cmd = matchVoiceCommand(text, wakeWordActive);
         setVoiceTranscript("");
         if (cmd) {
           if (cmd.isQuestion) {
@@ -10376,6 +10408,18 @@ function App() {
               <ActionBtn action={{ label:"Intubation", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
                 onClick={() => setModalIot(true)} />
             </div>
+
+            {/* ── Bouton + : révèle les actions secondaires ── */}
+            <button onClick={() => setShowMoreActions(v => !v)}
+              style={{ background:"transparent", border:`1.5px dashed ${P.border}`,
+                borderRadius:13, padding:"10px", cursor:"pointer", fontFamily:sans,
+                display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+                color:P.textMid, fontSize:12.5, fontWeight:700 }}>
+              <span style={{ fontSize:15 }}>{showMoreActions ? "−" : "+"}</span>
+              {showMoreActions ? "Moins d'actions" : "Plus d'actions"}
+            </button>
+
+            {showMoreActions && (<>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Planche à masser", svg:ICONS.planche, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
                 onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
@@ -10388,6 +10432,7 @@ function App() {
               <ActionBtn action={{ label:"Constat de décès", svg:ICONS.deces, accent:P.slate, soft:P.slateSoft, textC:P.slateText }}
                 onClick={() => setModalDeces(true)} />
             </div>
+            </>)}
           </div>
           )}
 
