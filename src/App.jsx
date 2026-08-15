@@ -2947,10 +2947,25 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [voiceToastPed,      setVoiceToastPed]      = useState(null); // { label, icon, confirm, cancel }
   const [voiceAnswerPed,     setVoiceAnswerPed]     = useState(null); // { label, icon, speak, key }
   const [voiceWakeFlashPed,  setVoiceWakeFlashPed]  = useState(false);
+  // Position du bouton micro selon le sens du défilement (voir module adulte pour le détail)
+  const [voiceBtnRaisedPed, setVoiceBtnRaisedPed] = useState(false);
+  useEffect(() => {
+    let lastY = window.scrollY;
+    const onScroll = () => {
+      const y = window.scrollY;
+      if (Math.abs(y - lastY) > 6) {
+        setVoiceBtnRaisedPed(y > lastY && y > 40);
+        lastY = y;
+      }
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
   const voiceRecRefPed = useRef(null);
   const voiceToastRefPed = useRef(null);
   const voiceAnswerRefPed = useRef(null);
   const lastWakeWordTimeRefPed = useRef(0);
+  const matchVoiceCommandPedRef = useRef(null);
 
   // ── Questions vocales pédiatriques — réponse immédiate parlée, ne modifie jamais rien ──
   const answerVoiceQuestionPed = React.useCallback((raw, n) => {
@@ -3112,12 +3127,17 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sec, events, localMat]);
 
+  // La fonction de matching change à chaque seconde (elle dépend de `sec`) — on la
+  // range dans une ref à jour en continu, SANS jamais redéclencher le useEffect
+  // ci-dessous qui crée la session micro.
+  useEffect(() => { matchVoiceCommandPedRef.current = matchVoiceCommandPed; }, [matchVoiceCommandPed]);
+
   useEffect(() => {
     if (!voiceActivePed || !SpeechRecognitionAPI) return;
 
     const rec = new SpeechRecognitionAPI();
     rec.lang = "fr-FR";
-    rec.continuous = true;
+    rec.continuous = false;        // une phrase = une session ; évite l'accumulation instable du mode continu
     rec.interimResults = true;
     rec.maxAlternatives = 3;
     voiceRecRefPed.current = rec;
@@ -3140,7 +3160,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           setTimeout(() => setVoiceWakeFlashPed(false), 700);
         }
         const wakeWordActive = hasWakeWordNow || (Date.now() - lastWakeWordTimeRefPed.current < 4000);
-        const cmd = matchVoiceCommandPed(text, wakeWordActive);
+        const cmd = matchVoiceCommandPedRef.current(text, wakeWordActive);
         setVoiceTranscriptPed("");
         if (cmd) {
           if (cmd.isQuestion) {
@@ -3191,7 +3211,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
       clearTimeout(voiceToastRefPed.current);
       setVoiceTranscriptPed("");
     };
-  }, [voiceActivePed, matchVoiceCommandPed]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceActivePed]);
 
   const start = () => {
     const lf = getNow();
@@ -4717,6 +4738,29 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               badge: events.some(e => e.id === "iot") ? { text:"✓", color:P.green, pulse:false } : null}}
             onClick={()=>setModalIotPed(true)}/>
 
+          {/* ── Soins post-RACS : sort automatiquement du "+" dès qu'un RACS est logué ── */}
+          {events.some(e => e.id === "rosc") && (
+            <button onClick={() => setModalRacsPed(true)}
+              style={{ gridColumn:"1 / -1", display:"flex", alignItems:"center", gap:10,
+                background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
+                border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
+                cursor:"pointer", fontFamily:sans, textAlign:"left",
+                boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
+              <span style={{ width:36, height:36, borderRadius:10,
+                background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
+              <div style={{ flex:1, minWidth:0 }}>
+                <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
+                  Soins post-RACS
+                </p>
+                <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
+                  RACS obtenu — renseigner constantes, amines, température
+                </p>
+              </div>
+              <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
+            </button>
+          )}
+
           {/* ── Bouton + : révèle les actions secondaires ── */}
           <button onClick={() => setShowMoreActionsPed(v => !v)}
             style={{ gridColumn:"1 / -1", background:"transparent", border:`1.5px dashed ${P.border}`,
@@ -4732,8 +4776,10 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               onClick={()=>addEvent("planche","Planche à masser mise en place","🦺")}/>
             <ActionBtn action={{label:"Fast-écho",svg:ICONS.fast,accent:P.blue,soft:P.blueSoft,textC:P.blueText}}
               onClick={()=>setModalFastPed(true)}/>
-            <ActionBtn action={{label:"Soins post-RACS",icon:"🫀",accent:P.green,soft:P.greenSoft,textC:P.greenText}}
-              onClick={()=>setModalRacsPed(true)}/>
+            {!events.some(e => e.id === "rosc") && (
+              <ActionBtn action={{label:"Soins post-RACS",icon:"🫀",accent:P.green,soft:P.greenSoft,textC:P.greenText}}
+                onClick={()=>setModalRacsPed(true)}/>
+            )}
             <ActionBtn action={{label:"Constat de décès",svg:ICONS.deces,accent:P.slate,soft:P.slateSoft,textC:P.slateText}}
               onClick={()=>setModalDecesPed(true)}/>
           </>)}
@@ -5033,18 +5079,16 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             </div>
           </div>
 
-          {/* Horaires */}
+          {/* Prise en charge secouriste */}
           <div style={{background:P.surfaceAlt,borderRadius:10,padding:"10px 12px",marginBottom:12}}>
             <p style={{margin:"0 0 8px",fontSize:10,fontWeight:600,color:P.textSoft,
-              textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Horaires (HH:MM)</p>
+              textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Prise en charge secouriste</p>
+            <Lbl>Heure de l'ACR</Lbl>
+            <input type="time" value={transPed.hEffondrement} onChange={e=>{stp("hEffondrement")(e.target.value);setLocalAcrTime(e.target.value);}}
+              style={{width:"100%",background:P.surface,border:`1.5px solid ${P.border}`,
+                borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
+                color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box",marginBottom:8}}/>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
-              <div>
-                <Lbl>Heure de l'ACR</Lbl>
-                <input type="time" value={transPed.hEffondrement} onChange={e=>{stp("hEffondrement")(e.target.value);setLocalAcrTime(e.target.value);}}
-                  style={{width:"100%",background:P.surface,border:`1.5px solid ${P.border}`,
-                    borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
-                    color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box"}}/>
-              </div>
               <div>
                 <Lbl>Arrivée pompiers</Lbl>
                 <input type="time" value={transPed.hArriveePompiers} onChange={e=>stp("hArriveePompiers")(e.target.value)}
@@ -5052,8 +5096,6 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                     borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
                     color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box"}}/>
               </div>
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
               <div>
                 <Lbl>Pose DSA</Lbl>
                 <input type="time" value={transPed.hPoseDSA} onChange={e=>stp("hPoseDSA")(e.target.value)}
@@ -5061,52 +5103,49 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                     borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
                     color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box"}}/>
               </div>
-              <div>
-                <Lbl>1er choc</Lbl>
-                <input type="time" value={transPed.h1erChoc} onChange={e=>stp("h1erChoc")(e.target.value)}
-                  style={{width:"100%",background:P.surface,border:`1.5px solid ${P.border}`,
-                    borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
-                    color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box"}}/>
-              </div>
             </div>
-          </div>
-
-          {/* Chocs et rythme */}
-          <div style={{background:P.blueSoft,border:`1px solid color-mix(in srgb, ${P.blue} 27%, transparent)`,
-            borderRadius:10,padding:"10px 12px",marginBottom:12}}>
-            <p style={{margin:"0 0 8px",fontSize:10,fontWeight:600,color:P.blueText,
-              textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
-              Chocs délivrés par le DSA
-            </p>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:14,marginBottom:8}}>
-              <button onClick={()=>stp("chocsPompiers")(Math.max(0,(parseInt(transPed.chocsPompiers)||0)-1))}
-                style={{background:P.surface,border:`1.5px solid ${P.blue}`,borderRadius:"50%",
-                  width:40,height:40,fontSize:18,fontWeight:700,color:P.blueText,
-                  cursor:"pointer",fontFamily:sans}}>−</button>
-              <span style={{fontSize:32,fontWeight:700,color:P.blueText,fontFamily:mono,minWidth:42,textAlign:"center"}}>
-                {transPed.chocsPompiers || 0}
-              </span>
-              <button onClick={()=>stp("chocsPompiers")((parseInt(transPed.chocsPompiers)||0)+1)}
-                style={{background:P.blue,border:"none",borderRadius:"50%",
-                  width:40,height:40,fontSize:18,fontWeight:700,color:"#fff",
-                  cursor:"pointer",fontFamily:sans}}>+</button>
-            </div>
-            <Lbl>Rythme initial</Lbl>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5}}>
+            <Lbl>Rythme initial DSA</Lbl>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:8}}>
               {[["choquable","Choquable"],["nonChoquable","Non choquable"],["nonAnalyse","Non analysé"]].map(([id,label])=>(
                 <button key={id} onClick={()=>stp("rythmeDSA")(id)}
                   style={{padding:"7px 4px",borderRadius:8,fontSize:10,fontWeight:600,
-                    border:`1.5px solid ${transPed.rythmeDSA===id?P.blue:P.border}`,
-                    background:transPed.rythmeDSA===id?P.blueSoft:P.surface,
-                    color:transPed.rythmeDSA===id?P.blueText:P.textMid,
+                    border:`1.5px solid ${transPed.rythmeDSA===id?P.amber:P.border}`,
+                    background:transPed.rythmeDSA===id?P.amberSoft:P.surface,
+                    color:transPed.rythmeDSA===id?P.amberText:P.textMid,
                     cursor:"pointer",fontFamily:sans}}>{label}</button>
               ))}
             </div>
+            <Lbl>Chocs délivrés par le DSA</Lbl>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:14,marginBottom:8}}>
+              <button onClick={()=>stp("chocsPompiers")(Math.max(0,(parseInt(transPed.chocsPompiers)||0)-1))}
+                style={{background:P.surface,border:`1.5px solid ${P.amber}`,borderRadius:"50%",
+                  width:40,height:40,fontSize:18,fontWeight:700,color:P.amberText,
+                  cursor:"pointer",fontFamily:sans}}>−</button>
+              <span style={{fontSize:32,fontWeight:700,color:P.amberText,fontFamily:mono,minWidth:42,textAlign:"center"}}>
+                {transPed.chocsPompiers || 0}
+              </span>
+              <button onClick={()=>stp("chocsPompiers")((parseInt(transPed.chocsPompiers)||0)+1)}
+                style={{background:P.amber,border:"none",borderRadius:"50%",
+                  width:40,height:40,fontSize:18,fontWeight:700,color:"#fff",
+                  cursor:"pointer",fontFamily:sans}}>+</button>
+            </div>
+            <p style={{margin:"0 0 8px",fontSize:9.5,color:P.textSoft,textAlign:"center",fontStyle:"italic"}}>
+              S'ajoute aux chocs SMUR pour le rappel Amiodarone
+            </p>
+            <Lbl>Heure du 1er choc</Lbl>
+            <input type="time" value={transPed.h1erChoc} onChange={e=>stp("h1erChoc")(e.target.value)}
+              style={{width:"100%",background:P.surface,border:`1.5px solid ${P.border}`,
+                borderRadius:8,padding:"8px 6px",fontSize:14,fontFamily:mono,
+                color:P.text,outline:"none",textAlign:"center",boxSizing:"border-box"}}/>
           </div>
 
-          <Lbl>Note libre (circonstances, témoins, etc.)</Lbl>
-          <TArea value={transPed.note} onChange={stp("note")} rows={2}
-            placeholder="Ex : noyade, étouffement, trouvé inconscient..." />
+          {/* Note libre */}
+          <div style={{background:P.surfaceAlt,borderRadius:10,padding:"10px 12px"}}>
+            <p style={{margin:"0 0 8px",fontSize:10,fontWeight:600,color:P.textSoft,
+              textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Note libre</p>
+            <TArea value={transPed.note} onChange={stp("note")} rows={2}
+              placeholder="Ex : noyade, étouffement, trouvé inconscient..." />
+          </div>
 
           <button onClick={() => {
             const newEvents = [];
@@ -5348,8 +5387,9 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
 
       {/* ── Reconnaissance vocale pédiatrique ── */}
       {SpeechRecognitionAPI && (
-        <div style={{ position:"fixed", bottom:80, right:16, zIndex:50, display:"flex",
-          flexDirection:"column", alignItems:"flex-end", gap:10 }}>
+        <div style={{ position:"fixed", bottom: voiceBtnRaisedPed ? 280 : 80, right:16, zIndex:50, display:"flex",
+          flexDirection:"column", alignItems:"flex-end", gap:10,
+          transition:"bottom 0.35s ease" }}>
 
           {/* Réponse à une question vocale — informative, ne modifie rien */}
           {voiceAnswerPed && !voiceToastPed && (
@@ -7319,10 +7359,27 @@ function App() {
   const [voiceToast,     setVoiceToast]     = useState(null); // { label, icon, confirm, cancel }
   const [voiceAnswer,    setVoiceAnswer]    = useState(null); // { label, icon, speak, key }
   const [voiceWakeFlash, setVoiceWakeFlash] = useState(false);
+  // Position du bouton micro selon le sens du défilement : remonte quand on
+  // descend dans l'écran (pour ne pas cacher des commandes plus bas), redescend
+  // quand on remonte
+  const [voiceBtnRaised, setVoiceBtnRaised] = useState(false);
+  useEffect(() => {
+    let lastY = window.scrollY;
+    const onScroll = () => {
+      const y = window.scrollY;
+      if (Math.abs(y - lastY) > 6) { // ignore les micro-mouvements
+        setVoiceBtnRaised(y > lastY && y > 40);
+        lastY = y;
+      }
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
   const voiceRecRef = useRef(null);
   const voiceToastRef = useRef(null);
   const voiceAnswerRef = useRef(null);
   const lastWakeWordTimeRef = useRef(0);
+  const matchVoiceCommandRef = useRef(null);
 
   // ── Questions vocales — réponse immédiate parlée, ne modifie jamais rien ──
   const answerVoiceQuestion = React.useCallback((raw, n) => {
@@ -7512,13 +7569,19 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sec, events]);
 
+  // La fonction de matching change à chaque seconde (elle dépend de `sec`) — on la
+  // range dans une ref à jour en continu, SANS jamais redéclencher le useEffect
+  // ci-dessous qui crée la session micro (sinon celle-ci serait détruite et
+  // relancée toutes les secondes, rendant la reconnaissance vocale inutilisable).
+  useEffect(() => { matchVoiceCommandRef.current = matchVoiceCommand; }, [matchVoiceCommand]);
+
   // ── Démarrage / arrêt de la session de reconnaissance ─────────────────────
   useEffect(() => {
     if (!voiceActive || !SpeechRecognitionAPI) return;
 
     const rec = new SpeechRecognitionAPI();
     rec.lang = "fr-FR";
-    rec.continuous = true;        // écoute continue
+    rec.continuous = false;        // une phrase = une session ; évite l'accumulation instable du mode continu
     rec.interimResults = true;
     rec.maxAlternatives = 3;
     voiceRecRef.current = rec;
@@ -7542,7 +7605,7 @@ function App() {
           setTimeout(() => setVoiceWakeFlash(false), 700);
         }
         const wakeWordActive = hasWakeWordNow || (Date.now() - lastWakeWordTimeRef.current < 4000);
-        const cmd = matchVoiceCommand(text, wakeWordActive);
+        const cmd = matchVoiceCommandRef.current(text, wakeWordActive);
         setVoiceTranscript("");
         if (cmd) {
           if (cmd.isQuestion) {
@@ -7598,7 +7661,8 @@ function App() {
       clearTimeout(voiceToastRef.current);
       setVoiceTranscript("");
     };
-  }, [voiceActive, matchVoiceCommand]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceActive]);
   useEffect(() => {
     if (cordReminderActive && !cordAlarmedRef.current) {
       cordAlarmedRef.current = true;
@@ -9476,10 +9540,10 @@ function App() {
             </div>
           </div>
 
-          {/* Horaires */}
+          {/* Prise en charge secouriste */}
           <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px 12px", marginBottom:12 }}>
             <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:600, color:P.textSoft,
-              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Horaires (HH:MM)</p>
+              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Prise en charge secouriste</p>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
               <div>
                 <Lbl>Arrivée pompiers</Lbl>
@@ -9496,60 +9560,56 @@ function App() {
                     color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
               </div>
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-              <div>
-                <Lbl>1er choc</Lbl>
-                <input type="time" value={trans.h1erChoc} onChange={e => st("h1erChoc")(e.target.value)}
-                  style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
-                    borderRadius:8, padding:"8px 6px", fontSize:14, fontFamily:mono,
-                    color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
-              </div>
+            <Lbl>Rythme initial DSA</Lbl>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5, marginBottom:8 }}>
+              {[["choquable","Choquable"],["nonChoquable","Non choquable"],["nonAnalyse","Non analysé"]].map(([id,label]) => (
+                <button key={id} onClick={() => st("rythmeDSA")(id)}
+                  style={{ padding:"7px 4px", borderRadius:8, fontSize:10, fontWeight:600,
+                    border:`1.5px solid ${trans.rythmeDSA===id ? P.amber : P.border}`,
+                    background: trans.rythmeDSA===id ? P.amberSoft : P.surface,
+                    color: trans.rythmeDSA===id ? P.amberText : P.textMid,
+                    cursor:"pointer", fontFamily:sans }}>{label}</button>
+              ))}
             </div>
+            <Lbl>Chocs délivrés par le DSA</Lbl>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:14, marginBottom:8 }}>
+              <button onClick={() => st("chocsPompiers")(Math.max(0, (parseInt(trans.chocsPompiers)||0) - 1))}
+                style={{ background:P.surface, border:`1.5px solid ${P.amber}`, borderRadius:"50%",
+                  width:40, height:40, fontSize:18, fontWeight:700, color:P.amberText,
+                  cursor:"pointer", fontFamily:sans }}>−</button>
+              <span style={{ fontSize:32, fontWeight:700, color:P.amberText, fontFamily:mono, minWidth:42, textAlign:"center" }}>
+                {trans.chocsPompiers || 0}
+              </span>
+              <button onClick={() => st("chocsPompiers")((parseInt(trans.chocsPompiers)||0) + 1)}
+                style={{ background:P.amber, border:"none", borderRadius:"50%",
+                  width:40, height:40, fontSize:18, fontWeight:700, color:"#fff",
+                  cursor:"pointer", fontFamily:sans }}>+</button>
+            </div>
+            <p style={{ margin:"0 0 8px", fontSize:9.5, color:P.textSoft, textAlign:"center", fontStyle:"italic" }}>
+              S'ajoute aux chocs SMUR pour le rappel Cordarone
+            </p>
+            <Lbl>Heure du 1er choc</Lbl>
+            <input type="time" value={trans.h1erChoc} onChange={e => st("h1erChoc")(e.target.value)}
+              style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
+                borderRadius:8, padding:"8px 6px", fontSize:14, fontFamily:mono,
+                color:P.text, outline:"none", textAlign:"center", boxSizing:"border-box" }} />
           </div>
 
           {/* Gestes entrepris par les secouristes */}
-          <div style={{ marginBottom:12 }}>
-            <Lbl>Gestes entrepris par les secouristes</Lbl>
+          <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px 12px", marginBottom:12 }}>
+            <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:600, color:P.textSoft,
+              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Gestes entrepris</p>
             <TArea value={trans.gestesSecouristes || ""} onChange={st("gestesSecouristes")}
               placeholder="MCE, DSA, O₂, garrot, immobilisation, position latérale..." rows={2} />
           </div>
 
-          {/* Chocs et rythme */}
-          <div style={{ background:P.blueSoft, border:`1px solid color-mix(in srgb, ${P.blue} 27%, transparent)`,
-            borderRadius:10, padding:"10px 12px", marginBottom:12 }}>
-            <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:600, color:P.blueText,
-              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
-              Chocs délivrés par le DSA
-            </p>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:14, marginBottom:8 }}>
-              <button onClick={() => st("chocsPompiers")(Math.max(0, (parseInt(trans.chocsPompiers)||0) - 1))}
-                style={{ background:P.surface, border:`1.5px solid ${P.blue}`, borderRadius:"50%",
-                  width:40, height:40, fontSize:18, fontWeight:700, color:P.blueText,
-                  cursor:"pointer", fontFamily:sans }}>−</button>
-              <span style={{ fontSize:32, fontWeight:700, color:P.blueText, fontFamily:mono, minWidth:42, textAlign:"center" }}>
-                {trans.chocsPompiers || 0}
-              </span>
-              <button onClick={() => st("chocsPompiers")((parseInt(trans.chocsPompiers)||0) + 1)}
-                style={{ background:P.blue, border:"none", borderRadius:"50%",
-                  width:40, height:40, fontSize:18, fontWeight:700, color:"#fff",
-                  cursor:"pointer", fontFamily:sans }}>+</button>
-            </div>
-            <Lbl>Rythme initial</Lbl>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5 }}>
-              {[["choquable","Choquable"],["nonChoquable","Non choquable"],["nonAnalyse","Non analysé"]].map(([id,label]) => (
-                <button key={id} onClick={() => st("rythmeDSA")(id)}
-                  style={{ padding:"7px 4px", borderRadius:8, fontSize:10, fontWeight:600,
-                    border:`1.5px solid ${trans.rythmeDSA===id ? P.blue : P.border}`,
-                    background: trans.rythmeDSA===id ? P.blueSoft : P.surface,
-                    color: trans.rythmeDSA===id ? P.blueText : P.textMid,
-                    cursor:"pointer", fontFamily:sans }}>{label}</button>
-              ))}
-            </div>
+          {/* Note libre */}
+          <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px 12px" }}>
+            <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:600, color:P.textSoft,
+              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Note libre</p>
+            <TArea value={trans.note} onChange={st("note")} rows={2}
+              placeholder="Ex : trouvé au sol par épouse, suspicion intox..." />
           </div>
-
-          <Lbl>Note libre (intox suspectée, position, etc.)</Lbl>
-          <TArea value={trans.note} onChange={st("note")} rows={2}
-            placeholder="Ex : trouvé au sol par épouse, suspicion intox..." />
 
           <button onClick={() => {
             // Génère plusieurs entrées chronologie avec heures exactes
@@ -10488,6 +10548,29 @@ function App() {
                 onClick={() => setModalIot(true)} />
             </div>
 
+            {/* ── Soins post-RACS : sort automatiquement du "+" dès qu'un RACS est logué ── */}
+            {events.some(e => e.id === "rosc") && (
+              <button onClick={() => setModalRacs(true)}
+                style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+                  background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
+                  border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
+                  cursor:"pointer", fontFamily:sans, textAlign:"left",
+                  boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
+                <span style={{ width:36, height:36, borderRadius:10,
+                  background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
+                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
+                    Soins post-RACS
+                  </p>
+                  <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
+                    RACS obtenu — renseigner constantes, amines, température
+                  </p>
+                </div>
+                <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
+              </button>
+            )}
+
             {/* ── Bouton + : révèle les actions secondaires ── */}
             <button onClick={() => setShowMoreActions(v => !v)}
               style={{ background:"transparent", border:`1.5px dashed ${P.border}`,
@@ -10505,9 +10588,11 @@ function App() {
               <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
                 onClick={() => isTrauma ? setModalFastTrauma(true) : setModalFast(true)} />
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-              <ActionBtn action={{ label:"Soins post-RACS", icon:"🫀", accent:P.green, soft:P.greenSoft, textC:P.greenText }}
-                onClick={() => setModalRacs(true)} />
+            <div style={{ display:"grid", gridTemplateColumns: events.some(e => e.id === "rosc") ? "1fr" : "1fr 1fr", gap:9 }}>
+              {!events.some(e => e.id === "rosc") && (
+                <ActionBtn action={{ label:"Soins post-RACS", icon:"🫀", accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+                  onClick={() => setModalRacs(true)} />
+              )}
               <ActionBtn action={{ label:"Constat de décès", svg:ICONS.deces, accent:P.slate, soft:P.slateSoft, textC:P.slateText }}
                 onClick={() => setModalDeces(true)} />
             </div>
@@ -10816,8 +10901,9 @@ function App() {
 
         {/* Bouton vocal + toast */}
         {SpeechRecognitionAPI && (
-          <div style={{ position:"fixed", bottom:80, right:16, zIndex:50, display:"flex",
-            flexDirection:"column", alignItems:"flex-end", gap:10 }}>
+          <div style={{ position:"fixed", bottom: voiceBtnRaised ? 280 : 80, right:16, zIndex:50, display:"flex",
+            flexDirection:"column", alignItems:"flex-end", gap:10,
+            transition:"bottom 0.35s ease" }}>
 
             {/* Réponse à une question vocale — informative, ne modifie rien */}
             {voiceAnswer && !voiceToast && (
