@@ -3123,19 +3123,29 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
     };
 
     rec.onerror = (e) => {
-      if (e.error !== "no-speech" && e.error !== "aborted") {
-        setVoiceTranscriptPed("Erreur micro : " + e.error);
-        setTimeout(() => setVoiceTranscriptPed(""), 2000);
-      }
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      const messages = {
+        "not-allowed": "🚫 Micro refusé — autorisez l'accès dans les réglages du navigateur",
+        "service-not-allowed": "🚫 Micro refusé — autorisez l'accès dans les réglages du navigateur",
+        "audio-capture": "🚫 Aucun micro détecté sur cet appareil",
+        "network": "🚫 Reconnaissance vocale indisponible hors connexion",
+      };
+      setVoiceTranscriptPed(messages[e.error] || ("Erreur micro : " + e.error));
+      setTimeout(() => setVoiceTranscriptPed(""), 5000);
     };
 
     rec.onend = () => {
       if (voiceRecRefPed.current === rec) {
-        try { rec.start(); } catch(e) {}
+        setTimeout(() => {
+          if (voiceRecRefPed.current === rec) {
+            try { rec.start(); }
+            catch(err) { setVoiceTranscriptPed("🚫 Micro interrompu — réactivez-le"); setTimeout(() => setVoiceTranscriptPed(""), 4000); }
+          }
+        }, 300);
       }
     };
 
-    try { rec.start(); } catch(e) {}
+    try { rec.start(); } catch(e) { setVoiceTranscriptPed("🚫 Impossible de démarrer le micro"); setTimeout(() => setVoiceTranscriptPed(""), 4000); }
 
     return () => {
       voiceRecRefPed.current = null;
@@ -7509,20 +7519,32 @@ function App() {
     };
 
     rec.onerror = (e) => {
-      if (e.error !== "no-speech" && e.error !== "aborted") {
-        setVoiceTranscript("Erreur micro : " + e.error);
-        setTimeout(() => setVoiceTranscript(""), 2000);
-      }
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      const messages = {
+        "not-allowed": "🚫 Micro refusé — autorisez l'accès dans les réglages du navigateur",
+        "service-not-allowed": "🚫 Micro refusé — autorisez l'accès dans les réglages du navigateur",
+        "audio-capture": "🚫 Aucun micro détecté sur cet appareil",
+        "network": "🚫 Reconnaissance vocale indisponible hors connexion",
+      };
+      setVoiceTranscript(messages[e.error] || ("Erreur micro : " + e.error));
+      setTimeout(() => setVoiceTranscript(""), 5000);
     };
 
     rec.onend = () => {
-      // Redémarrer automatiquement si toujours actif (iOS coupe après silence)
+      // Redémarrer automatiquement si toujours actif (iOS/Android coupent après silence).
+      // Léger délai pour éviter un InvalidStateError si le redémarrage est trop rapide
+      // (cause fréquente d'un micro qui "tourne" à l'écran sans plus rien reconnaître).
       if (voiceRecRef.current === rec) {
-        try { rec.start(); } catch(e) {}
+        setTimeout(() => {
+          if (voiceRecRef.current === rec) {
+            try { rec.start(); }
+            catch(err) { setVoiceTranscript("🚫 Micro interrompu — réactivez-le"); setTimeout(() => setVoiceTranscript(""), 4000); }
+          }
+        }, 300);
       }
     };
 
-    try { rec.start(); } catch(e) {}
+    try { rec.start(); } catch(e) { setVoiceTranscript("🚫 Impossible de démarrer le micro"); setTimeout(() => setVoiceTranscript(""), 4000); }
 
     return () => {
       voiceRecRef.current = null;
