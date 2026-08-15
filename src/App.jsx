@@ -1,4 +1,132 @@
 import React, { useState, useEffect, useRef } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+// ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
+const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
+const supabaseAnonKey = "sb_publishable_hRxmJi9SIcrRtQUO4dwo0Q_rnXNmDJz";
+const supabaseTeam = createClient(supabaseUrl, supabaseAnonKey);
+
+function genSessionCode() {
+  return String(Math.floor(100000 + Math.random() * 900000)); // 6 chiffres
+}
+function qrUrl(code) {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(code)}`;
+}
+
+// Fusionne deux chronologies sans perdre d'entrées ajoutées en parallèle sur un autre device
+function mergeEvents(localList, remoteList) {
+  const key = e => `${e.id}|${e.time}|${e.label}`;
+  const map = new Map();
+  [...(localList || []), ...(remoteList || [])].forEach(e => map.set(key(e), e));
+  const merged = [...map.values()].sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+
+  // Déduplication supplémentaire pour les gestes à dose unique (adrénaline, cordarone) :
+  // en mode équipe, deux membres peuvent chacun taper le bouton sur leur téléphone
+  // pour la même administration réelle. Si deux entrées du même type tombent à
+  // quelques secondes d'intervalle (fenêtre ci-dessous), on ne garde que la première
+  // — ça évite un double comptage (décompte adrénaline relancé deux fois, etc.)
+  // sans jamais fusionner deux doses réellement espacées dans le temps.
+  const DEDUP_WINDOW_SEC = 90; // très inférieur à l'intervalle mini entre 2 doses réelles
+  const DEDUP_IDS = ["adr", "cord", "cord300", "cord150"];
+  const kept = [];
+  merged.forEach(e => {
+    if (!DEDUP_IDS.includes(e.id)) { kept.push(e); return; }
+    const isDuplicate = kept.some(k => k.id === e.id && Math.abs((k.sec ?? 0) - (e.sec ?? 0)) <= DEDUP_WINDOW_SEC);
+    if (!isDuplicate) kept.push(e);
+  });
+  return kept;
+}
+
+// Hook de synchronisation d'équipe multi-device (édition collaborative, dernier écrit gagne
+// sauf pour la chronologie qui est fusionnée pour ne perdre aucun événement)
+function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoFlowMin,
+  lowFlowMin, setLowFlowMin, trans, setTrans }) {
+  const [teamCode, setTeamCode] = useState("");
+  const [teamConnected, setTeamConnected] = useState(false);
+  const [teamDeviceCount, setTeamDeviceCount] = useState(1);
+  const channelRef = useRef(null);
+  const pushTimerRef = useRef(null);
+  const applyingRemoteRef = useRef(false);
+  const lastPushedRef = useRef("");
+
+  const buildState = () => ({ events, acrTime, noFlowMin, lowFlowMin, trans });
+
+  const applyRemote = (remote) => {
+    if (!remote) return;
+    applyingRemoteRef.current = true;
+    if (remote.events) setEvents(prev => mergeEvents(prev, remote.events));
+    if (remote.acrTime !== undefined) setAcrTime(v => remote.acrTime || v);
+    if (remote.noFlowMin !== undefined) setNoFlowMin(v => remote.noFlowMin || v);
+    if (remote.lowFlowMin !== undefined) setLowFlowMin(v => remote.lowFlowMin || v);
+    if (remote.trans) setTrans(prev => ({ ...prev, ...remote.trans }));
+    setTimeout(() => { applyingRemoteRef.current = false; }, 50);
+  };
+
+  const subscribeToCode = (code) => {
+    if (channelRef.current) supabaseTeam.removeChannel(channelRef.current);
+    const channel = supabaseTeam.channel(`acr_session_${code}`, {
+      config: { presence: { key: Math.random().toString(36).slice(2) } },
+    });
+    channel.on("postgres_changes",
+      { event: "UPDATE", schema: "public", table: "acr_team_sessions", filter: `code=eq.${code}` },
+      (payload) => applyRemote(payload.new?.state)
+    );
+    channel.on("presence", { event: "sync" }, () => {
+      setTeamDeviceCount(Object.keys(channel.presenceState()).length || 1);
+    });
+    channel.subscribe(async (status) => {
+      if (status === "SUBSCRIBED") {
+        setTeamConnected(true);
+        await channel.track({ joined_at: Date.now() });
+      }
+    });
+    channelRef.current = channel;
+  };
+
+  const startSession = async () => {
+    const code = genSessionCode();
+    await supabaseTeam.from("acr_team_sessions")
+      .upsert({ code, state: buildState(), updated_at: new Date().toISOString() });
+    setTeamCode(code);
+    subscribeToCode(code);
+    return code;
+  };
+
+  const joinSession = async (code) => {
+    const { data, error } = await supabaseTeam.from("acr_team_sessions")
+      .select("state").eq("code", code).maybeSingle();
+    if (error || !data) return { ok: false, error: "Code introuvable" };
+    applyRemote(data.state);
+    setTeamCode(code);
+    subscribeToCode(code);
+    return { ok: true };
+  };
+
+  const disconnect = () => {
+    if (channelRef.current) { supabaseTeam.removeChannel(channelRef.current); channelRef.current = null; }
+    setTeamConnected(false); setTeamCode(""); setTeamDeviceCount(1);
+  };
+
+  useEffect(() => {
+    if (!teamConnected || !teamCode || applyingRemoteRef.current) return;
+    const snapshot = JSON.stringify(buildState());
+    if (snapshot === lastPushedRef.current) return;
+    clearTimeout(pushTimerRef.current);
+    pushTimerRef.current = setTimeout(() => {
+      lastPushedRef.current = snapshot;
+      supabaseTeam.from("acr_team_sessions")
+        .upsert({ code: teamCode, state: buildState(), updated_at: new Date().toISOString() })
+        .then(() => {});
+    }, 700);
+    return () => clearTimeout(pushTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, acrTime, noFlowMin, lowFlowMin, trans, teamConnected, teamCode]);
+
+  useEffect(() => () => { if (channelRef.current) supabaseTeam.removeChannel(channelRef.current); }, []);
+
+  return { teamCode, teamConnected, teamDeviceCount, startSession, joinSession, disconnect };
+}
+
 
 // ── Error Boundary — filet de sécurité global ──────────────────────────────
 // Si un composant plante, l'app reste debout et les données localStorage
@@ -169,6 +297,33 @@ function parseFrNumber(txt) {
     if (norm.includes(w)) return n;
   }
   return null;
+}
+
+// Détecte si une phrase captée est une QUESTION (mot interrogatif) plutôt qu'un ORDRE.
+// Testé en tout premier dans le pipeline vocal, avant toute liste de commandes —
+// garantit qu'une question ("combien d'adrénaline ?") ne peut jamais être interprétée
+// comme une action ("adrénaline" → log d'une nouvelle dose).
+function isVoiceQuestion(n) {
+  return /\b(combien|depuis quand|depuis combien|a combien|quel est|quelle est|quels sont|quelles sont|y a t il|ya t il)\b/.test(n);
+}
+
+// Formate une durée en secondes en texte parlé "X minutes Y secondes"
+function speakDuration(totalSec) {
+  const m = Math.floor(totalSec / 60), s = totalSec % 60;
+  if (m <= 0) return `${s} secondes`;
+  return `${m} minute${m>1?"s":""}${s>0?` ${s} seconde${s>1?"s":""}`:""}`;
+}
+
+// Lit une réponse à voix haute (mains libres, pas besoin de regarder l'écran)
+function speakFr(text) {
+  try {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel(); // interrompt une lecture précédente en cours
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "fr-FR";
+    u.rate = 1.05;
+    window.speechSynthesis.speak(u);
+  } catch(e) {}
 }
 
 // Chronomètre basé sur l'HORLOGE RÉELLE (pas un compteur de ticks).
@@ -751,90 +906,153 @@ function Collapsible({ icon, title, children, badge }) {
   );
 }
 
+// ── Guide complet de l'application — cartes dépliables par thème ───────────
+// Accessible depuis Réglages, la page d'accueil, et proposé au premier lancement.
+function GuideApp({ onClose }) {
+  const sections = [
+    {
+      title: "Général",
+      color: "slate",
+      items: [
+        { icon:"⏱", title:"Chronomètre & minuteur adrénaline", desc:"Le chrono démarre au lancement de la réa. Un minuteur dédié rappelle l'échéance de la prochaine adrénaline avec une alarme sonore, et se relance automatiquement à chaque administration." },
+        { icon:"📋", title:"Chronologie complète", desc:"Chaque geste (choc, adrénaline, intubation, RACS...) est horodaté automatiquement. La liste est repliée par défaut pour ne pas encombrer l'écran — dépliez-la à tout moment. Un geste ajouté par erreur peut être annulé juste après (toast \"Annuler\")." },
+        { icon:"📄", title:"Compte-rendu automatique", desc:"Un rapport structuré façon SBAR est généré en continu à partir de la chronologie — prêt à copier, imprimer ou partager en fin de réanimation, sans ressaisie." },
+        { icon:"🌗", title:"Thème jour / nuit", desc:"Bascule en un tap, en haut de l'écran. Le thème jour est pensé pour la lisibilité en plein soleil, le thème nuit pour ne pas éblouir en intervention de nuit." },
+        { icon:"💾", title:"Sauvegarde automatique locale", desc:"Toutes les données sont enregistrées en continu sur l'appareil. Fermeture accidentelle, batterie déchargée, crash de l'app : rien n'est perdu, la session reprend exactement où elle s'est arrêtée." },
+        { icon:"📊", title:"Dashboard & archives", desc:"Chaque réanimation clôturée est archivée localement avec sa durée, son issue et ses données clés — consultable ensuite depuis le tableau de bord pour un retour d'expérience ou des statistiques de service." },
+      ],
+    },
+    {
+      title: "ACR Adulte & Traumatique",
+      color: "rose",
+      items: [
+        { icon:"⚡", title:"Analyse de rythme guidée", desc:"Toutes les 2 minutes, un flash rappelle d'analyser le rythme avec 4 choix en un tap (FV/TV, AESP, asystolie, RACS) — rien à chercher dans un menu pendant le no-flow." },
+        { icon:"💊", title:"Cordarone — rappel automatique", desc:"Un rappel apparaît automatiquement au 3ᵉ choc (300 mg) puis au 5ᵉ choc (150 mg), conformément aux recommandations ERC 2021." },
+        { icon:"🫁", title:"Ratio compressions/ventilation", desc:"L'affichage bascule automatiquement de 30:2 à un rythme continu dès que l'intubation est enregistrée." },
+        { icon:"📈", title:"EtCO₂ & alertes intelligentes", desc:"Saisie rapide de l'EtCO₂ avec alertes si la valeur est insuffisante (MCE inefficace) ou si une remontée brutale évoque un RACS." },
+        { icon:"💚", title:"Suivi post-RACS", desc:"Constantes hémodynamiques, amines et température se saisissent sur un écran dédié ; un graphique se construit automatiquement au fil des mesures." },
+        { icon:"🩸", title:"OctaplasLG & score BATT", desc:"Calculateur de score BATT avec préremplissage automatique depuis les dernières constantes saisies, et indication d'administration d'OctaplasLG selon le score." },
+        { icon:"🔍", title:"FAST écho (traumatique)", desc:"Sélecteurs rapides par espace anatomique (Morrison, Köhler, Douglas, plèvres, péricarde) pour tracer l'échographie ciblée." },
+        { icon:"↩", title:"Récidive d'arrêt après RACS", desc:"Si le patient refait un arrêt après un RACS, un bouton dédié relance immédiatement le mode réanimation active (métronome, minuteur adrénaline, cycle de compressions) sans perdre l'historique." },
+        { icon:"⏱", title:"Critères d'arrêt de réanimation", desc:"Passé 20 minutes sans RACS, un rappel propose d'ouvrir la check-list des critères d'arrêt — à titre indicatif, la décision reste médicale." },
+        { icon:"🕊️", title:"Constat de décès", desc:"Formulaire dédié avec champ libre pour préciser le destinataire du constat (\"sans OML\")." },
+      ],
+    },
+    {
+      title: "ACR Pédiatrique",
+      color: "amber",
+      items: [
+        { icon:"⚖️", title:"Doses calculées par poids", desc:"Adrénaline, amiodarone, remplissage : toutes les doses s'ajustent automatiquement dès que le poids de l'enfant est renseigné — aucun calcul à faire en urgence." },
+        { icon:"🧰", title:"Matériel adapté", desc:"Taille de sonde, repère à la commissure, matériel recommandé : tout est affiché selon le poids sélectionné (table pédiatrique standardisée)." },
+        { icon:"🔁", title:"Mêmes automatismes que l'adulte", desc:"Flash d'analyse de rythme, minuteur adrénaline, suivi post-RACS, mode équipe et reconnaissance vocale existent aussi en pédiatrique, avec les doses et le vocabulaire adaptés." },
+      ],
+    },
+    {
+      title: "Reconnaissance vocale",
+      color: "violet",
+      items: [
+        { icon:"🎤", title:"Mot-code \"Copilote\"", desc:"Toute commande doit être précédée du mot \"Copilote\" (ex : \"Copilote, adrénaline\"). Ce filtre évite que le brouhaha d'une réanimation ne déclenche une action par erreur — un flash vert du micro confirme que le mot-code a bien été entendu." },
+        { icon:"💉", title:"Commandes disponibles", desc:"Adrénaline, choc, cordarone, RACS, intubation, pause/reprise des compressions, constat de décès, analyse de rythme, et dictée d'une valeur d'EtCO₂ précise." },
+        { icon:"❓", title:"Questions à voix haute", desc:"Demandez par exemple \"Copilote, combien de mg d'adrénaline ?\", \"à combien était la dernière tension ?\" ou \"depuis quand pas d'adrénaline ?\" — la réponse est donnée instantanément à voix haute, sans jamais modifier la chronologie." },
+        { icon:"✅", title:"Confirmation avant action", desc:"Chaque commande d'action affiche un bandeau annulable pendant 2,5 secondes avant d'être vraiment enregistrée — de quoi rattraper un mot mal compris." },
+      ],
+    },
+    {
+      title: "Mode équipe multi-appareils",
+      color: "blue",
+      items: [
+        { icon:"👥", title:"Synchronisation en temps réel", desc:"Plusieurs téléphones de l'équipe peuvent partager la même chronologie, l'heure d'ACR et les constantes en direct — utile quand plusieurs personnes documentent en parallèle." },
+        { icon:"📷", title:"Créer ou rejoindre une session", desc:"Un appareil crée une session (QR code + code à 6 chiffres) ; les autres la rejoignent en scannant le QR ou en saisissant le code." },
+        { icon:"🚀", title:"Préparer la connexion à l'avance", desc:"En pédiatrique, la session peut être créée dès l'écran de choix du poids — les téléphones sont déjà connectés quand la réanimation démarre réellement." },
+        { icon:"🧹", title:"Anti-doublon automatique", desc:"Si deux membres de l'équipe loguent la même adrénaline ou cordarone à quelques secondes d'écart, un seul enregistrement est conservé — la chronologie reste fiable." },
+      ],
+    },
+  ];
+
+  return (
+    <Modal title="Guide complet de l'application" icon="📖" soft={P.surfaceAlt} onClose={onClose}>
+      <p style={{ margin:"0 0 18px", fontSize:12.5, color:P.textSoft, lineHeight:1.5 }}>
+        Un aperçu de toutes les fonctionnalités importantes — à parcourir avant une
+        première utilisation réelle. Dépliez chaque carte pour en savoir plus.
+      </p>
+      {sections.map((sec, si) => (
+        <div key={si} style={{ marginBottom: si < sections.length - 1 ? 22 : 0 }}>
+          <p style={{ margin:"0 0 10px", fontSize:10.5, fontWeight:800, color:P[sec.color+"Text"] || P.textSoft,
+            textTransform:"uppercase", letterSpacing:"0.12em", fontFamily:mono }}>
+            {sec.title}
+          </p>
+          {sec.items.map((item, ii) => (
+            <Collapsible key={ii} icon={item.icon} title={item.title}>
+              <p style={{ margin:0, fontSize:12.5, color:P.textMid, lineHeight:1.55 }}>{item.desc}</p>
+            </Collapsible>
+          ))}
+        </div>
+      ))}
+      <button onClick={onClose}
+        style={{ width:"100%", background:P.text, border:"none", borderRadius:12,
+          color:P.bg, fontSize:14, fontWeight:700, padding:"13px", cursor:"pointer",
+          fontFamily:sans, marginTop:6 }}>
+        ✓ J'ai compris
+      </button>
+    </Modal>
+  );
+}
+
 function ActionBtn({ action, onClick }) {
   const [press, setPress] = useState(false);
   const [flash, setFlash] = useState(false);
   const vital = action.vital;
-
-  const handleClick = () => {
-    setFlash(true);
-    setTimeout(() => setFlash(false), 700);
-    // Haptic différencié selon le type d'action
-    try {
-      if (navigator.vibrate) {
-        if (action.haptic === "long")   navigator.vibrate(200);           // adrénaline
-        else if (action.haptic === "double") navigator.vibrate([100,50,100]); // choc DEF
-        else                            navigator.vibrate(30);             // autres
-      }
-    } catch(e) {}
-    onClick();
-  };
-
   return (
     <button
       onPointerDown={() => setPress(true)}
       onPointerUp={() => setPress(false)}
       onPointerLeave={() => setPress(false)}
-      onClick={handleClick}
+      onClick={() => { setFlash(true); setTimeout(() => setFlash(false), 700); try { if (navigator.vibrate) navigator.vibrate(28); } catch(e){} onClick(); }}
       style={vital ? {
+        // ── Bouton VITAL : aplat saturé ──
         background:`linear-gradient(135deg, ${action.accent}, ${action.textC})`,
-        border:"none", borderRadius:15, padding:"12px 12px", cursor:"pointer", fontFamily:sans,
-        display:"flex", flexDirection:"column", alignItems:"flex-start", gap:6,
+        border:"none", borderRadius:16, padding:"15px 14px", cursor:"pointer", fontFamily:sans,
+        display:"flex", flexDirection:"column", alignItems:"flex-start", gap:7,
         transform: press ? "scale(0.96)" : "scale(1)",
         transition:"transform 0.08s, filter 0.15s",
         filter: flash ? "brightness(1.4)" : "brightness(1)",
         boxShadow:`0 5px 16px ${action.accent}55`,
-        minWidth:0, boxSizing:"border-box", width:"100%", minHeight:82, color:"#fff",
-        position:"relative",
+        minWidth:0, boxSizing:"border-box", width:"100%", minHeight:90, color:"#fff",
       } : {
+        // ── Bouton standard : carte + pastille colorée ──
         background: flash ? `color-mix(in srgb, ${P.green} 12%, ${P.surface})` : P.surface,
         border: `1.5px solid ${flash ? P.green : P.border}`,
-        borderRadius:15, padding:"11px 10px", cursor:"pointer", fontFamily:sans,
-        display:"flex", alignItems:"center", gap:10, textAlign:"left",
+        borderRadius:15, padding:"13px 12px", cursor:"pointer", fontFamily:sans,
+        display:"flex", alignItems:"center", gap:11, textAlign:"left",
         transform: press ? "scale(0.96)" : "scale(1)",
         transition:"transform 0.08s, border-color 0.15s, box-shadow 0.15s, background 0.15s",
         boxShadow: flash ? `0 0 0 3px color-mix(in srgb, ${P.green} 25%, transparent)` : "0 1px 4px rgba(0,0,0,0.05)",
-        minWidth:0, boxSizing:"border-box", width:"100%", minHeight:60,
-        position:"relative",
+        minWidth:0, boxSizing:"border-box", width:"100%", minHeight:64,
       }}>
-
-      {/* Badge dynamique */}
-      {action.badge && (
-        <span style={{ position:"absolute", top:-6, right:-6,
-          background: action.badge === "✓" ? P.green : action.badge === "FV" ? P.blue : P.rose,
-          color:"#fff", fontSize:9, fontWeight:900, fontFamily:mono,
-          padding:"2px 5px", borderRadius:20, letterSpacing:"0.05em",
-          boxShadow:"0 2px 6px rgba(0,0,0,0.3)",
-          animation: action.badge === "!" ? "rythmPulse 1s ease-in-out infinite" : "none" }}>
-          {action.badge}
-        </span>
-      )}
-
-      {/* Pastille d'icône */}
+      {/* Pastille d'icône (✓ vert pendant la confirmation) */}
       <span style={{
-        width: vital ? 36 : 34, height: vital ? 36 : 34, borderRadius:10, flexShrink:0,
+        width: vital ? 40 : 38, height: vital ? 40 : 38, borderRadius:11, flexShrink:0,
         background: flash ? (vital ? "rgba(255,255,255,0.30)" : `color-mix(in srgb, ${P.green} 20%, transparent)`)
-                          : (vital ? "rgba(255,255,255,0.22)" : `color-mix(in srgb, ${action.accent} 15%, transparent)`),
+                          : (vital ? "rgba(255,255,255,0.22)" : `color-mix(in srgb, ${action.accent} 16%, transparent)`),
         display:"flex", alignItems:"center", justifyContent:"center",
         color: flash ? (vital ? "#fff" : P.green) : (vital ? "#fff" : action.accent),
         transition:"all 0.15s",
       }}>
         {flash
-          ? <span style={{ fontSize: vital ? 20 : 18, fontWeight:900, lineHeight:1 }}>✓</span>
+          ? <span style={{ fontSize: vital ? 24 : 21, fontWeight:900, lineHeight:1 }}>✓</span>
           : action.svg
-            ? <span style={{ width: vital ? 24 : 21, height: vital ? 24 : 21, display:"flex" }}>{action.svg}</span>
-            : <span style={{ fontSize: vital ? 20 : 18 }}>{action.icon}</span>}
+            ? <span style={{ width: vital ? 27 : 24, height: vital ? 27 : 24, display:"flex" }}>{action.svg}</span>
+            : <span style={{ fontSize: vital ? 22 : 20 }}>{action.icon}</span>}
       </span>
-
       <div style={{ display:"flex", flexDirection:"column", gap:1, minWidth:0 }}>
         <span style={{
-          fontFamily:sans, fontSize: vital ? 15 : 12.5, fontWeight: vital ? 800 : 700,
+          fontFamily:sans, fontSize: vital ? 16 : 13.5, fontWeight: vital ? 800 : 700,
           color: vital ? "#fff" : P.text, lineHeight:1.1, letterSpacing:"0.005em",
         }}>
           {action.label}
         </span>
         {vital && action.dose && (
-          <span style={{ fontFamily:mono, fontSize:10.5, fontWeight:700, color:"#fff", opacity:0.88 }}>
+          <span style={{ fontFamily:mono, fontSize:11, fontWeight:700, color:"#fff", opacity:0.92 }}>
             {action.dose}
           </span>
         )}
@@ -2494,7 +2712,7 @@ function RemplissageVasculairePed({ racs, setRacs, localMat }) {
 
 // ── RCP PÉDIATRIQUE ───────────────────────────────────────────────────────────
 
-function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }) {
+function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, initialTeamCode }) {
   const [running,      setRunning]      = useState(false);
   const [secStored,    setSecStored]    = useLocalState("acr_ped_sec", 0);
   const [sec,          setSec]          = useTimer(running);
@@ -2612,6 +2830,20 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
   const [lowFlowStart, setLowFlowStart] = useLocalState("acr_ped_lowFlowStart", "");
   const [localAcrTime, setLocalAcrTime] = useLocalState("acr_ped_acrTime", acrTime || "");
 
+  // Mode équipe multi-device — instance dédiée au module pédiatrique (données
+  // totalement séparées de celles du module adulte/traumatique)
+  const teamPed = useTeamSync({ events, setEvents, acrTime: localAcrTime, setAcrTime: setLocalAcrTime,
+    noFlowMin, setNoFlowMin, lowFlowMin, setLowFlowMin, trans: transPed, setTrans: setTransPed });
+  const [modalTeamPed, setModalTeamPed] = useState(false);
+  const [teamJoinCodePed, setTeamJoinCodePed] = useState("");
+  const [teamJoinErrorPed, setTeamJoinErrorPed] = useState("");
+  // Reprend la session préparée avant le début de la réa (bouton équipe sur
+  // l'écran de sélection du poids) — l'équipe n'a pas à se reconnecter.
+  useEffect(() => {
+    if (initialTeamCode) { teamPed.joinSession(initialTeamCode); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Modals
   const [modalRythme,  setModalRythme]  = useState(false);
   const [modalChocPed, setModalChocPed] = useState(false);
@@ -2670,6 +2902,240 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
     return () => clearTimeout(t);
   }, [confirmAdd]);
 
+  // ── Reconnaissance vocale pédiatrique (déclarée avant les useEffect qui l'utilisent) ──
+  const [voiceActivePed,     setVoiceActivePed]     = useState(false);
+  const [voiceTranscriptPed, setVoiceTranscriptPed] = useState("");
+  const [voiceToastPed,      setVoiceToastPed]      = useState(null); // { label, icon, confirm, cancel }
+  const [voiceAnswerPed,     setVoiceAnswerPed]     = useState(null); // { label, icon, speak, key }
+  const [voiceWakeFlashPed,  setVoiceWakeFlashPed]  = useState(false);
+  const voiceRecRefPed = useRef(null);
+  const voiceToastRefPed = useRef(null);
+  const voiceAnswerRefPed = useRef(null);
+
+  // ── Questions vocales pédiatriques — réponse immédiate parlée, ne modifie jamais rien ──
+  const answerVoiceQuestionPed = React.useCallback((raw, n) => {
+    const lastAdr = [...events].reverse().find(e => e.id === "adr");
+    const lastHemo = hemoListPed.length > 0 ? hemoListPed[hemoListPed.length - 1] : null;
+    const lastEtco2 = etco2ListPed.length > 0 ? etco2ListPed[etco2ListPed.length - 1] : null;
+    const lastEvt = events.length > 0 ? events[events.length - 1] : null;
+
+    if (n.includes("depuis") && (n.includes("adrenaline") || n.includes("adre"))) {
+      return lastAdr
+        ? { label:"💉 Délai adrénaline", icon:"💉", speak:`Dernière adrénaline il y a ${speakDuration(sec - lastAdr.sec)}.` }
+        : { label:"💉 Adrénaline", icon:"💉", speak:"Aucune adrénaline n'a encore été administrée." };
+    }
+    if (n.includes("adrenaline") || n.includes("adre") || n.includes("epinephrine")) {
+      const count = events.filter(e => e.id === "adr").length;
+      const doseMg = localMat?.adrenalineMg || "";
+      return { label:"💉 Adrénaline", icon:"💉",
+        speak: count === 0 ? "Aucune adrénaline administrée pour l'instant."
+          : `${count} dose${count>1?"s":""} d'adrénaline administrée${count>1?"s":""}${doseMg?`, de ${doseMg} milligrammes chacune`:""}.` };
+    }
+    if (n.includes("choc") && (n.includes("premier") || n.includes("1er") || n.includes("delai"))) {
+      const firstChoc = events.find(e => e.id === "choc" || e.id === "doublechoc");
+      return firstChoc
+        ? { label:"⚡ Délai 1er choc", icon:"⚡", speak:`Premier choc délivré à ${speakDuration(firstChoc.sec)} après le début.` }
+        : { label:"⚡ Chocs", icon:"⚡", speak:"Aucun choc délivré pour l'instant." };
+    }
+    if (n.includes("choc") || n.includes("defibrillation") || n.includes("defib")) {
+      const simple = events.filter(e => e.id === "choc").length;
+      const double = events.filter(e => e.id === "doublechoc").length;
+      const total = simple + double * 2;
+      return { label:"⚡ Chocs", icon:"⚡",
+        speak: total === 0 ? "Aucun choc délivré pour l'instant."
+          : `${total} choc${total>1?"s":""} délivré${total>1?"s":""}${double>0?`, dont ${double} double défibrillation${double>1?"s":""}`:""}.` };
+    }
+    if (n.match(/etco|capno|\bco2\b/)) {
+      return lastEtco2
+        ? { label:"📈 EtCO₂", icon:"📈", speak:`Dernière EtCO₂ : ${lastEtco2.val} millimètres de mercure, à ${lastEtco2.time}.` }
+        : { label:"📈 EtCO₂", icon:"📈", speak:"Aucune EtCO₂ enregistrée pour l'instant." };
+    }
+    if (n.includes("cordarone") || n.includes("amiodarone") || n.includes("amio")) {
+      const count = events.filter(e => e.id === "cord").length;
+      const doseMg = localMat?.amio || "";
+      return { label:"💊 Amiodarone", icon:"💊",
+        speak: count === 0 ? "Pas d'amiodarone administrée pour l'instant."
+          : `${count} dose${count>1?"s":""} d'amiodarone administrée${count>1?"s":""}${doseMg?`, de ${doseMg} milligrammes chacune`:""}.` };
+    }
+    if (n.includes("tension") || n.includes("arterielle") || n.includes("pression arterielle") || /\bta\b/.test(n)) {
+      if (!lastHemo || (!lastHemo.pas && !lastHemo.pad)) return { label:"🩺 Tension", icon:"🩺", speak:"Aucune tension artérielle enregistrée pour l'instant." };
+      const pam = (lastHemo.pas && lastHemo.pad)
+        ? Math.round(parseFloat(lastHemo.pad) + (parseFloat(lastHemo.pas) - parseFloat(lastHemo.pad)) / 3) : null;
+      return { label:"🩺 Tension", icon:"🩺",
+        speak:`Dernière tension : ${lastHemo.pas||"—"} sur ${lastHemo.pad||"—"}${pam?`, PAM ${pam}`:""}, à ${lastHemo.time}.` };
+    }
+    if (n.includes("frequence cardiaque") || n.includes("frequence") || /\bfc\b/.test(n)) {
+      return (lastHemo && lastHemo.fc)
+        ? { label:"❤️ FC", icon:"❤️", speak:`Dernière fréquence cardiaque : ${lastHemo.fc} battements par minute, à ${lastHemo.time}.` }
+        : { label:"❤️ FC", icon:"❤️", speak:"Aucune fréquence cardiaque enregistrée pour l'instant." };
+    }
+    if (n.includes("shock index") || n.includes("index de choc")) {
+      if (!lastHemo || !lastHemo.fc || !lastHemo.pas || parseFloat(lastHemo.pas) === 0) {
+        return { label:"📊 Shock Index", icon:"📊", speak:"Impossible de calculer le Shock Index, pas assez de données." };
+      }
+      const si = parseFloat(lastHemo.fc) / parseFloat(lastHemo.pas);
+      return { label:"📊 Shock Index", icon:"📊",
+        speak:`Shock index : ${si.toFixed(2)}, ${si<0.9?"normal":si<=1.4?"inquiétant":"critique"}.` };
+    }
+    if (n.includes("no flow") || n.includes("noflow")) {
+      return { label:"⏱ No-flow", icon:"⏱",
+        speak: noFlowMin ? `No-flow renseigné : ${noFlowMin} minutes.` : "No-flow non renseigné." };
+    }
+    if (n.includes("amine")) {
+      const byType = {};
+      amineListPed.forEach(a => { byType[a.type] = a; });
+      const active = Object.values(byType);
+      return { label:"💧 Amines", icon:"💧",
+        speak: active.length ? `Amines en cours : ${active.map(a=>a.label).join(", ")}.` : "Aucune amine en cours." };
+    }
+    if (n.includes("remplissage")) {
+      const total = (racsPed.remplissagesPed || []).reduce((s,r) => s + r.vol, 0);
+      return { label:"💧 Remplissage", icon:"💧",
+        speak: total > 0 ? `Remplissage total : ${total} millilitres.` : "Aucun remplissage enregistré pour l'instant." };
+    }
+    if (n.includes("poids")) {
+      return { label:"⚖️ Poids", icon:"⚖️",
+        speak: poids ? `Poids renseigné : ${poids} kilos.` : "Poids non renseigné." };
+    }
+    if ((n.includes("dernier") || n.includes("derniere")) && (n.includes("geste") || n.includes("action") || n.includes("fait"))) {
+      return { label:"📋 Dernier geste", icon:"📋",
+        speak: lastEvt ? `Dernier geste : ${lastEvt.label}, à ${lastEvt.time}.` : "Aucun geste enregistré pour l'instant." };
+    }
+    if (n.includes("rythme")) {
+      const rv = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
+      return { label:"⚡ Dernier rythme", icon:"⚡",
+        speak: rv ? `Dernier rythme analysé : ${rv.label.replace("Rythme : ","")}, à ${rv.time}.` : "Aucune analyse de rythme enregistrée pour l'instant." };
+    }
+    if (n.includes("racs")) {
+      const rosc = events.find(e => e.id === "rosc");
+      return { label:"💚 RACS", icon:"💚",
+        speak: rosc ? `Oui, RACS obtenu à ${rosc.time}.` : "Non, pas de RACS obtenu pour l'instant." };
+    }
+    if (n.includes("depuis combien de temps") || (n.includes("depuis") && (n.includes("debut") || n.includes("dessus")))) {
+      return { label:"⏱ Durée", icon:"⏱", speak:`Réanimation en cours depuis ${speakDuration(sec)}.` };
+    }
+    return { label:"❓ Question", icon:"❓", speak:"Je n'ai pas cette information pour l'instant." };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sec, events, hemoListPed, etco2ListPed, amineListPed, noFlowMin, racsPed, localMat, poids]);
+
+  const matchVoiceCommandPed = React.useCallback((raw) => {
+    const n = normalizeVoice(raw);
+    // Mot-code : une commande n'est prise en compte que si "copilote" est
+    // prononcé dans la même phrase captée — filtre le brouhaha ambiant.
+    if (!/\bco\s?pilote\b/.test(n)) return null;
+
+    // Question ? Toujours testé AVANT la liste de commandes, pour qu'une phrase
+    // comme "combien de mg d'adrénaline" ne puisse jamais être interprétée comme
+    // l'ordre "adrénaline" (qui loguerait une nouvelle dose).
+    if (isVoiceQuestion(n)) {
+      return { ...answerVoiceQuestionPed(raw, n), isQuestion: true };
+    }
+
+    // EtCO2 avec valeur : "copilote etco2 vingt-cinq" / "copilote capno trente"
+    if (n.match(/etco|capno|co2/)) {
+      const val = parseFrNumber(raw);
+      if (val !== null && val >= 0 && val <= 100) {
+        return {
+          label: `EtCO₂ ${val} mmHg`, icon: "📈",
+          confirm: () => {
+            setEtco2ListPed(prev => [...prev, { val: String(val), sec, time: getNow() }]);
+            addEvent("etco2_voice", `EtCO₂ ${val} mmHg`, "📈");
+          }
+        };
+      }
+    }
+    const cmds = [
+      { kw:["adrenaline","adre","epinephrine"], label:`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO`, icon:"💉",
+        confirm:()=>{ addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }},
+      { kw:["choc","defibrillation","defib","cardioversion","fibrillation"], label:"Défibrillation", icon:"⚡",
+        confirm:()=> setModalChocPed(true) },
+      { kw:["racs","pouls","circulation","retour","spontane"], label:"RACS", icon:"💚",
+        confirm:()=> addEvent("rosc","RACS","💚") },
+      { kw:["cordarone","amiodarone","amio"], label:`Amiodarone ${localMat?.amio||""}mg IV/IO`, icon:"💊",
+        confirm:()=> addEvent("cord",`Amiodarone ${localMat?.amio||""}mg IV/IO (5mg/kg)`,"💊") },
+      { kw:["intubation","intuber","sonde"], label:"Intubation", icon:"🫁",
+        confirm:()=> setModalIotPed(true) },
+      { kw:["pause","stoppe","stop compressions"], label:"Pause compressions", icon:"⏸",
+        confirm:()=> setRunning(false) },
+      { kw:["reprendre","continuer","resume","relancer"], label:"Reprendre compressions", icon:"▶",
+        confirm:()=> setRunning(true) },
+      { kw:["deces","constat","mort","decede"], label:"Constat de décès", icon:"🕊️",
+        confirm:()=> setModalDecesPed(true) },
+      { kw:["analyse","rythme","check","verification"], label:"Analyse de rythme", icon:"⚡",
+        confirm:()=> setShowRythmFlashPed(true) },
+    ];
+    for (const cmd of cmds) {
+      if (cmd.kw.some(k => n.includes(k))) return cmd;
+    }
+    return null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sec, events, localMat]);
+
+  useEffect(() => {
+    if (!voiceActivePed || !SpeechRecognitionAPI) return;
+
+    const rec = new SpeechRecognitionAPI();
+    rec.lang = "fr-FR";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 3;
+    voiceRecRefPed.current = rec;
+
+    rec.onresult = (e) => {
+      const results = Array.from(e.results);
+      const interim = results.map(r => r[0].transcript).join(" ");
+      setVoiceTranscriptPed(interim);
+
+      const finalResult = results.find(r => r.isFinal);
+      if (finalResult) {
+        const text = Array.from(e.results).map(r => r[0].transcript).join(" ");
+        if (/\bco\s?pilote\b/.test(normalizeVoice(text))) {
+          setVoiceWakeFlashPed(true);
+          setTimeout(() => setVoiceWakeFlashPed(false), 700);
+        }
+        const cmd = matchVoiceCommandPed(text);
+        setVoiceTranscriptPed("");
+        if (cmd) {
+          if (cmd.isQuestion) {
+            clearTimeout(voiceAnswerRefPed.current);
+            setVoiceAnswerPed({ ...cmd, key: Date.now() });
+            speakFr(cmd.speak);
+            voiceAnswerRefPed.current = setTimeout(() => setVoiceAnswerPed(null), 6000);
+          } else {
+            clearTimeout(voiceToastRefPed.current);
+            setVoiceToastPed({ ...cmd, cancel: () => { setVoiceToastPed(null); clearTimeout(voiceToastRefPed.current); } });
+            voiceToastRefPed.current = setTimeout(() => {
+              cmd.confirm();
+              setVoiceToastPed(null);
+            }, 2500);
+          }
+        }
+      }
+    };
+
+    rec.onerror = (e) => {
+      if (e.error !== "no-speech" && e.error !== "aborted") {
+        setVoiceTranscriptPed("Erreur micro : " + e.error);
+        setTimeout(() => setVoiceTranscriptPed(""), 2000);
+      }
+    };
+
+    rec.onend = () => {
+      if (voiceRecRefPed.current === rec) {
+        try { rec.start(); } catch(e) {}
+      }
+    };
+
+    try { rec.start(); } catch(e) {}
+
+    return () => {
+      voiceRecRefPed.current = null;
+      try { rec.abort(); } catch(e) {}
+      clearTimeout(voiceToastRefPed.current);
+      setVoiceTranscriptPed("");
+    };
+  }, [voiceActivePed, matchVoiceCommandPed]);
+
   const start = () => {
     const lf = getNow();
     setLowFlowStart(lf);
@@ -2707,9 +3173,72 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
         },
       });
     }
+    teamPed.disconnect();
     clearSession("acr_ped_");
     if (onHome) onHome();
   };
+
+  // ── Modal Mode équipe pédiatrique ──
+  const teamModalPed = modalTeamPed && (
+    <Modal title="Mode équipe" icon="👥" soft={P.surfaceAlt} onClose={() => setModalTeamPed(false)}>
+      {!teamPed.teamConnected ? (
+        <>
+          <p style={{ margin:"0 0 16px", fontSize:12.5, color:P.textSoft, lineHeight:1.5 }}>
+            Synchronise la chronologie, l'heure d'ACR, le no-flow/low-flow et la transmission
+            entre plusieurs appareils de l'équipe en temps réel.
+          </p>
+          <button onClick={async () => { await teamPed.startSession(); }}
+            style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
+              border:"none", borderRadius:13, color:"#fff", fontSize:14, fontWeight:700,
+              padding:"14px", cursor:"pointer", fontFamily:sans, marginBottom:16,
+              boxShadow:`0 5px 16px color-mix(in srgb, ${P.blue} 30%, transparent)` }}>
+            + Créer une session d'équipe
+          </button>
+          <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
+          <Lbl>Rejoindre avec un code (6 chiffres)</Lbl>
+          <div style={{ display:"flex", gap:8 }}>
+            <input inputMode="numeric" maxLength={6} value={teamJoinCodePed}
+              onChange={e => { setTeamJoinCodePed(e.target.value.replace(/\D/g,"")); setTeamJoinErrorPed(""); }}
+              placeholder="123456"
+              style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                borderRadius:10, padding:"12px", fontSize:20, color:P.text, fontFamily:mono,
+                textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none" }}
+              onFocus={e => e.target.style.borderColor = P.blue}
+              onBlur={e  => e.target.style.borderColor = P.border} />
+            <button onClick={async () => {
+              if (teamJoinCodePed.length !== 6) { setTeamJoinErrorPed("Code à 6 chiffres"); return; }
+              const r = await teamPed.joinSession(teamJoinCodePed);
+              if (!r.ok) setTeamJoinErrorPed(r.error); else setModalTeamPed(false);
+            }} style={{ background:P.blue, border:"none", borderRadius:10, color:"#fff",
+              padding:"0 18px", fontSize:14, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+              Rejoindre
+            </button>
+          </div>
+          {teamJoinErrorPed && <p style={{ margin:"8px 0 0", fontSize:12, color:P.roseText }}>{teamJoinErrorPed}</p>}
+        </>
+      ) : (
+        <>
+          <div style={{ textAlign:"center", marginBottom:16 }}>
+            <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:700, color:P.textSoft,
+              textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Code de session</p>
+            <p style={{ margin:"0 0 14px", fontSize:38, fontWeight:900, color:P.text,
+              fontFamily:mono, letterSpacing:"0.1em" }}>{teamPed.teamCode}</p>
+            <img src={qrUrl(teamPed.teamCode)} alt="QR code session"
+              style={{ width:180, height:180, borderRadius:12, border:`1px solid ${P.border}` }} />
+            <p style={{ margin:"10px 0 0", fontSize:12, color:P.greenText, fontWeight:700 }}>
+              🟢 {teamPed.teamDeviceCount} appareil(s) connecté(s)
+            </p>
+          </div>
+          <button onClick={() => { teamPed.disconnect(); setModalTeamPed(false); }}
+            style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+              borderRadius:12, color:P.textMid, fontSize:13, fontWeight:600,
+              padding:"12px", cursor:"pointer", fontFamily:sans }}>
+            Quitter la session
+          </button>
+        </>
+      )}
+    </Modal>
+  );
 
   // DebriefModal pédiatrique
   const debriefPedRender = showDebriefPed && (
@@ -3664,6 +4193,24 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
               padding:"14px",cursor:"pointer",fontFamily:sans,marginTop:12,flexShrink:0}}>
               ✓ Enregistrer
             </button>
+
+            {/* ── Récidive d'arrêt pédiatrique ── */}
+            <button onClick={() => {
+              const roscTime = events.find(e => e.id === "rosc")?.time || "?";
+              addEvent("re_arret", `↩ Récidive d'arrêt — RACS précédent à ${roscTime}`, "🔴");
+              setEvents(prev => prev.filter(e => e.id !== "rosc"));
+              setAdrTimerStartPed(Date.now());
+              setCycleOffset(sec);
+              setRunning(true);
+              setModalRacsPed(false);
+            }} style={{width:"100%",background:`linear-gradient(135deg,${P.rose},#9B1010)`,
+              border:"none",borderRadius:14,color:"#fff",fontSize:14,fontWeight:700,
+              padding:"14px",cursor:"pointer",fontFamily:sans,marginTop:8,flexShrink:0,
+              display:"flex",alignItems:"center",justifyContent:"center",gap:8,
+              boxShadow:`0 6px 18px color-mix(in srgb,${P.rose} 35%,transparent)`}}>
+              <span style={{fontSize:18}}>↩</span>
+              Récidive d'arrêt — Reprendre la réanimation
+            </button>
           </div>
         </div>
       )}
@@ -3703,7 +4250,19 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
               </div>
             </div>
           </div>
-          <ThemeToggle theme={theme} setTheme={setTheme} compact />
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <button onClick={() => setModalTeamPed(true)}
+              style={{ background: teamPed.teamConnected ? P.greenSoft : P.surfaceAlt,
+                border:`1px solid ${teamPed.teamConnected ? P.green : P.border}`, borderRadius:10,
+                padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
+                alignItems:"center", gap:5, flexShrink:0 }}>
+              <span style={{ fontSize:13 }}>{teamPed.teamConnected ? "🟢" : "👥"}</span>
+              <span style={{ fontSize:10.5, fontWeight:700, color: teamPed.teamConnected ? P.greenText : P.textMid }}>
+                {teamPed.teamConnected ? `${teamPed.teamCode} · ${teamPed.teamDeviceCount}` : "Équipe"}
+              </span>
+            </button>
+            <ThemeToggle theme={theme} setTheme={setTheme} compact />
+          </div>
         </div>
 
         {/* Sélecteur poids — compact éditable */}
@@ -4660,6 +5219,9 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
       {/* ── Débrief post-arrêt pédiatrique ── */}
       {debriefPedRender}
 
+      {/* ── Mode équipe pédiatrique ── */}
+      {teamModalPed}
+
       {/* ── Toast Undo pédiatrique ── */}
       {undoToastPed && (
         <div key={undoToastPed.key}
@@ -4703,6 +5265,103 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme }
             <p style={{ margin:0, fontSize:10, fontWeight:700, opacity:0.85, letterSpacing:"0.05em", textTransform:"uppercase", fontFamily:mono }}>Ajouté à la chronologie</p>
             <p style={{ margin:0, fontSize:13, fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{confirmAdd.label}</p>
           </div>
+        </div>
+      )}
+
+      {/* ── Reconnaissance vocale pédiatrique ── */}
+      {SpeechRecognitionAPI && (
+        <div style={{ position:"fixed", bottom:80, right:16, zIndex:50, display:"flex",
+          flexDirection:"column", alignItems:"flex-end", gap:10 }}>
+
+          {/* Réponse à une question vocale — informative, ne modifie rien */}
+          {voiceAnswerPed && !voiceToastPed && (
+            <div style={{ background:P.surface, border:`1.5px solid ${P.blue}`,
+              borderRadius:16, padding:"12px 14px", maxWidth:260,
+              boxShadow:"0 8px 28px rgba(0,0,0,0.2)",
+              display:"flex", alignItems:"center", gap:10 }}>
+              <span style={{ fontSize:22 }}>{voiceAnswerPed.icon}</span>
+              <div style={{ flex:1 }}>
+                <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.blueText,
+                  fontFamily:mono, letterSpacing:"0.06em" }}>{voiceAnswerPed.label}</p>
+                <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>
+                  {voiceAnswerPed.speak}
+                </p>
+              </div>
+              <button onClick={() => setVoiceAnswerPed(null)}
+                style={{ background:"transparent", border:"none", color:P.textSoft,
+                  fontSize:18, cursor:"pointer", flexShrink:0, padding:0 }}>✕</button>
+            </div>
+          )}
+
+          {/* Toast commande reconnue */}
+          {voiceToastPed && (
+            <div style={{ background:P.surface, border:`1.5px solid ${P.green}`,
+              borderRadius:16, padding:"12px 14px", maxWidth:260,
+              boxShadow:"0 8px 28px rgba(0,0,0,0.2)",
+              display:"flex", alignItems:"center", gap:10 }}>
+              <span style={{ fontSize:22 }}>{voiceToastPed.icon}</span>
+              <div style={{ flex:1 }}>
+                <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.greenText,
+                  fontFamily:mono, letterSpacing:"0.06em" }}>COMMANDE RECONNUE</p>
+                <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.text }}>
+                  {voiceToastPed.label}
+                </p>
+                <p style={{ margin:"2px 0 0", fontSize:10, color:P.textSoft }}>
+                  Confirmation dans 2s…
+                </p>
+              </div>
+              <button onClick={voiceToastPed.cancel}
+                style={{ background:"transparent", border:"none", color:P.roseText,
+                  fontSize:18, cursor:"pointer", flexShrink:0, padding:0 }}>✕</button>
+            </div>
+          )}
+
+          {/* Transcript en cours */}
+          {voiceTranscriptPed && !voiceToastPed && (
+            <div style={{ background:"rgba(0,0,0,0.75)", borderRadius:12,
+              padding:"8px 12px", maxWidth:260 }}>
+              <p style={{ margin:0, fontSize:12, color:"rgba(255,255,255,0.8)",
+                fontFamily:mono }}>"{voiceTranscriptPed}"</p>
+            </div>
+          )}
+
+          {/* Rappel du mot-code, affiché tant que l'écoute est active */}
+          {voiceActivePed && !voiceToastPed && !voiceTranscriptPed && (
+            <div style={{ background:"rgba(0,0,0,0.65)", borderRadius:10,
+              padding:"5px 10px", maxWidth:220 }}>
+              <p style={{ margin:0, fontSize:10.5, color:"rgba(255,255,255,0.85)", fontFamily:mono }}>
+                Dites <b>« Copilote »</b> avant l'action
+              </p>
+            </div>
+          )}
+
+          {/* Bouton micro */}
+          <button
+            onClick={() => {
+              if (!voiceActivePed) {
+                try { new (window.AudioContext||window.webkitAudioContext)().resume(); } catch(e){}
+              }
+              setVoiceActivePed(v => !v);
+            }}
+            style={{ width:56, height:56, borderRadius:"50%", border:"none",
+              cursor:"pointer", fontSize:26,
+              background: voiceWakeFlashPed
+                ? `linear-gradient(135deg, ${P.green}, #2A7D57)`
+                : voiceActivePed
+                ? `linear-gradient(135deg, ${P.rose}, #9B2C2C)`
+                : P.surface,
+              boxShadow: voiceWakeFlashPed
+                ? `0 0 0 6px ${P.greenSoft}, 0 8px 24px rgba(62,168,118,0.5)`
+                : voiceActivePed
+                ? `0 0 0 4px ${P.roseSoft}, 0 8px 24px rgba(222,16,25,0.4)`
+                : "0 4px 16px rgba(0,0,0,0.15)",
+              border: voiceActivePed ? "none" : `1.5px solid ${P.border}`,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              transition: voiceWakeFlashPed ? "none" : "background 0.25s, box-shadow 0.25s",
+              animation: voiceActivePed ? "rythmPulse 1.5s ease-in-out infinite" : "none",
+              color: voiceActivePed ? "#fff" : P.textMid }}>
+            🎤
+          </button>
         </div>
       )}
 
@@ -4775,6 +5434,20 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
   const [pedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
   const [pedDiluMode]    = useLocalState("acr_ped_dilu_mode", "1");
 
+  // Mode équipe — préparation AVANT le début de la réanimation (connecter les
+  // téléphones pendant que l'équipe s'installe). Session "à vide" côté données
+  // (rien à synchroniser tant que la réa n'a pas commencé) ; le code de session
+  // est transmis à RcpPediatrique au démarrage pour poursuivre la MÊME session
+  // sans que l'équipe ait à se reconnecter.
+  const [prepEvents, setPrepEvents] = useState([]);
+  const [prepTrans,  setPrepTrans]  = useState({});
+  const teamPrep = useTeamSync({ events: prepEvents, setEvents: setPrepEvents,
+    acrTime, setAcrTime, noFlowMin: "", setNoFlowMin: () => {},
+    lowFlowMin: "", setLowFlowMin: () => {}, trans: prepTrans, setTrans: setPrepTrans });
+  const [modalTeamPrep, setModalTeamPrep] = useState(false);
+  const [teamJoinCodePrep, setTeamJoinCodePrep] = useState("");
+  const [teamJoinErrorPrep, setTeamJoinErrorPrep] = useState("");
+
   const row   = PED_TABLE[idx];
   const poids = row.p;
   const mat   = calcMateriel(poids);
@@ -4783,7 +5456,8 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
   const sub   = mode === "poids" ? `≈ ${row.age}` : `≈ ${poids} kg`;
 
   if (showRcp) return (
-    <RcpPediatrique onBack={() => setShowRcp(false)} onHome={onBack} acrTime={acrTime} poids={poids} mat={mat} theme={theme} setTheme={setTheme} />
+    <RcpPediatrique onBack={() => setShowRcp(false)} onHome={onBack} acrTime={acrTime} poids={poids} mat={mat} theme={theme} setTheme={setTheme}
+      initialTeamCode={teamPrep.teamConnected ? teamPrep.teamCode : ""} />
   );
 
   const MatRow = ({ label, value, color }) => (
@@ -4811,8 +5485,81 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
           <p style={{ margin:0, fontSize:15, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Pédiatrique</p>
           <p style={{ margin:0, fontSize:9.5, color:P.textSoft, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Nourrisson · Enfant · Adolescent</p>
         </div>
-        <div style={{ marginLeft:"auto" }}><ThemeToggle theme={theme} setTheme={setTheme} compact /></div>
+        <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8 }}>
+          <button onClick={() => setModalTeamPrep(true)}
+            style={{ background: teamPrep.teamConnected ? P.greenSoft : P.surfaceAlt,
+              border:`1px solid ${teamPrep.teamConnected ? P.green : P.border}`, borderRadius:10,
+              padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
+              alignItems:"center", gap:5, flexShrink:0 }}>
+            <span style={{ fontSize:13 }}>{teamPrep.teamConnected ? "🟢" : "👥"}</span>
+            <span style={{ fontSize:10.5, fontWeight:700, color: teamPrep.teamConnected ? P.greenText : P.textMid }}>
+              {teamPrep.teamConnected ? `${teamPrep.teamCode} · ${teamPrep.teamDeviceCount}` : "Équipe"}
+            </span>
+          </button>
+          <ThemeToggle theme={theme} setTheme={setTheme} compact />
+        </div>
       </div>
+
+      {modalTeamPrep && (
+        <Modal title="Mode équipe" icon="👥" soft={P.surfaceAlt} onClose={() => setModalTeamPrep(false)}>
+          <p style={{ margin:"0 0 16px", fontSize:12, color:P.textSoft, lineHeight:1.5 }}>
+            Connectez les téléphones de l'équipe maintenant — la session se poursuivra
+            automatiquement dès le début de la réanimation médicalisée.
+          </p>
+          {!teamPrep.teamConnected ? (
+            <>
+              <button onClick={async () => { await teamPrep.startSession(); }}
+                style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
+                  border:"none", borderRadius:13, color:"#fff", fontSize:14, fontWeight:700,
+                  padding:"14px", cursor:"pointer", fontFamily:sans, marginBottom:16,
+                  boxShadow:`0 5px 16px color-mix(in srgb, ${P.blue} 30%, transparent)` }}>
+                + Créer une session d'équipe
+              </button>
+              <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
+              <Lbl>Rejoindre avec un code (6 chiffres)</Lbl>
+              <div style={{ display:"flex", gap:8 }}>
+                <input inputMode="numeric" maxLength={6} value={teamJoinCodePrep}
+                  onChange={e => { setTeamJoinCodePrep(e.target.value.replace(/\D/g,"")); setTeamJoinErrorPrep(""); }}
+                  placeholder="123456"
+                  style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                    borderRadius:10, padding:"12px", fontSize:20, color:P.text, fontFamily:mono,
+                    textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none" }}
+                  onFocus={e => e.target.style.borderColor = P.blue}
+                  onBlur={e  => e.target.style.borderColor = P.border} />
+                <button onClick={async () => {
+                  if (teamJoinCodePrep.length !== 6) { setTeamJoinErrorPrep("Code à 6 chiffres"); return; }
+                  const r = await teamPrep.joinSession(teamJoinCodePrep);
+                  if (!r.ok) setTeamJoinErrorPrep(r.error); else setModalTeamPrep(false);
+                }} style={{ background:P.blue, border:"none", borderRadius:10, color:"#fff",
+                  padding:"0 18px", fontSize:14, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                  Rejoindre
+                </button>
+              </div>
+              {teamJoinErrorPrep && <p style={{ margin:"8px 0 0", fontSize:12, color:P.roseText }}>{teamJoinErrorPrep}</p>}
+            </>
+          ) : (
+            <>
+              <div style={{ textAlign:"center", marginBottom:16 }}>
+                <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:700, color:P.textSoft,
+                  textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Code de session</p>
+                <p style={{ margin:"0 0 14px", fontSize:38, fontWeight:900, color:P.text,
+                  fontFamily:mono, letterSpacing:"0.1em" }}>{teamPrep.teamCode}</p>
+                <img src={qrUrl(teamPrep.teamCode)} alt="QR code session"
+                  style={{ width:180, height:180, borderRadius:12, border:`1px solid ${P.border}` }} />
+                <p style={{ margin:"10px 0 0", fontSize:12, color:P.greenText, fontWeight:700 }}>
+                  🟢 {teamPrep.teamDeviceCount} appareil(s) connecté(s)
+                </p>
+              </div>
+              <button onClick={() => { teamPrep.disconnect(); setModalTeamPrep(false); }}
+                style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                  borderRadius:12, color:P.textMid, fontSize:13, fontWeight:600,
+                  padding:"12px", cursor:"pointer", fontFamily:sans }}>
+                Quitter la session
+              </button>
+            </>
+          )}
+        </Modal>
+      )}
 
       <div style={{ padding:"12px 12px 0", boxSizing:"border-box", width:"100%" }}>
 
@@ -6407,17 +7154,18 @@ function App() {
   });
   const st = k => v => setTrans(p => ({ ...p, [k]: v }));
 
+  // ── Mode équipe multi-device ──
+  const [modalTeam, setModalTeam] = useState(false);
+  const [teamJoinCode, setTeamJoinCode] = useState("");
+  const [teamJoinError, setTeamJoinError] = useState("");
+  const team = useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoFlowMin,
+    lowFlowMin, setLowFlowMin, trans, setTrans });
+
   // Minuteur Adrénaline (timestamp absolu pour survivre aux navigations)
   const [adrTimerStart, setAdrTimerStart] = useLocalState("acr_adulte_adrStart", 0);
   // Réglages globaux lus ici pour être disponibles dans les effets ci-dessous
   const [adrIntervalGlobal, setAdrIntervalGlobal] = useLocalState("acr_adr_interval", 4);
   const [metronomeEnabled, setMetronomeEnabled] = useLocalState("acr_metronome_enabled", false);
-  // Reconnaissance vocale — déclaré tôt (utilisé dans useEffect ligne suivante)
-  const [voiceActive,     setVoiceActive]     = useState(false);
-  const [voiceTranscript, setVoiceTranscript] = useState("");
-  const [voiceToast,      setVoiceToast]      = useState(null);
-  const voiceRecRef  = useRef(null);
-  const voiceToastRef = useRef(null);
 
   // Onglets : "actions" | "etiologie" | "therap"
   const [mainTab,        setMainTab]        = useLocalState("acr_adulte_mainTab", "actions");
@@ -6486,11 +7234,164 @@ function App() {
     ((_chocsTot >= 3 && _cordDone === 0) || (_chocsTot >= 5 && _cordDone === 1));
   const cordAlarmedRef = useRef(false);
 
+  // Reconnaissance vocale (déclaré ici, avant les effets qui l'utilisent, pour éviter le TDZ)
+  const [voiceActive,    setVoiceActive]    = useState(false);
+  const [voiceTranscript,setVoiceTranscript] = useState("");
+  const [voiceToast,     setVoiceToast]     = useState(null); // { label, icon, confirm, cancel }
+  const [voiceAnswer,    setVoiceAnswer]    = useState(null); // { label, icon, speak, key }
+  const [voiceWakeFlash, setVoiceWakeFlash] = useState(false);
+  const voiceRecRef = useRef(null);
+  const voiceToastRef = useRef(null);
+  const voiceAnswerRef = useRef(null);
+
+  // ── Questions vocales — réponse immédiate parlée, ne modifie jamais rien ──
+  const answerVoiceQuestion = React.useCallback((raw, n) => {
+    const lastAdr = [...events].reverse().find(e => e.id === "adr");
+    const lastHemo = hemoList.length > 0 ? hemoList[hemoList.length - 1] : null;
+    const lastEtco2 = etco2List.length > 0 ? etco2List[etco2List.length - 1] : null;
+    const lastEvt = events.length > 0 ? events[events.length - 1] : null;
+
+    // Depuis quand pas d'adrénaline (avant le comptage général, plus spécifique)
+    if (n.includes("depuis") && (n.includes("adrenaline") || n.includes("adre"))) {
+      return lastAdr
+        ? { label:"💉 Délai adrénaline", icon:"💉", speak:`Dernière adrénaline il y a ${speakDuration(sec - lastAdr.sec)}.` }
+        : { label:"💉 Adrénaline", icon:"💉", speak:"Aucune adrénaline n'a encore été administrée." };
+    }
+    // Combien de mg / doses d'adrénaline
+    if (n.includes("adrenaline") || n.includes("adre") || n.includes("epinephrine")) {
+      const count = events.filter(e => e.id === "adr").length;
+      return { label:"💉 Adrénaline", icon:"💉",
+        speak: count === 0 ? "Aucune adrénaline administrée pour l'instant."
+          : `${count} dose${count>1?"s":""} d'adrénaline administrée${count>1?"s":""}, soit ${count} milligramme${count>1?"s":""} au total.` };
+    }
+    // Délai avant le 1er choc (avant le comptage général, plus spécifique)
+    if (n.includes("choc") && (n.includes("premier") || n.includes("1er") || n.includes("delai"))) {
+      const firstChoc = events.find(e => e.id === "choc" || e.id === "doublechoc");
+      return firstChoc
+        ? { label:"⚡ Délai 1er choc", icon:"⚡", speak:`Premier choc délivré à ${speakDuration(firstChoc.sec)} après le début.` }
+        : { label:"⚡ Chocs", icon:"⚡", speak:"Aucun choc délivré pour l'instant." };
+    }
+    // Combien de chocs
+    if (n.includes("choc") || n.includes("defibrillation") || n.includes("defib")) {
+      const simple = events.filter(e => e.id === "choc").length;
+      const double = events.filter(e => e.id === "doublechoc").length;
+      const total = simple + double * 2;
+      return { label:"⚡ Chocs", icon:"⚡",
+        speak: total === 0 ? "Aucun choc délivré pour l'instant."
+          : `${total} choc${total>1?"s":""} délivré${total>1?"s":""}${double>0?`, dont ${double} double défibrillation${double>1?"s":""}`:""}.` };
+    }
+    // Dernière EtCO2
+    if (n.match(/etco|capno|\bco2\b/)) {
+      return lastEtco2
+        ? { label:"📈 EtCO₂", icon:"📈", speak:`Dernière EtCO₂ : ${lastEtco2.val} millimètres de mercure, à ${lastEtco2.time}.` }
+        : { label:"📈 EtCO₂", icon:"📈", speak:"Aucune EtCO₂ enregistrée pour l'instant." };
+    }
+    // Cordarone
+    if (n.includes("cordarone") || n.includes("amiodarone") || n.includes("amio")) {
+      const c300 = events.filter(e => e.id === "cord300").length;
+      const c150 = events.filter(e => e.id === "cord150").length;
+      const parts = [];
+      if (c300) parts.push(`${c300} dose${c300>1?"s":""} de 300 milligrammes`);
+      if (c150) parts.push(`${c150} dose${c150>1?"s":""} de 150 milligrammes`);
+      return { label:"💊 Cordarone", icon:"💊",
+        speak: parts.length ? `Cordarone : ${parts.join(" et ")}.` : "Pas de cordarone administrée pour l'instant." };
+    }
+    // Tension artérielle
+    if (n.includes("tension") || n.includes("arterielle") || n.includes("pression arterielle") || /\bta\b/.test(n)) {
+      if (!lastHemo || (!lastHemo.pas && !lastHemo.pad)) return { label:"🩺 Tension", icon:"🩺", speak:"Aucune tension artérielle enregistrée pour l'instant." };
+      const pam = (lastHemo.pas && lastHemo.pad)
+        ? Math.round(parseFloat(lastHemo.pad) + (parseFloat(lastHemo.pas) - parseFloat(lastHemo.pad)) / 3) : null;
+      return { label:"🩺 Tension", icon:"🩺",
+        speak:`Dernière tension : ${lastHemo.pas||"—"} sur ${lastHemo.pad||"—"}${pam?`, PAM ${pam}`:""}, à ${lastHemo.time}.` };
+    }
+    // Fréquence cardiaque
+    if (n.includes("frequence cardiaque") || n.includes("frequence") || /\bfc\b/.test(n)) {
+      return (lastHemo && lastHemo.fc)
+        ? { label:"❤️ FC", icon:"❤️", speak:`Dernière fréquence cardiaque : ${lastHemo.fc} battements par minute, à ${lastHemo.time}.` }
+        : { label:"❤️ FC", icon:"❤️", speak:"Aucune fréquence cardiaque enregistrée pour l'instant." };
+    }
+    // Shock Index (phrase complète requise pour éviter tout faux positif sur "si")
+    if (n.includes("shock index") || n.includes("index de choc")) {
+      if (!lastHemo || !lastHemo.fc || !lastHemo.pas || parseFloat(lastHemo.pas) === 0) {
+        return { label:"📊 Shock Index", icon:"📊", speak:"Impossible de calculer le Shock Index, pas assez de données." };
+      }
+      const si = parseFloat(lastHemo.fc) / parseFloat(lastHemo.pas);
+      return { label:"📊 Shock Index", icon:"📊",
+        speak:`Shock index : ${si.toFixed(2)}, ${si<0.9?"normal":si<=1.4?"inquiétant":"critique"}.` };
+    }
+    // No-flow
+    if (n.includes("no flow") || n.includes("noflow")) {
+      return { label:"⏱ No-flow", icon:"⏱",
+        speak: noFlowMin ? `No-flow renseigné : ${noFlowMin} minutes.` : "No-flow non renseigné." };
+    }
+    // Amines en cours
+    if (n.includes("amine")) {
+      const byType = {};
+      amineList.forEach(a => { byType[a.type] = a; });
+      const active = Object.values(byType);
+      return { label:"💧 Amines", icon:"💧",
+        speak: active.length ? `Amines en cours : ${active.map(a=>a.label).join(", ")}.` : "Aucune amine en cours." };
+    }
+    // Remplissage
+    if (n.includes("remplissage")) {
+      const total = (racs.remplissages || []).reduce((s,r) => s + r.vol, 0);
+      return { label:"💧 Remplissage", icon:"💧",
+        speak: total > 0 ? `Remplissage total : ${total} millilitres.` : "Aucun remplissage enregistré pour l'instant." };
+    }
+    // Température
+    if (n.includes("temperature") || n.includes("temp")) {
+      return { label:"🌡 Température", icon:"🌡",
+        speak: racs.tempRacs ? `Dernière température : ${racs.tempRacs} degrés.` : "Température non renseignée." };
+    }
+    // Dernier geste / dernière action
+    if ((n.includes("dernier") || n.includes("derniere")) && (n.includes("geste") || n.includes("action") || n.includes("fait"))) {
+      return { label:"📋 Dernier geste", icon:"📋",
+        speak: lastEvt ? `Dernier geste : ${lastEvt.label}, à ${lastEvt.time}.` : "Aucun geste enregistré pour l'instant." };
+    }
+    // Dernier rythme analysé
+    if (n.includes("rythme")) {
+      const rv = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
+      return { label:"⚡ Dernier rythme", icon:"⚡",
+        speak: rv ? `Dernier rythme analysé : ${rv.label.replace("Rythme : ","")}, à ${rv.time}.` : "Aucune analyse de rythme enregistrée pour l'instant." };
+    }
+    // RACS obtenu ?
+    if (n.includes("racs")) {
+      const rosc = events.find(e => e.id === "rosc");
+      return { label:"💚 RACS", icon:"💚",
+        speak: rosc ? `Oui, RACS obtenu à ${rosc.time}.` : "Non, pas de RACS obtenu pour l'instant." };
+    }
+    // Mode équipe
+    if (n.includes("equipe")) {
+      return { label:"👥 Équipe", icon:"👥",
+        speak: team.teamConnected ? `Mode équipe actif, ${team.teamDeviceCount} appareils connectés.` : "Mode équipe non activé." };
+    }
+    // Durée de réanimation en cours
+    if (n.includes("depuis combien de temps") || (n.includes("depuis") && (n.includes("debut") || n.includes("dessus")))) {
+      return { label:"⏱ Durée", icon:"⏱", speak:`Réanimation en cours depuis ${speakDuration(sec)}.` };
+    }
+    // Question reconnue mais sans réponse mappée : feedback explicite plutôt que silence
+    return { label:"❓ Question", icon:"❓", speak:"Je n'ai pas cette information pour l'instant." };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sec, events, hemoList, etco2List, amineList, noFlowMin, racs, team]);
+
   // ── Commandes vocales — matching ──────────────────────────────────────────
   const matchVoiceCommand = React.useCallback((raw) => {
     const n = normalizeVoice(raw);
 
-    // EtCO2 avec valeur : "etco2 vingt-cinq" / "capno trente"
+    // Mot-code : une commande n'est prise en compte que si "copilote" est
+    // prononcé dans la même phrase captée. Filtre le brouhaha d'une réanimation
+    // (discussions, régulation au téléphone, lecture de protocole à voix haute...)
+    // sans ajouter d'étape d'activation séparée — reste 100% mains libres.
+    if (!/\bco\s?pilote\b/.test(n)) return null;
+
+    // Question ? Toujours testé AVANT la liste de commandes, pour qu'une phrase
+    // comme "combien de mg d'adrénaline" ne puisse jamais être interprétée comme
+    // l'ordre "adrénaline" (qui loguerait une nouvelle dose).
+    if (isVoiceQuestion(n)) {
+      return { ...answerVoiceQuestion(raw, n), isQuestion: true };
+    }
+
+    // EtCO2 avec valeur : "copilote etco2 vingt-cinq" / "copilote capno trente"
     if (n.match(/etco|capno|co2/)) {
       const val = parseFrNumber(raw);
       if (val !== null && val >= 0 && val <= 100) {
@@ -6549,15 +7450,28 @@ function App() {
       const finalResult = results.find(r => r.isFinal);
       if (finalResult) {
         const text = Array.from(e.results).map(r => r[0].transcript).join(" ");
+        if (/\bco\s?pilote\b/.test(normalizeVoice(text))) {
+          setVoiceWakeFlash(true);
+          setTimeout(() => setVoiceWakeFlash(false), 700);
+        }
         const cmd = matchVoiceCommand(text);
         setVoiceTranscript("");
         if (cmd) {
-          clearTimeout(voiceToastRef.current);
-          setVoiceToast({ ...cmd, cancel: () => { setVoiceToast(null); clearTimeout(voiceToastRef.current); } });
-          voiceToastRef.current = setTimeout(() => {
-            cmd.confirm();
-            setVoiceToast(null);
-          }, 2500);
+          if (cmd.isQuestion) {
+            // Question : réponse immédiate, parlée à voix haute — ne modifie jamais rien,
+            // donc pas de délai de confirmation ni de possibilité d'annulation.
+            clearTimeout(voiceAnswerRef.current);
+            setVoiceAnswer({ ...cmd, key: Date.now() });
+            speakFr(cmd.speak);
+            voiceAnswerRef.current = setTimeout(() => setVoiceAnswer(null), 6000);
+          } else {
+            clearTimeout(voiceToastRef.current);
+            setVoiceToast({ ...cmd, cancel: () => { setVoiceToast(null); clearTimeout(voiceToastRef.current); } });
+            voiceToastRef.current = setTimeout(() => {
+              cmd.confirm();
+              setVoiceToast(null);
+            }, 2500);
+          }
         }
       }
     };
@@ -6733,6 +7647,7 @@ function App() {
       };
       setArchives(saveArchive(snapshot));
     }
+    team.disconnect();
     setStarted(false); setRunning(false); setSec(0); setSecStored(0); setModule(null);
     setAcrTime(""); setNoFlowMin(""); setLowFlowMin(""); setLowFlowStart("");
     setEvents([]); setAlert(null); setCycleOffset(0);
@@ -6770,7 +7685,6 @@ function App() {
   const [module, setModule] = useState(null);
   const [showOnboarding, setShowOnboarding] = useLocalState("acr_onboarding_done", false);
   const [showDashboard, setShowDashboard] = useState(false);
-  const [showSecondary, setShowSecondary] = useState(false);
   const isTrauma = module === "traumatique";
 
   // Thème jour/nuit — choisi par le médecin, persisté
@@ -6787,6 +7701,7 @@ function App() {
 
   // Réglages globaux — doivent être déclarés tôt (utilisés dans des effets)
   const [modalSettings, setModalSettings] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
   const [ccfEnabled, setCcfEnabled] = useLocalState("acr_ccf_enabled", false);
   const [debriefEnabled, setDebriefEnabled] = useLocalState("acr_debrief_enabled", false);
   const [pedDiluEnabled, setPedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
@@ -6876,6 +7791,13 @@ function App() {
                 boxShadow:`0 8px 24px color-mix(in srgb, ${P.rose} 35%, transparent)` }}>
               Commencer →
             </button>
+            <button onClick={() => { setShowOnboarding(true); setShowGuide(true); }}
+              style={{ width:"100%", marginTop:10,
+                background:"transparent", border:`1.5px solid ${P.border}`, borderRadius:16,
+                color:P.textMid, fontSize:14, fontWeight:700, fontFamily:sans, padding:"14px",
+                cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+              📖 Découvrir toutes les fonctionnalités
+            </button>
             <p style={{ margin:"12px 0 0", textAlign:"center", fontSize:11, color:P.textSoft }}>
               Usage professionnel exclusif · Outil d'aide cognitive
             </p>
@@ -6884,18 +7806,25 @@ function App() {
       )}
 
       {/* Réglages en haut à gauche */}
-      <div style={{ position:"absolute", top:16, left:16, zIndex:5 }}>
+      <div style={{ position:"absolute", top:16, left:16, zIndex:5, display:"flex", gap:8 }}>
         <button onClick={() => setModalSettings(true)}
           style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:11,
             width:40, height:40, cursor:"pointer", fontSize:18, color:P.textMid,
             display:"flex", alignItems:"center", justifyContent:"center", fontFamily:sans }}
           aria-label="Réglages">⚙️</button>
+        <button onClick={() => setShowGuide(true)}
+          style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:11,
+            width:40, height:40, cursor:"pointer", fontSize:18, color:P.textMid,
+            display:"flex", alignItems:"center", justifyContent:"center", fontFamily:sans }}
+          aria-label="Guide complet">📖</button>
       </div>
 
       {/* Bascule Jour/Nuit en haut, bien à droite */}
       <div style={{ position:"absolute", top:16, right:12, zIndex:5 }}>
         <ThemeToggle theme={theme} setTheme={setTheme} compact />
       </div>
+
+      {showGuide && <GuideApp onClose={() => setShowGuide(false)} />}
 
       {/* Logo */}
       <div style={{ textAlign:"center", marginBottom:40 }}>
@@ -7116,6 +8045,23 @@ function App() {
       {/* ── Réglages ── */}
       {modalSettings && (
         <Modal title="Réglages" icon="⚙️" soft={P.surfaceAlt} onClose={() => setModalSettings(false)}>
+
+          <button onClick={() => { setModalSettings(false); setShowGuide(true); }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:P.blueSoft,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>📖</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Guide complet de l'application</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Toutes les fonctionnalités, pour une prise en main avant utilisation réelle
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
           <div style={{ display:"flex", alignItems:"flex-start", gap:12,
             background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
             <div style={{ flex:1, minWidth:0 }}>
@@ -7299,6 +8245,68 @@ function App() {
     </div>
   );
 
+  // ── Modal Mode équipe — défini une fois, réutilisé sur l'écran pré-démarrage ET l'écran actif ──
+  const teamModal = modalTeam && (
+    <Modal title="Mode équipe" icon="👥" soft={P.surfaceAlt} onClose={() => setModalTeam(false)}>
+      {!team.teamConnected ? (
+        <>
+          <p style={{ margin:"0 0 16px", fontSize:12.5, color:P.textSoft, lineHeight:1.5 }}>
+            Synchronise la chronologie, l'heure d'ACR, le no-flow/low-flow et la transmission
+            entre plusieurs appareils de l'équipe en temps réel.
+          </p>
+          <button onClick={async () => { await team.startSession(); }}
+            style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
+              border:"none", borderRadius:13, color:"#fff", fontSize:14, fontWeight:700,
+              padding:"14px", cursor:"pointer", fontFamily:sans, marginBottom:16,
+              boxShadow:`0 5px 16px color-mix(in srgb, ${P.blue} 30%, transparent)` }}>
+            + Créer une session d'équipe
+          </button>
+          <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
+          <Lbl>Rejoindre avec un code (6 chiffres)</Lbl>
+          <div style={{ display:"flex", gap:8 }}>
+            <input inputMode="numeric" maxLength={6} value={teamJoinCode}
+              onChange={e => { setTeamJoinCode(e.target.value.replace(/\D/g,"")); setTeamJoinError(""); }}
+              placeholder="123456"
+              style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                borderRadius:10, padding:"12px", fontSize:20, color:P.text, fontFamily:mono,
+                textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none" }}
+              onFocus={e => e.target.style.borderColor = P.blue}
+              onBlur={e  => e.target.style.borderColor = P.border} />
+            <button onClick={async () => {
+              if (teamJoinCode.length !== 6) { setTeamJoinError("Code à 6 chiffres"); return; }
+              const r = await team.joinSession(teamJoinCode);
+              if (!r.ok) setTeamJoinError(r.error); else setModalTeam(false);
+            }} style={{ background:P.blue, border:"none", borderRadius:10, color:"#fff",
+              padding:"0 18px", fontSize:14, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+              Rejoindre
+            </button>
+          </div>
+          {teamJoinError && <p style={{ margin:"8px 0 0", fontSize:12, color:P.roseText }}>{teamJoinError}</p>}
+        </>
+      ) : (
+        <>
+          <div style={{ textAlign:"center", marginBottom:16 }}>
+            <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:700, color:P.textSoft,
+              textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Code de session</p>
+            <p style={{ margin:"0 0 14px", fontSize:38, fontWeight:900, color:P.text,
+              fontFamily:mono, letterSpacing:"0.1em" }}>{team.teamCode}</p>
+            <img src={qrUrl(team.teamCode)} alt="QR code session"
+              style={{ width:180, height:180, borderRadius:12, border:`1px solid ${P.border}` }} />
+            <p style={{ margin:"10px 0 0", fontSize:12, color:P.greenText, fontWeight:700 }}>
+              🟢 {team.teamDeviceCount} appareil(s) connecté(s)
+            </p>
+          </div>
+          <button onClick={() => { team.disconnect(); setModalTeam(false); }}
+            style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+              borderRadius:12, color:P.textMid, fontSize:13, fontWeight:600,
+              padding:"12px", cursor:"pointer", fontFamily:sans }}>
+            Quitter la session
+          </button>
+        </>
+      )}
+    </Modal>
+  );
+
   // ── ACCUEIL ACR ADULTE EXTRA-HOSPITALIER ─────────────────────────────────
   if (!started) return (
     <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans, paddingBottom:40 }}>
@@ -7312,10 +8320,20 @@ function App() {
         <div style={{ width:40, height:40, borderRadius:12,
           background: isTrauma ? P.slateSoft : P.roseSoft,
           display:"flex", alignItems:"center", justifyContent:"center", fontSize:21 }}>{isTrauma?"🩻":"🚑"}</div>
-        <div>
+        <div style={{ flex:1 }}>
           <p style={{ margin:0, fontSize:15, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>{isTrauma?"ACR Traumatique":"ACR Adulte"}</p>
           <p style={{ margin:0, fontSize:10, color:P.textSoft, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>{isTrauma?"Polytraumatisé · SMUR":"Extra-hospitalier · SMUR"}</p>
         </div>
+        <button onClick={() => setModalTeam(true)}
+          style={{ background: team.teamConnected ? P.greenSoft : P.surfaceAlt,
+            border:`1px solid ${team.teamConnected ? P.green : P.border}`, borderRadius:10,
+            padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
+            alignItems:"center", gap:5, flexShrink:0 }}>
+          <span style={{ fontSize:13 }}>{team.teamConnected ? "🟢" : "👥"}</span>
+          <span style={{ fontSize:10.5, fontWeight:700, color: team.teamConnected ? P.greenText : P.textMid }}>
+            {team.teamConnected ? `${team.teamCode} · ${team.teamDeviceCount}` : "Équipe"}
+          </span>
+        </button>
       </div>
 
       <div style={{ padding:"14px 14px 0" }}>
@@ -7352,6 +8370,7 @@ function App() {
         </button>
 
       </div>
+      {teamModal}
     </div>
   );
 
@@ -8896,6 +9915,28 @@ function App() {
 
               </div>
 
+              {/* ── Récidive d'arrêt ── */}
+              <button onClick={() => {
+                const roscTime = events.find(e => e.id === "rosc")?.time || "?";
+                // 1. Logger la récidive (traçabilité)
+                addEvent("re_arret", `↩ Récidive d'arrêt — RACS précédent à ${roscTime}`, "🔴");
+                // 2. Supprimer le RACS pour remettre l'app en mode réanimation active
+                setEvents(prev => prev.filter(e => e.id !== "rosc"));
+                // 3. Relancer timer adrénaline + cycle MCE + compressions
+                setAdrTimerStart(Date.now());
+                setCycleOffset(sec);
+                setRunning(true);
+                setModalRacs(false);
+              }}
+                style={{ width:"100%", background:`linear-gradient(135deg, ${P.rose}, #9B1010)`,
+                  border:"none", borderRadius:14, color:"#fff", fontSize:14, fontWeight:700,
+                  padding:"14px", cursor:"pointer", fontFamily:sans, marginTop:10, flexShrink:0,
+                  boxShadow:`0 6px 18px color-mix(in srgb, ${P.rose} 35%, transparent)`,
+                  display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+                <span style={{ fontSize:18 }}>↩</span>
+                Récidive d'arrêt — Reprendre la réanimation
+              </button>
+
               {/* Valider */}
               <button onClick={() => {
                 addEvent("racs_soins", buildLog(), "🫀");
@@ -8956,7 +9997,19 @@ function App() {
               </div>
             </div>
           </div>
-          <ThemeToggle theme={theme} setTheme={setTheme} compact />
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <button onClick={() => setModalTeam(true)}
+              style={{ background: team.teamConnected ? P.greenSoft : P.surfaceAlt,
+                border:`1px solid ${team.teamConnected ? P.green : P.border}`, borderRadius:10,
+                padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
+                alignItems:"center", gap:5 }}>
+              <span style={{ fontSize:13 }}>{team.teamConnected ? "🟢" : "👥"}</span>
+              <span style={{ fontSize:10.5, fontWeight:700, color: team.teamConnected ? P.greenText : P.textMid }}>
+                {team.teamConnected ? `${team.teamCode} · ${team.teamDeviceCount}` : "Équipe"}
+              </span>
+            </button>
+            <ThemeToggle theme={theme} setTheme={setTheme} compact />
+          </div>
         </div>
 
         {/* Grand timer — style moniteur */}
@@ -9300,92 +10353,43 @@ function App() {
             ))}
           </div>
 
-          {/* ── Contenu Actions ── */}
-          {mainTab === "actions" && (() => {
-            const lastRythme = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
-            const hasIot     = !!events.find(e => e.id === "iot");
-            const hasRosc    = !!events.find(e => e.id === "rosc");
-            const adrAlarm   = adrTimerStart > 0 && (Date.now() - adrTimerStart) >= adrInterval * 60 * 1000;
-
-            return (
-            <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
-
-              {/* ── Vitaux ── */}
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-                <ActionBtn
-                  action={{ label:"Adrénaline", dose:"1 mg IV/IO", vital:true,
-                    svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText,
-                    haptic:"long", badge: adrAlarm ? "!" : null }}
-                  onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
-                <ActionBtn
-                  action={{ label:"Choc", dose:"200 J — biphasique", vital:true,
-                    svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText,
-                    haptic:"double", badge: lastRythme?.id === "rv_fvtv" ? "FV" : null }}
-                  onClick={() => setModalChoc(true)} />
-              </div>
-
-              {/* ── Standard 2 colonnes (disposition inchangée) ── */}
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-                <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
-                  onClick={() => setModalRythme(true)} />
-                <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
-                  onClick={() => setModalVvp(true)} />
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-                <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
-                  onClick={() => setModalCord(true)} />
-                <ActionBtn action={{ label:"Intubation", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText,
-                    badge: hasIot ? "✓" : null }}
-                  onClick={() => setModalIot(true)} />
-              </div>
-
-              {/* ── Soins post-RACS — remonte si RACS ── */}
-              {hasRosc && (
-                <ActionBtn action={{ label:"Soins post-RACS", icon:"🫀", accent:P.green, soft:P.greenSoft, textC:P.greenText }}
-                  onClick={() => setModalRacs(true)} />
-              )}
-
-              {/* ── Bouton "+" — actions secondaires ── */}
-              <button onClick={() => setShowSecondary(v => !v)}
-                style={{ background: showSecondary ? P.surfaceAlt : P.surface,
-                  border:`1.5px solid ${showSecondary ? P.slate : P.border}`,
-                  borderRadius:13, padding:"10px 14px", cursor:"pointer", fontFamily:sans,
-                  display:"flex", alignItems:"center", justifyContent:"space-between", color:P.textMid }}>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <span style={{ width:26, height:26, borderRadius:7, background:P.surfaceAlt,
-                    display:"flex", alignItems:"center", justifyContent:"center",
-                    fontSize:15, fontWeight:900, color:P.textMid }}>
-                    {showSecondary ? "−" : "+"}
-                  </span>
-                  <span style={{ fontSize:12.5, fontWeight:700, color:P.text }}>
-                    {showSecondary ? "Masquer" : "Autres actions"}
-                  </span>
-                  <span style={{ fontSize:10.5, color:P.textSoft }}>
-                    LUCAS · Fast-écho · Décès{!hasRosc ? " · Post-RACS" : ""}
-                  </span>
-                </div>
-                <span style={{ fontSize:11, color:P.textSoft }}>{showSecondary ? "▲" : "▼"}</span>
-              </button>
-
-              {/* ── Actions secondaires — même grille 2 colonnes ── */}
-              {showSecondary && (
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-                  <ActionBtn action={{ label:"LUCAS", svg:ICONS.planche, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
-                    onClick={() => addEvent("planche","LUCAS mis en place","🦺")} />
-                  <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
-                    onClick={() => isTrauma ? setModalFastTrauma(true) : setModalFast(true)} />
-                  <ActionBtn action={{ label:"Constat de décès", svg:ICONS.deces, accent:P.slate, soft:P.slateSoft, textC:P.slateText }}
-                    onClick={() => setModalDeces(true)} />
-                  {!hasRosc && (
-                    <ActionBtn action={{ label:"Soins post-RACS", icon:"🫀", accent:P.green, soft:P.greenSoft, textC:P.greenText }}
-                      onClick={() => setModalRacs(true)} />
-                  )}
-                </div>
-              )}
-
+          {/* ── Contenu Actions (grille existante) ── */}
+          {mainTab === "actions" && (
+          <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
+            {/* Gestes rythmés — vitaux */}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <ActionBtn action={{ label:"Adrénaline", dose:"1 mg IV/IO", vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText }}
+                onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
+              <ActionBtn action={{ label:"Défibrillation", dose:"4 J/kg", vital:true, svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
+                onClick={() => setModalChoc(true)} />
             </div>
-            );
-          })()}
+            {/* Voies & gestes */}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
+                onClick={() => setModalRythme(true)} />
+              <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+                onClick={() => setModalVvp(true)} />
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
+                onClick={() => setModalCord(true)} />
+              <ActionBtn action={{ label:"Intubation", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
+                onClick={() => setModalIot(true)} />
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <ActionBtn action={{ label:"Planche à masser", svg:ICONS.planche, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
+                onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
+              <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
+                onClick={() => isTrauma ? setModalFastTrauma(true) : setModalFast(true)} />
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <ActionBtn action={{ label:"Soins post-RACS", icon:"🫀", accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+                onClick={() => setModalRacs(true)} />
+              <ActionBtn action={{ label:"Constat de décès", svg:ICONS.deces, accent:P.slate, soft:P.slateSoft, textC:P.slateText }}
+                onClick={() => setModalDeces(true)} />
+            </div>
+          </div>
+          )}
 
           {/* ── Contenu Étiologie ── */}
           {mainTab === "etio" && (
@@ -9446,13 +10450,15 @@ function App() {
                 else if (id === "octaplas") {
                   const lastHemo = hemoList.length > 0 ? hemoList[hemoList.length - 1] : null;
                   const ageNum = pat?.age ? String(pat.age).match(/\d+/)?.[0] || "" : "";
+                  // Priorité aux valeurs en cours de saisie sur l'écran post-RACS (plus récentes
+                  // que la dernière entrée enregistrée dans l'historique hémodynamique)
                   setBattForm({
                     age: ageNum,
-                    pas: lastHemo?.pas || "",
+                    pas: racs.tas || lastHemo?.pas || "",
                     glasgow: "",
-                    fr: "",
-                    spo2: "",
-                    fc: lastHemo?.fc || "",
+                    fr: racs.fr || "",
+                    spo2: racs.sat || "",
+                    fc: racs.fc || lastHemo?.fc || "",
                     penetrant: false, hcin: false,
                   });
                   setModalOctaplas(true);
@@ -9689,6 +10695,26 @@ function App() {
           <div style={{ position:"fixed", bottom:80, right:16, zIndex:50, display:"flex",
             flexDirection:"column", alignItems:"flex-end", gap:10 }}>
 
+            {/* Réponse à une question vocale — informative, ne modifie rien */}
+            {voiceAnswer && !voiceToast && (
+              <div style={{ background:P.surface, border:`1.5px solid ${P.blue}`,
+                borderRadius:16, padding:"12px 14px", maxWidth:260,
+                boxShadow:"0 8px 28px rgba(0,0,0,0.2)",
+                display:"flex", alignItems:"center", gap:10 }}>
+                <span style={{ fontSize:22 }}>{voiceAnswer.icon}</span>
+                <div style={{ flex:1 }}>
+                  <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.blueText,
+                    fontFamily:mono, letterSpacing:"0.06em" }}>{voiceAnswer.label}</p>
+                  <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>
+                    {voiceAnswer.speak}
+                  </p>
+                </div>
+                <button onClick={() => setVoiceAnswer(null)}
+                  style={{ background:"transparent", border:"none", color:P.textSoft,
+                    fontSize:18, cursor:"pointer", flexShrink:0, padding:0 }}>✕</button>
+              </div>
+            )}
+
             {/* Toast commande reconnue */}
             {voiceToast && (
               <div style={{ background:P.surface, border:`1.5px solid ${P.green}`,
@@ -9721,6 +10747,16 @@ function App() {
               </div>
             )}
 
+            {/* Rappel du mot-code, affiché tant que l'écoute est active */}
+            {voiceActive && !voiceToast && !voiceTranscript && (
+              <div style={{ background:"rgba(0,0,0,0.65)", borderRadius:10,
+                padding:"5px 10px", maxWidth:220 }}>
+                <p style={{ margin:0, fontSize:10.5, color:"rgba(255,255,255,0.85)", fontFamily:mono }}>
+                  Dites <b>« Copilote »</b> avant l'action
+                </p>
+              </div>
+            )}
+
             {/* Bouton micro */}
             <button
               onClick={() => {
@@ -9732,14 +10768,19 @@ function App() {
               }}
               style={{ width:56, height:56, borderRadius:"50%", border:"none",
                 cursor:"pointer", fontSize:26,
-                background: voiceActive
+                background: voiceWakeFlash
+                  ? `linear-gradient(135deg, ${P.green}, #2A7D57)`
+                  : voiceActive
                   ? `linear-gradient(135deg, ${P.rose}, #9B2C2C)`
                   : P.surface,
-                boxShadow: voiceActive
+                boxShadow: voiceWakeFlash
+                  ? `0 0 0 6px ${P.greenSoft}, 0 8px 24px rgba(62,168,118,0.5)`
+                  : voiceActive
                   ? `0 0 0 4px ${P.roseSoft}, 0 8px 24px rgba(222,16,25,0.4)`
                   : "0 4px 16px rgba(0,0,0,0.15)",
                 border: voiceActive ? "none" : `1.5px solid ${P.border}`,
                 display:"flex", alignItems:"center", justifyContent:"center",
+                transition: voiceWakeFlash ? "none" : "background 0.25s, box-shadow 0.25s",
                 animation: voiceActive ? "rythmPulse 1.5s ease-in-out infinite" : "none",
                 color: voiceActive ? "#fff" : P.textMid }}>
               🎤
@@ -9777,6 +10818,8 @@ function App() {
           </button>
         </Modal>
       )}
+
+      {teamModal}
 
       {/* ── Modal confirmation Reset (double validation) ── */}
       {modalReset && (
