@@ -926,6 +926,7 @@ function GuideApp({ onClose }) {
       color: "slate",
       items: [
         { icon:"⏱", title:"Chronomètre & minuteur adrénaline", desc:"Le chrono démarre au lancement de la réa. Un minuteur dédié rappelle l'échéance de la prochaine adrénaline avec une alarme sonore, et se relance automatiquement à chaque administration." },
+        { icon:"🔄", title:"Cycle RCP · 2 min", desc:"Une barre de progression affiche le temps restant avant la prochaine analyse de rythme (cycle de 2 minutes, remis à zéro automatiquement à chaque nouveau cycle). Le bouton \"↺\" à côté permet de recaler manuellement ce cycle sur la réanimation réellement en cours — utile si vous reprenez une RCP déjà démarrée par une autre équipe et que le décompte affiché ne correspond plus au rythme réel des compressions. Le recalage est aussi tracé dans la chronologie." },
         { icon:"📋", title:"Chronologie complète", desc:"Chaque geste (choc, adrénaline, intubation, RACS...) est horodaté automatiquement. La liste est repliée par défaut pour ne pas encombrer l'écran — dépliez-la à tout moment. Un geste ajouté par erreur peut être annulé juste après (toast \"Annuler\")." },
         { icon:"🔴", title:"Badges & vibrations sur les boutons", desc:"Un badge \"!\" rouge clignote sur Adrénaline dès que le délai avant la prochaine dose est dépassé, \"FV\" apparaît sur Défibrillation après un rythme choquable, \"✓\" sur Intubation une fois faite. Chaque geste a aussi sa propre vibration (longue pour l'adrénaline, double pour le choc) pour le reconnaître sans regarder l'écran." },
         { icon:"➕", title:"Grille d'actions repliable", desc:"Les gestes les plus fréquents restent toujours visibles. Un bouton \"+ Plus d'actions\" révèle les gestes secondaires (Planche à masser, Fast-écho, Soins post-RACS, Constat de décès) pour garder l'écran principal lisible." },
@@ -945,7 +946,7 @@ function GuideApp({ onClose }) {
         { icon:"💊", title:"Cordarone — rappel automatique", desc:"Un rappel apparaît automatiquement au 3ᵉ choc (300 mg) puis au 5ᵉ choc (150 mg), conformément aux recommandations ERC 2021." },
         { icon:"🫁", title:"Ratio compressions/ventilation", desc:"L'affichage bascule automatiquement de 30:2 à un rythme continu dès que l'intubation est enregistrée." },
         { icon:"📈", title:"EtCO₂ & alertes intelligentes", desc:"Saisie rapide de l'EtCO₂ avec alertes si la valeur est insuffisante (MCE inefficace) ou si une remontée brutale évoque un RACS." },
-        { icon:"💚", title:"Suivi post-RACS", desc:"Constantes hémodynamiques, amines et température se saisissent sur un écran dédié ; un graphique se construit automatiquement au fil des mesures." },
+        { icon:"💚", title:"Soins post-RACS — détail", desc:"Écran dédié en 3 onglets : Ventilation (FR, Vt, PEP, SpO₂, FiO₂, EtCO₂), Sédation (Hypnovel, Sufentanyl, curare — le débit en mL/h saisi convertit automatiquement la dose en mg/h ou μg/h), Hémo. (TA avec PAM calculée automatiquement, FC, température, remplissage total, amines). Chaque valeur saisie s'ajoute au compte-rendu et alimente le graphique hémodynamique." },
         { icon:"🩸", title:"OctaplasLG & score BATT", desc:"Calculateur de score BATT avec préremplissage automatique depuis les dernières constantes saisies, et indication d'administration d'OctaplasLG selon le score." },
         { icon:"🔍", title:"FAST écho (traumatique)", desc:"Sélecteurs rapides par espace anatomique (Morrison, Köhler, Douglas, plèvres, péricarde) pour tracer l'échographie ciblée." },
         { icon:"↩", title:"Récidive d'arrêt après RACS", desc:"Si le patient refait un arrêt après un RACS, un bouton dédié relance immédiatement le mode réanimation active (métronome, minuteur adrénaline, cycle de compressions) sans perdre l'historique." },
@@ -967,8 +968,41 @@ function GuideApp({ onClose }) {
       color: "violet",
       items: [
         { icon:"🎤", title:"Mot-code \"Copilote\"", desc:"Toute commande doit être précédée du mot \"Copilote\" (ex : \"Copilote, adrénaline\"). Ce filtre évite que le brouhaha d'une réanimation ne déclenche une action par erreur — un flash vert du micro confirme que le mot-code a bien été entendu." },
-        { icon:"💉", title:"Commandes disponibles", desc:"Adrénaline, choc, cordarone, RACS, intubation, pause/reprise des compressions, constat de décès, analyse de rythme, et dictée d'une valeur d'EtCO₂ précise." },
-        { icon:"❓", title:"Questions à voix haute", desc:"Demandez par exemple \"Copilote, combien de mg d'adrénaline ?\", \"à combien était la dernière tension ?\" ou \"depuis quand pas d'adrénaline ?\" — la réponse est donnée instantanément à voix haute, sans jamais modifier la chronologie." },
+        { icon:"💉", title:"Toutes les commandes d'action", desc:"Chaque commande logue un geste dans la chronologie après un bandeau de confirmation de 2,5s (annulable). Les doses affichées s'adaptent automatiquement en pédiatrique selon le poids.",
+          list: [
+            { label:"Copilote, adrénaline", detail:"log une dose d'adrénaline et relance le minuteur" },
+            { label:"Copilote, choc", detail:"log directement une défibrillation 200 J (4 J/kg en pédiatrique) — aucune proposition, aucun modal, aussi : défibrillation, défib, cardioversion, fibrillation" },
+            { label:"Copilote, cordarone", detail:"log une dose de Cordarone/Amiodarone (aussi : amiodarone, amio)" },
+            { label:"Copilote, RACS", detail:"log un RACS directement (aussi : pouls, circulation, retour, spontané)" },
+            { label:"Copilote, intubation", detail:"ouvre le modal Intubation (aussi : intuber, sonde)" },
+            { label:"Copilote, pause", detail:"met le chrono/MCE en pause (aussi : stoppe, stop compressions)" },
+            { label:"Copilote, reprendre", detail:"relance les compressions (aussi : continuer, resume, relancer)" },
+            { label:"Copilote, décès", detail:"ouvre le constat de décès (aussi : constat, mort, décédé)" },
+            { label:"Copilote, analyse", detail:"déclenche le flash d'analyse de rythme (aussi : rythme, check, vérification)" },
+            { label:"Copilote, EtCO2 vingt-cinq", detail:"log directement la valeur dictée (aussi : capno + un chiffre)" },
+          ] },
+        { icon:"❓", title:"Toutes les questions à voix haute", desc:"Une question ne modifie jamais rien — réponse instantanée, parlée à voix haute et affichée en bandeau bleu. Se déclenche dès qu'un mot interrogatif (combien, depuis quand, à combien, quel est, y a-t-il...) est détecté avec le mot-code, avant même de regarder les commandes d'action.",
+          list: [
+            { label:"Combien de mg d'adrénaline ?", detail:"nombre de doses et total en mg" },
+            { label:"Depuis quand pas d'adrénaline ?", detail:"délai depuis la dernière dose" },
+            { label:"Combien de chocs ?", detail:"total délivré, dont doubles défibrillations" },
+            { label:"Délai avant le premier choc ?", detail:"temps écoulé entre le début et le 1er choc" },
+            { label:"À combien était la dernière EtCO2 ?", detail:"dernière valeur enregistrée, avec l'heure" },
+            { label:"Combien de cordarone ?", detail:"doses de 300mg et 150mg administrées" },
+            { label:"À combien était la dernière tension ?", detail:"TA et PAM calculée" },
+            { label:"Quelle est la fréquence cardiaque ?", detail:"dernière FC enregistrée" },
+            { label:"Quel est le Shock Index ?", detail:"calculé depuis les dernières constantes" },
+            { label:"Combien de temps de no-flow ?", detail:"durée renseignée" },
+            { label:"Quelles amines sont en cours ?", detail:"noradrénaline/dobutamine actives et doses" },
+            { label:"Combien de remplissage ?", detail:"volume total perfusé" },
+            { label:"Quelle est la température ?", detail:"dernière valeur post-RACS saisie" },
+            { label:"Quel est le dernier geste fait ?", detail:"dernier événement de la chronologie, avec l'heure" },
+            { label:"Y a-t-il eu un RACS ?", detail:"oui à telle heure, ou non pas encore" },
+            { label:"Quel est le dernier rythme analysé ?", detail:"FV/TV, AESP ou asystolie" },
+            { label:"Depuis combien de temps on est dessus ?", detail:"durée de réa écoulée" },
+            { label:"On est en mode équipe ?", detail:"connecté ou non, nombre d'appareils (Adulte/Trauma)" },
+            { label:"Quel est le poids de l'enfant ?", detail:"poids renseigné (Pédiatrique uniquement)" },
+          ] },
         { icon:"✅", title:"Confirmation avant action", desc:"Chaque commande d'action affiche un bandeau annulable pendant 2,5 secondes avant d'être vraiment enregistrée — de quoi rattraper un mot mal compris." },
       ],
     },
@@ -998,7 +1032,21 @@ function GuideApp({ onClose }) {
           </p>
           {sec.items.map((item, ii) => (
             <Collapsible key={ii} icon={item.icon} title={item.title}>
-              <p style={{ margin:0, fontSize:12.5, color:P.textMid, lineHeight:1.55 }}>{item.desc}</p>
+              {item.desc && (
+                <p style={{ margin: item.list ? "0 0 10px" : 0, fontSize:12.5, color:P.textMid, lineHeight:1.55 }}>{item.desc}</p>
+              )}
+              {item.list && (
+                <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
+                  {item.list.map((row, ri) => (
+                    <div key={ri} style={{ display:"flex", gap:8, alignItems:"baseline" }}>
+                      <span style={{ fontSize:12, color:P.textMid, lineHeight:1.5 }}>
+                        <b style={{ color:P.text, fontFamily:mono, fontWeight:700 }}>{row.label}</b>
+                        {row.detail && <> — {row.detail}</>}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </Collapsible>
           ))}
         </div>
@@ -3103,8 +3151,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
     const cmds = [
       { kw:["adrenaline","adre","epinephrine"], label:`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO`, icon:"💉",
         confirm:()=>{ addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }},
-      { kw:["choc","defibrillation","defib","cardioversion","fibrillation"], label:"Défibrillation", icon:"⚡",
-        confirm:()=> setModalChocPed(true) },
+      { kw:["choc","defibrillation","defib","cardioversion","fibrillation"], label:`Défibrillation ${localMat?.defibJ||""} J`, icon:"⚡",
+        confirm:()=> addEvent("choc",`Défibrillation ${localMat?.defibJ||""} J délivrée`,"⚡") },
       { kw:["racs","pouls","circulation","retour","spontane"], label:"RACS", icon:"💚",
         confirm:()=> addEvent("rosc","RACS","💚") },
       { kw:["cordarone","amiodarone","amio"], label:`Amiodarone ${localMat?.amio||""}mg IV/IO`, icon:"💊",
@@ -7545,8 +7593,8 @@ function App() {
     const cmds = [
       { kw:["adrenaline","adre","epinephrine"], label:"Adrénaline 1 mg IV", icon:"💉",
         confirm:()=>{ addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }},
-      { kw:["choc","defibrillation","defib","cardioversion","fibrillation"], label:"Défibrillation", icon:"⚡",
-        confirm:()=> setModalChoc(true) },
+      { kw:["choc","defibrillation","defib","cardioversion","fibrillation"], label:"Défibrillation 200 J", icon:"⚡",
+        confirm:()=> addEvent("choc","Défibrillation 200 J délivrée","⚡") },
       { kw:["racs","pouls","circulation","retour","spontane"], label:"RACS", icon:"💚",
         confirm:()=> addEvent("rosc","RACS","💚") },
       { kw:["cordarone","amiodarone","amio"], label:"Cordarone 300 mg", icon:"💊",
