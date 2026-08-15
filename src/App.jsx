@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+// ── Numéro de version — à incrémenter à chaque mise à jour déployée.
+// Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
+// de l'équipe tournent bien sur la même version après un déploiement.
+const APP_VERSION = "2026.08.15-8";
+
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
 const supabaseAnonKey = "sb_publishable_hRxmJi9SIcrRtQUO4dwo0Q_rnXNmDJz";
@@ -44,6 +49,10 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
   const [teamCode, setTeamCode] = useState("");
   const [teamConnected, setTeamConnected] = useState(false);
   const [teamDeviceCount, setTeamDeviceCount] = useState(1);
+  // Suivi de synchronisation : "idle" (rien à synchroniser) | "syncing" (envoi en
+  // cours) | "synced" (dernier envoi réussi) | "error" (échec — réseau instable)
+  const [syncStatus, setSyncStatus] = useState("idle");
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const channelRef = useRef(null);
   const pushTimerRef = useRef(null);
   const applyingRemoteRef = useRef(false);
@@ -60,6 +69,9 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
     if (remote.lowFlowMin !== undefined) setLowFlowMin(v => remote.lowFlowMin || v);
     if (remote.trans) setTrans(prev => ({ ...prev, ...remote.trans }));
     setTimeout(() => { applyingRemoteRef.current = false; }, 50);
+    // Une mise à jour reçue confirme que la liaison est bien active
+    setLastSyncedAt(Date.now());
+    setSyncStatus("synced");
   };
 
   const subscribeToCode = (code) => {
@@ -77,7 +89,11 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
     channel.subscribe(async (status) => {
       if (status === "SUBSCRIBED") {
         setTeamConnected(true);
+        setSyncStatus("synced");
+        setLastSyncedAt(Date.now());
         await channel.track({ joined_at: Date.now() });
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        setSyncStatus("error");
       }
     });
     channelRef.current = channel;
@@ -105,18 +121,25 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
   const disconnect = () => {
     if (channelRef.current) { supabaseTeam.removeChannel(channelRef.current); channelRef.current = null; }
     setTeamConnected(false); setTeamCode(""); setTeamDeviceCount(1);
+    setSyncStatus("idle"); setLastSyncedAt(null);
   };
 
   useEffect(() => {
     if (!teamConnected || !teamCode || applyingRemoteRef.current) return;
     const snapshot = JSON.stringify(buildState());
     if (snapshot === lastPushedRef.current) return;
+    setSyncStatus("syncing");
     clearTimeout(pushTimerRef.current);
     pushTimerRef.current = setTimeout(() => {
       lastPushedRef.current = snapshot;
       supabaseTeam.from("acr_team_sessions")
         .upsert({ code: teamCode, state: buildState(), updated_at: new Date().toISOString() })
-        .then(() => {});
+        .then(({ error }) => {
+          if (error) { setSyncStatus("error"); return; }
+          setSyncStatus("synced");
+          setLastSyncedAt(Date.now());
+        })
+        .catch(() => setSyncStatus("error"));
     }, 700);
     return () => clearTimeout(pushTimerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -124,7 +147,7 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
 
   useEffect(() => () => { if (channelRef.current) supabaseTeam.removeChannel(channelRef.current); }, []);
 
-  return { teamCode, teamConnected, teamDeviceCount, startSession, joinSession, disconnect };
+  return { teamCode, teamConnected, teamDeviceCount, syncStatus, lastSyncedAt, startSession, joinSession, disconnect };
 }
 
 
@@ -268,6 +291,15 @@ const disp = "'Archivo', 'Inter', system-ui, sans-serif";
 const getNow = () => new Date().toTimeString().slice(0, 5);
 const fmtSec = s => `${Math.floor(s/60).toString().padStart(2,"0")}:${(s%60).toString().padStart(2,"0")}`;
 
+// Formate le délai écoulé depuis la dernière synchro d'équipe ("à l'instant", "12s", "3 min")
+function fmtSyncAge(lastSyncedAt) {
+  if (!lastSyncedAt) return null;
+  const s = Math.round((Date.now() - lastSyncedAt) / 1000);
+  if (s < 5) return "à l'instant";
+  if (s < 60) return `${s}s`;
+  return `${Math.round(s / 60)} min`;
+}
+
 // ── Reconnaissance vocale ─────────────────────────────────────────────────────
 const SpeechRecognitionAPI = typeof window !== "undefined"
   ? (window.SpeechRecognition || window.webkitSpeechRecognition || null)
@@ -312,6 +344,17 @@ function speakDuration(totalSec) {
   const m = Math.floor(totalSec / 60), s = totalSec % 60;
   if (m <= 0) return `${s} secondes`;
   return `${m} minute${m>1?"s":""}${s>0?` ${s} seconde${s>1?"s":""}`:""}`;
+}
+
+// Construit l'expression de détection du mot-code vocal. Conserve la tolérance
+// historique "co pilote" (en 2 mots) pour le mot-code par défaut, car la
+// reconnaissance vocale le coupe parfois ainsi — cette tolérance spécifique
+// n'est pas généralisable à un mot personnalisé choisi par l'utilisateur.
+function buildWakeWordRegex(word) {
+  const w = normalizeVoice(word || "").trim() || "copilote";
+  if (w === "copilote") return /\bco\s?pilote\b/;
+  const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\b`);
 }
 
 // Lit une réponse à voix haute (mains libres, pas besoin de regarder l'écran)
@@ -429,6 +472,17 @@ function clearSession(prefix) {
 
 // ── ARCHIVES LOCALES DES ARRÊTS ────────────────────────────────────────────────
 const ARCHIVE_KEY = "acr_archives";
+
+// Réduit nom/prénom à leurs initiales ("Dupont Jean" → "D.J.") — utilisé pour
+// l'affichage dashboard et systématiquement dans les exports de sauvegarde,
+// qui peuvent quitter l'appareil (données médicales, minimisation RGPD).
+function initials(nom, prenom) {
+  const n = (nom || "").trim();
+  const p = (prenom || "").trim();
+  if (!n && !p) return null;
+  return `${n ? n[0].toUpperCase()+"." : ""}${p ? p[0].toUpperCase()+"." : ""}`;
+}
+
 function loadArchives() {
   try { return JSON.parse(localStorage.getItem(ARCHIVE_KEY) || "[]"); }
   catch { return []; }
@@ -452,6 +506,89 @@ function deleteArchive(key) {
 function clearArchives() {
   try { localStorage.removeItem(ARCHIVE_KEY); } catch {}
   return [];
+}
+
+// ── SAUVEGARDE COMPLÈTE (export / import) ──────────────────────────────────
+// Toutes les clés de l'app sont préfixées "acr_" — on exporte/importe tout ce
+// périmètre en un seul fichier JSON, pour changer de téléphone ou se prémunir
+// d'une perte de données (nettoyage accidentel, mise à jour d'OS, casse...).
+// Réduit nom/prénom aux initiales dans une archive avant export — le fichier
+// exporté peut quitter l'appareil (email, cloud), donc on y est strict même
+// si le nom complet reste consultable dans le détail d'un cas sur ce téléphone.
+function redactArchiveForExport(a) {
+  if (!a) return a;
+  const pat = a.props?.patient;
+  if (!pat || (!pat.nom && !pat.prenom)) return a;
+  const init = initials(pat.nom, pat.prenom);
+  return {
+    ...a,
+    label: init || a.label,
+    props: {
+      ...a.props,
+      patient: { ...pat, nom: pat.nom ? pat.nom[0].toUpperCase()+"." : pat.nom,
+        prenom: pat.prenom ? pat.prenom[0].toUpperCase()+"." : pat.prenom },
+    },
+  };
+}
+
+function exportBackup() {
+  const data = {};
+  Object.keys(localStorage).forEach(k => {
+    if (!k.startsWith("acr_")) return;
+    const raw = localStorage.getItem(k);
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { parsed = raw; }
+    if (k === ARCHIVE_KEY && Array.isArray(parsed)) {
+      parsed = parsed.map(redactArchiveForExport);
+    }
+    data[k] = parsed;
+  });
+  const payload = {
+    app: "Copilote ACR",
+    version: APP_VERSION,
+    exportedAt: new Date().toISOString(),
+    note: "Noms/prénoms réduits aux initiales dans ce fichier (minimisation des données médicales).",
+    data,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `copilote-acr-sauvegarde-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Importe un fichier de sauvegarde. Les archives sont FUSIONNÉES (dédupliquées
+// par clé, plafonnées à 50) pour ne jamais perdre de cas en écrasant par erreur ;
+// les réglages et sessions en cours sont, eux, remplacés par le contenu importé.
+function importBackup(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const payload = JSON.parse(e.target.result);
+        if (!payload || typeof payload.data !== "object") throw new Error("format invalide");
+        Object.entries(payload.data).forEach(([k, v]) => {
+          if (!k.startsWith("acr_")) return; // jamais en dehors du périmètre de l'app
+          if (k === ARCHIVE_KEY) return; // traité séparément ci-dessous (fusion)
+          localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v));
+        });
+        if (Array.isArray(payload.data[ARCHIVE_KEY])) {
+          const current = loadArchives();
+          const merged = new Map();
+          [...payload.data[ARCHIVE_KEY], ...current].forEach(a => { if (a && a.key) merged.set(a.key, a); });
+          const list = [...merged.values()].sort((a, b) => (b.key || 0) - (a.key || 0)).slice(0, 50);
+          localStorage.setItem(ARCHIVE_KEY, JSON.stringify(list));
+        }
+        resolve({ ok: true });
+      } catch (err) {
+        resolve({ ok: false, error: "Fichier invalide ou corrompu" });
+      }
+    };
+    reader.onerror = () => resolve({ ok: false, error: "Impossible de lire le fichier" });
+    reader.readAsText(file);
+  });
 }
 
 
@@ -935,6 +1072,7 @@ function GuideApp({ onClose }) {
         { icon:"📄", title:"Compte-rendu automatique", desc:"Un rapport structuré façon SBAR est généré en continu à partir de la chronologie — prêt à copier, imprimer ou partager en fin de réanimation, sans ressaisie." },
         { icon:"🌗", title:"Thème jour / nuit", desc:"Bascule en un tap, en haut de l'écran. Le thème jour est pensé pour la lisibilité en plein soleil, le thème nuit pour ne pas éblouir en intervention de nuit." },
         { icon:"💾", title:"Sauvegarde automatique locale", desc:"Toutes les données sont enregistrées en continu sur l'appareil. Fermeture accidentelle, batterie déchargée, crash de l'app : rien n'est perdu, la session reprend exactement où elle s'est arrêtée." },
+        { icon:"📦", title:"Export / import de sauvegarde", desc:"Depuis Réglages : exportez un fichier contenant toutes les archives et tous les réglages, à conserver ailleurs ou à transférer sur un nouveau téléphone. Utile avant un changement d'appareil, une mise à jour d'OS, ou simplement par précaution — les données restent sinon uniquement sur ce téléphone. Noms et prénoms sont automatiquement réduits à leurs initiales dans le fichier exporté (le fichier peut quitter l'appareil — minimisation des données médicales) ; ils restent en clair dans le détail d'un cas consulté directement sur le téléphone. À l'import, les archives sont fusionnées sans rien effacer ; les réglages, eux, sont remplacés par ceux du fichier importé (une confirmation est demandée avant)." },
         { icon:"📊", title:"Dashboard & archives", desc:"Chaque réanimation clôturée est archivée localement avec sa durée, son issue et ses données clés — consultable ensuite depuis le tableau de bord pour un retour d'expérience ou des statistiques de service." },
       ],
     },
@@ -967,19 +1105,20 @@ function GuideApp({ onClose }) {
       title: "Reconnaissance vocale",
       color: "violet",
       items: [
-        { icon:"🎤", title:"Mot-code \"Copilote\"", desc:"Toute commande doit être précédée du mot \"Copilote\" (ex : \"Copilote, adrénaline\"). Ce filtre évite que le brouhaha d'une réanimation ne déclenche une action par erreur — un flash vert du micro confirme que le mot-code a bien été entendu." },
+        { icon:"🎤", title:"Mot-code vocal (personnalisable)", desc:"Toute commande ou question doit être précédée d'un mot-code — \"Alpha\" par défaut (ex : \"Alpha, adrénaline\"). Ce filtre évite que le brouhaha d'une réanimation ne déclenche une action par erreur — un flash vert du micro confirme que le mot-code a bien été entendu. Modifiable dans Réglages : choisissez un mot qui ne risque pas d'être prononcé par hasard pendant une prise en charge (évitez les mots médicaux courants comme \"urgence\" ou \"protocole\"), préférez un mot court, et si possible un mot qu'on ne prononcerait pas naturellement en deux temps avec une pause au milieu." },
         { icon:"💉", title:"Toutes les commandes d'action", desc:"Chaque commande logue un geste dans la chronologie après un bandeau de confirmation de 2,5s (annulable). Les doses affichées s'adaptent automatiquement en pédiatrique selon le poids.",
           list: [
-            { label:"Copilote, adrénaline", detail:"log une dose d'adrénaline et relance le minuteur" },
-            { label:"Copilote, choc", detail:"log directement une défibrillation 200 J (4 J/kg en pédiatrique) — aucune proposition, aucun modal, aussi : défibrillation, défib, cardioversion, fibrillation" },
-            { label:"Copilote, cordarone", detail:"log une dose de Cordarone/Amiodarone (aussi : amiodarone, amio)" },
-            { label:"Copilote, RACS", detail:"log un RACS directement (aussi : pouls, circulation, retour, spontané)" },
-            { label:"Copilote, intubation", detail:"ouvre le modal Intubation (aussi : intuber, sonde)" },
-            { label:"Copilote, pause", detail:"met le chrono/MCE en pause (aussi : stoppe, stop compressions)" },
-            { label:"Copilote, reprendre", detail:"relance les compressions (aussi : continuer, resume, relancer)" },
-            { label:"Copilote, décès", detail:"ouvre le constat de décès (aussi : constat, mort, décédé)" },
-            { label:"Copilote, analyse", detail:"déclenche le flash d'analyse de rythme (aussi : rythme, check, vérification)" },
-            { label:"Copilote, EtCO2 vingt-cinq", detail:"log directement la valeur dictée (aussi : capno + un chiffre)" },
+            { label:"Alpha, adrénaline", detail:"log une dose d'adrénaline et relance le minuteur" },
+            { label:"Alpha, choc", detail:"log directement une défibrillation 200 J (4 J/kg en pédiatrique) — aucune proposition, aucun modal, aussi : défibrillation, défib, cardioversion, fibrillation" },
+            { label:"Alpha, cordarone", detail:"log une dose de Cordarone/Amiodarone (aussi : amiodarone, amio)" },
+            { label:"Alpha, RACS", detail:"log un RACS directement (aussi : pouls, circulation, retour, spontané)" },
+            { label:"Alpha, intubation", detail:"ouvre le modal Intubation (aussi : intuber, sonde)" },
+            { label:"Alpha, pause", detail:"met le chrono/MCE en pause (aussi : stoppe, stop compressions)" },
+            { label:"Alpha, reprendre", detail:"relance les compressions (aussi : continuer, resume, relancer)" },
+            { label:"Alpha, annule", detail:"annule le dernier geste loggé, avec possibilité de le restaurer ensuite (aussi : annuler, supprime, efface)" },
+            { label:"Alpha, décès", detail:"ouvre le constat de décès (aussi : constat, mort, décédé)" },
+            { label:"Alpha, analyse", detail:"déclenche le flash d'analyse de rythme (aussi : rythme, check, vérification)" },
+            { label:"Alpha, EtCO2 vingt-cinq", detail:"log directement la valeur dictée (aussi : capno + un chiffre)" },
           ] },
         { icon:"❓", title:"Toutes les questions à voix haute", desc:"Une question ne modifie jamais rien — réponse instantanée, parlée à voix haute et affichée en bandeau bleu. Se déclenche dès qu'un mot interrogatif (combien, depuis quand, à combien, quel est, y a-t-il...) est détecté avec le mot-code, avant même de regarder les commandes d'action.",
           list: [
@@ -1004,6 +1143,7 @@ function GuideApp({ onClose }) {
             { label:"Quel est le poids de l'enfant ?", detail:"poids renseigné (Pédiatrique uniquement)" },
           ] },
         { icon:"✅", title:"Confirmation avant action", desc:"Chaque commande d'action affiche un bandeau annulable pendant 2,5 secondes avant d'être vraiment enregistrée — de quoi rattraper un mot mal compris." },
+        { icon:"📡", title:"Nécessite une connexion internet", desc:"La reconnaissance vocale envoie l'audio à un service en ligne pour l'analyser — elle ne fonctionne pas hors connexion (zone blanche, sous-sol...), même micro activé. L'app le signale clairement (message à l'écran) si vous essayez d'activer le micro sans réseau, ou si la connexion se coupe pendant l'écoute. Le reste de l'application (chronologie, calculs, compte-rendu) continue de fonctionner normalement sans connexion." },
       ],
     },
     {
@@ -1011,6 +1151,7 @@ function GuideApp({ onClose }) {
       color: "blue",
       items: [
         { icon:"👥", title:"Synchronisation en temps réel", desc:"Plusieurs téléphones de l'équipe peuvent partager la même chronologie, l'heure d'ACR et les constantes en direct — utile quand plusieurs personnes documentent en parallèle." },
+        { icon:"📶", title:"Statut de synchronisation", desc:"Dans le modal équipe, un indicateur précise si les données sont bien à jour : \"Synchronisé à l'instant/Xs/X min\" (tout va bien), \"🟡 Synchronisation en cours\" (envoi en cours), ou \"⚠️ Échec de synchronisation\" (réseau instable — la tentative suivante se fera automatiquement au prochain geste enregistré). Le petit point coloré sur le bouton équipe (🟢/🟡/🔴) donne le même statut en un coup d'œil, sans ouvrir le modal." },
         { icon:"📷", title:"Créer ou rejoindre une session", desc:"Un appareil crée une session (QR code + code à 6 chiffres) ; les autres la rejoignent en scannant le QR ou en saisissant le code." },
         { icon:"🚀", title:"Préparer la connexion à l'avance", desc:"En pédiatrique, la session peut être créée dès l'écran de choix du poids — les téléphones sont déjà connectés quand la réanimation démarre réellement." },
         { icon:"🧹", title:"Anti-doublon automatique", desc:"Si deux membres de l'équipe loguent la même adrénaline ou cordarone à quelques secondes d'écart, un seul enregistrement est conservé — la chronologie reste fiable." },
@@ -2871,6 +3012,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [pedDiluMode] = useLocalState("acr_ped_dilu_mode", "1");
   const [metronomeEnabled] = useLocalState("acr_metronome_enabled", false);
   const [adrIntervalGlobal] = useLocalState("acr_adr_interval", 4);
+  const [voiceWakeWord] = useLocalState("acr_voice_wakeword", "Alpha");
   const [metronomeMutedPed, setMetronomeMutedPed] = useState(false);
   const [showDebriefPed, setShowDebriefPed] = useState(false);
 
@@ -3014,6 +3156,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const voiceAnswerRefPed = useRef(null);
   const lastWakeWordTimeRefPed = useRef(0);
   const matchVoiceCommandPedRef = useRef(null);
+  const voiceWakeWordRefPed = useRef(voiceWakeWord);
+  useEffect(() => { voiceWakeWordRefPed.current = voiceWakeWord; }, [voiceWakeWord]);
 
   // ── Questions vocales pédiatriques — réponse immédiate parlée, ne modifie jamais rien ──
   const answerVoiceQuestionPed = React.useCallback((raw, n) => {
@@ -3163,6 +3307,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         confirm:()=> setRunning(false) },
       { kw:["reprendre","continuer","resume","relancer"], label:"Reprendre compressions", icon:"▶",
         confirm:()=> setRunning(true) },
+      { kw:["annule","annuler","supprime","efface"], label:"Annuler le dernier geste", icon:"↩️",
+        confirm:()=> undoLastPed() },
       { kw:["deces","constat","mort","decede"], label:"Constat de décès", icon:"🕊️",
         confirm:()=> setModalDecesPed(true) },
       { kw:["analyse","rythme","check","verification"], label:"Analyse de rythme", icon:"⚡",
@@ -3194,14 +3340,14 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
       const results = Array.from(e.results);
       const interim = results.map(r => r[0].transcript).join(" ");
       setVoiceTranscriptPed(interim);
-      if (/\bco\s?pilote\b/.test(normalizeVoice(interim))) {
+      if (buildWakeWordRegex(voiceWakeWordRefPed.current).test(normalizeVoice(interim))) {
         lastWakeWordTimeRefPed.current = Date.now();
       }
 
       const finalResult = results.find(r => r.isFinal);
       if (finalResult) {
         const text = Array.from(e.results).map(r => r[0].transcript).join(" ");
-        const hasWakeWordNow = /\bco\s?pilote\b/.test(normalizeVoice(text));
+        const hasWakeWordNow = buildWakeWordRegex(voiceWakeWordRefPed.current).test(normalizeVoice(text));
         if (hasWakeWordNow) {
           lastWakeWordTimeRefPed.current = Date.now();
           setVoiceWakeFlashPed(true);
@@ -3253,11 +3399,22 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
 
     try { rec.start(); } catch(e) { setVoiceTranscriptPed("🚫 Impossible de démarrer le micro"); setTimeout(() => setVoiceTranscriptPed(""), 4000); }
 
+    // Perte de connexion en cours de session : la reconnaissance vocale en dépend
+    // (traitement audio à distance) — on prévient clairement plutôt que de laisser
+    // le micro "actif" sans jamais rien reconnaître.
+    const onOffline = () => {
+      setVoiceTranscriptPed("🚫 Connexion perdue — reconnaissance vocale interrompue");
+      setTimeout(() => setVoiceTranscriptPed(""), 5000);
+      setVoiceActivePed(false);
+    };
+    window.addEventListener("offline", onOffline);
+
     return () => {
       voiceRecRefPed.current = null;
       try { rec.abort(); } catch(e) {}
       clearTimeout(voiceToastRefPed.current);
       setVoiceTranscriptPed("");
+      window.removeEventListener("offline", onOffline);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceActivePed]);
@@ -3353,6 +3510,12 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               style={{ width:180, height:180, borderRadius:12, border:`1px solid ${P.border}` }} />
             <p style={{ margin:"10px 0 0", fontSize:12, color:P.greenText, fontWeight:700 }}>
               🟢 {teamPed.teamDeviceCount} appareil(s) connecté(s)
+            </p>
+            <p style={{ margin:"4px 0 0", fontSize:10.5,
+              color: teamPed.syncStatus === "error" ? P.roseText : P.textSoft }}>
+              {teamPed.syncStatus === "error" ? "⚠️ Échec de synchronisation — nouvelle tentative au prochain geste"
+                : teamPed.syncStatus === "syncing" ? "🟡 Synchronisation en cours…"
+                : teamPed.lastSyncedAt ? `Synchronisé ${fmtSyncAge(teamPed.lastSyncedAt)}` : "En attente de données…"}
             </p>
           </div>
           <button onClick={() => { teamPed.disconnect(); setModalTeamPed(false); }}
@@ -4382,7 +4545,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                 border:`1px solid ${teamPed.teamConnected ? P.green : P.border}`, borderRadius:10,
                 padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
                 alignItems:"center", gap:5, flexShrink:0 }}>
-              <span style={{ fontSize:13 }}>{teamPed.teamConnected ? "🟢" : "👥"}</span>
+              <span style={{ fontSize:13 }}>{teamPed.syncStatus === "error" ? "🔴" : teamPed.syncStatus === "syncing" ? "🟡" : teamPed.teamConnected ? "🟢" : "👥"}</span>
               <span style={{ fontSize:10.5, fontWeight:700, color: teamPed.teamConnected ? P.greenText : P.textMid }}>
                 {teamPed.teamConnected ? `${teamPed.teamCode} · ${teamPed.teamDeviceCount}` : "Équipe"}
               </span>
@@ -5496,7 +5659,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             <div style={{ background:"rgba(0,0,0,0.65)", borderRadius:10,
               padding:"5px 10px", maxWidth:220 }}>
               <p style={{ margin:0, fontSize:10.5, color:"rgba(255,255,255,0.85)", fontFamily:mono }}>
-                Dites <b>« Copilote »</b> avant l'action
+                Dites <b>« {voiceWakeWord || "Alpha"} »</b> avant l'action
               </p>
             </div>
           )}
@@ -5505,6 +5668,11 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           <button
             onClick={() => {
               if (!voiceActivePed) {
+                if (!navigator.onLine) {
+                  setVoiceTranscriptPed("🚫 Pas de connexion internet — la reconnaissance vocale ne fonctionne pas hors ligne");
+                  setTimeout(() => setVoiceTranscriptPed(""), 5000);
+                  return;
+                }
                 try { new (window.AudioContext||window.webkitAudioContext)().resume(); } catch(e){}
               }
               setVoiceActivePed(v => !v);
@@ -5657,7 +5825,7 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
               border:`1px solid ${teamPrep.teamConnected ? P.green : P.border}`, borderRadius:10,
               padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
               alignItems:"center", gap:5, flexShrink:0 }}>
-            <span style={{ fontSize:13 }}>{teamPrep.teamConnected ? "🟢" : "👥"}</span>
+            <span style={{ fontSize:13 }}>{teamPrep.syncStatus === "error" ? "🔴" : teamPrep.syncStatus === "syncing" ? "🟡" : teamPrep.teamConnected ? "🟢" : "👥"}</span>
             <span style={{ fontSize:10.5, fontWeight:700, color: teamPrep.teamConnected ? P.greenText : P.textMid }}>
               {teamPrep.teamConnected ? `${teamPrep.teamCode} · ${teamPrep.teamDeviceCount}` : "Équipe"}
             </span>
@@ -5714,6 +5882,12 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
                   style={{ width:180, height:180, borderRadius:12, border:`1px solid ${P.border}` }} />
                 <p style={{ margin:"10px 0 0", fontSize:12, color:P.greenText, fontWeight:700 }}>
                   🟢 {teamPrep.teamDeviceCount} appareil(s) connecté(s)
+                </p>
+                <p style={{ margin:"4px 0 0", fontSize:10.5,
+                  color: teamPrep.syncStatus === "error" ? P.roseText : P.textSoft }}>
+                  {teamPrep.syncStatus === "error" ? "⚠️ Échec de synchronisation — nouvelle tentative au prochain geste"
+                    : teamPrep.syncStatus === "syncing" ? "🟡 Synchronisation en cours…"
+                    : teamPrep.lastSyncedAt ? `Synchronisé ${fmtSyncAge(teamPrep.lastSyncedAt)}` : "En attente de données…"}
                 </p>
               </div>
               <button onClick={() => { teamPrep.disconnect(); setModalTeamPrep(false); }}
@@ -7036,28 +7210,79 @@ function DebriefModal({ events, totalSec, noFlow, lowFlow, etco2List, ccfEnabled
 // ── Algorithme ALS interactif ────────────────────────────────────────────────
 // ── Dashboard Analytics ──────────────────────────────────────────────────────
 function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
-  const stats = archives.map(a => {
+  const [filterType, setFilterType] = useState("all"); // all | Adulte | Traumatique | Pédiatrique
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo,   setDateTo]   = useState("");
+
+  const filteredArchives = archives.filter(a => {
+    const type = a.type || "Adulte";
+    if (filterType !== "all" && type !== filterType) return false;
+    if (dateFrom && a.archivedAt && new Date(a.archivedAt) < new Date(dateFrom)) return false;
+    if (dateTo && a.archivedAt && new Date(a.archivedAt) > new Date(dateTo + "T23:59:59")) return false;
+    return true;
+  });
+  const hasActiveFilter = filterType !== "all" || dateFrom || dateTo;
+
+  const stats = filteredArchives.map(a => {
     const evts = a.props?.events || [];
     const start = evts.find(e => e.id === "start")?.sec || 0;
     const firstChoc = evts.find(e => e.id === "choc");
     const firstAdr  = evts.find(e => e.id === "adr");
     const rosc      = evts.find(e => e.id === "rosc");
+    // Rythme initial : priorité au DSA pré-SMUR (Transmission), sinon 1ère analyse SMUR
+    const dsaRythme = a.props?.trans?.rythmeDSA;
+    let initialRhythm = null;
+    if (dsaRythme === "choquable") initialRhythm = "choquable";
+    else if (dsaRythme === "nonChoquable") initialRhythm = "nonChoquable";
+    else {
+      const firstRv = evts.find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
+      if (firstRv?.id === "rv_fvtv") initialRhythm = "choquable";
+      else if (firstRv?.id === "rv_aesp" || firstRv?.id === "rv_asy") initialRhythm = "nonChoquable";
+    }
+    const patInitials = initials(a.props?.patient?.nom, a.props?.patient?.prenom);
     return {
       outcome:    a.outcome,
       durationSec: a.durationSec || 0,
       type:       a.type || "Adulte",
-      label:      a.label || "Sans nom",
+      label:      patInitials || a.label || "Sans nom",
       date:       a.archivedAt,
       delaiChoc:  firstChoc ? firstChoc.sec - start : null,
       delaiAdr:   firstAdr  ? firstAdr.sec  - start : null,
+      noFlowMin:  a.props?.noFlow ? parseFloat(String(a.props.noFlow).replace(",",".")) : null,
+      lowFlowMin: a.props?.lowFlow ? parseFloat(String(a.props.lowFlow).replace(",",".")) : null,
+      initialRhythm,
+      mceTemoin:  a.props?.trans?.mceTemoin || null,
       nbChocs:    evts.filter(e => e.id === "choc").length,
       nbAdrs:     evts.filter(e => e.id === "adr").length,
       roscSec:    rosc ? rosc.sec - start : null,
     };
   });
 
+  // Export CSV — toujours basé sur les cas filtrés actuellement affichés
+  const exportCsv = () => {
+    const headers = ["Date","Type","Libellé","Issue","Durée (s)","Délai 1er choc (s)","Délai 1ère adré (s)","Nb chocs","Nb doses adré","RACS à (s)","No-flow (min)","Low-flow (min)","Rythme initial","RCP témoin"];
+    const rows = stats.map(s => [
+      s.date ? new Date(s.date).toLocaleString("fr-FR") : "",
+      s.type, s.label, s.outcome, s.durationSec,
+      s.delaiChoc ?? "", s.delaiAdr ?? "", s.nbChocs, s.nbAdrs, s.roscSec ?? "",
+      s.noFlowMin ?? "", s.lowFlowMin ?? "",
+      s.initialRhythm === "choquable" ? "Choquable" : s.initialRhythm === "nonChoquable" ? "Non choquable" : "",
+      s.mceTemoin || "",
+    ]);
+    const csv = [headers, ...rows]
+      .map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(";"))
+      .join("\r\n");
+    const blob = new Blob(["\uFEFF" + csv], { type:"text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `copilote-acr-stats-${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const n = stats.length;
-  if (n === 0) return (
+  if (archives.length === 0) return (
     <div style={{ position:"fixed", inset:0, zIndex:90, background:P.bg,
       display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
       fontFamily:sans, padding:20 }}>
@@ -7074,14 +7299,33 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
 
   const roscCases   = stats.filter(s => s.outcome === "RACS");
   const deathCases  = stats.filter(s => s.outcome === "Décès");
-  const roscRate    = Math.round(roscCases.length / n * 100);
-  const avgDur      = stats.reduce((a,s) => a + s.durationSec, 0) / n;
+  const roscRate    = n > 0 ? Math.round(roscCases.length / n * 100) : 0;
+  const avgDur      = n > 0 ? stats.reduce((a,s) => a + s.durationSec, 0) / n : 0;
   const chocStats   = stats.filter(s => s.delaiChoc !== null);
   const avgDelaiChoc= chocStats.length ? chocStats.reduce((a,s) => a + s.delaiChoc, 0) / chocStats.length : null;
   const adrStats    = stats.filter(s => s.delaiAdr !== null);
   const avgDelaiAdr = adrStats.length ? adrStats.reduce((a,s) => a + s.delaiAdr, 0) / adrStats.length : null;
-  const avgChocs    = stats.reduce((a,s) => a + s.nbChocs, 0) / n;
-  const avgAdrs     = stats.reduce((a,s) => a + s.nbAdrs, 0) / n;
+  const avgChocs    = n > 0 ? stats.reduce((a,s) => a + s.nbChocs, 0) / n : 0;
+  const avgAdrs     = n > 0 ? stats.reduce((a,s) => a + s.nbAdrs, 0) / n : 0;
+
+  // No-flow / Low-flow moyens
+  const noFlowVals = stats.map(s => s.noFlowMin).filter(v => v !== null && !isNaN(v));
+  const lowFlowVals = stats.map(s => s.lowFlowMin).filter(v => v !== null && !isNaN(v));
+  const avgNoFlow  = noFlowVals.length  ? noFlowVals.reduce((a,b)=>a+b,0)  / noFlowVals.length  : null;
+  const avgLowFlow = lowFlowVals.length ? lowFlowVals.reduce((a,b)=>a+b,0) / lowFlowVals.length : null;
+
+  // Taux de RACS selon le rythme initial (choquable vs non choquable)
+  const rateFor = (predicate) => {
+    const grp = stats.filter(predicate);
+    if (grp.length === 0) return null;
+    return { rate: Math.round(grp.filter(s => s.outcome === "RACS").length / grp.length * 100), count: grp.length };
+  };
+  const rhythmChocable    = rateFor(s => s.initialRhythm === "choquable");
+  const rhythmNonChocable = rateFor(s => s.initialRhythm === "nonChoquable");
+
+  // Taux de RACS selon RCP par témoin avant l'arrivée du SMUR
+  const rcpTemoinOui = rateFor(s => s.mceTemoin === "Oui");
+  const rcpTemoinNon = rateFor(s => s.mceTemoin === "Non");
 
   const Kard = ({ icon, label, value, sub, color }) => (
     <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14,
@@ -7108,13 +7352,60 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
           <p style={{ margin:0, fontSize:9, fontWeight:700, color:P.blue, fontFamily:mono,
             textTransform:"uppercase", letterSpacing:"0.12em" }}>Copilote ACR</p>
           <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp }}>
-            Dashboard — {n} cas archivés
+            Dashboard — {n} cas{hasActiveFilter ? ` sur ${archives.length}` : " archivés"}
           </p>
         </div>
         <button onClick={onClose} style={{ background:"transparent", border:"none",
           color:P.textSoft, fontSize:22, cursor:"pointer" }}>×</button>
       </div>
 
+      {/* Barre de filtres */}
+      <div style={{ padding:"12px 14px 0", display:"flex", flexDirection:"column", gap:8 }}>
+        <div style={{ display:"flex", gap:6, overflowX:"auto" }}>
+          {[["all","Tous"],["Adulte","Adulte"],["Traumatique","Trauma"],["Pédiatrique","Pédia"]].map(([id,label]) => (
+            <button key={id} onClick={() => setFilterType(id)}
+              style={{ flexShrink:0, padding:"7px 13px", borderRadius:10, fontSize:12, fontWeight:700,
+                border:`1.5px solid ${filterType===id ? P.blue : P.border}`,
+                background: filterType===id ? P.blue : P.surface,
+                color: filterType===id ? "#fff" : P.textMid,
+                cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+            style={{ flex:1, background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:9,
+              padding:"7px 8px", fontSize:12, fontFamily:mono, color:P.text, outline:"none", boxSizing:"border-box" }} />
+          <span style={{ fontSize:11, color:P.textSoft }}>→</span>
+          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+            style={{ flex:1, background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:9,
+              padding:"7px 8px", fontSize:12, fontFamily:mono, color:P.text, outline:"none", boxSizing:"border-box" }} />
+          {hasActiveFilter && (
+            <button onClick={() => { setFilterType("all"); setDateFrom(""); setDateTo(""); }}
+              style={{ flexShrink:0, background:"transparent", border:"none", color:P.roseText,
+                fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans, padding:"7px 4px" }}>
+              ✕ Réinitialiser
+            </button>
+          )}
+          <button onClick={exportCsv} disabled={n===0}
+            style={{ flexShrink:0, background: n===0 ? P.surfaceAlt : P.green, border:"none",
+              borderRadius:9, color: n===0 ? P.textSoft : "#fff", padding:"8px 12px", fontSize:12,
+              fontWeight:700, cursor: n===0 ? "default" : "pointer", fontFamily:sans,
+              display:"flex", alignItems:"center", gap:5, whiteSpace:"nowrap" }}>
+            ⬇ CSV
+          </button>
+        </div>
+      </div>
+
+      {n === 0 ? (
+        <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center",
+          justifyContent:"center", padding:40, textAlign:"center" }}>
+          <p style={{ fontSize:32, margin:"0 0 12px" }}>🔍</p>
+          <p style={{ fontSize:15, fontWeight:700, color:P.text, margin:"0 0 6px" }}>Aucun cas ne correspond</p>
+          <p style={{ fontSize:12.5, color:P.textSoft }}>Essayez d'élargir la période ou le type sélectionné.</p>
+        </div>
+      ) : (
       <div style={{ padding:"16px 14px 40px", display:"flex", flexDirection:"column", gap:14 }}>
 
         {/* Taux RACS — grand indicateur */}
@@ -7152,9 +7443,79 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
           <Kard icon="💉" label="Délai 1ère adré"
             value={avgDelaiAdr ? fmtSec(Math.round(avgDelaiAdr)) : "—"}
             sub={adrStats.length + " cas"} color={P.roseText} />
-          <Kard icon="💊" label="Doses/cas moy."
-            value={`${avgAdrs.toFixed(1)} mg`}
+          <Kard icon="💊" label="Adrénaline/cas moy."
+            value={`${avgAdrs.toFixed(1)} dose${avgAdrs >= 1.5 ? "s" : ""}`}
             sub={`${avgChocs.toFixed(1)} choc(s)`} />
+        </div>
+        <p style={{ margin:"-4px 0 0", fontSize:10, color:P.textSoft, textAlign:"center", lineHeight:1.4 }}>
+          Nombre de doses, pas de mg — les cas adulte et pédiatrique (dosés au poids) sont mélangés dans cette moyenne
+        </p>
+
+        {/* No-flow / Low-flow */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          <Kard icon="⏳" label="No-flow moyen"
+            value={avgNoFlow !== null ? `${avgNoFlow.toFixed(1)} min` : "—"}
+            sub={`${noFlowVals.length} cas renseignés`} color={P.amberText} />
+          <Kard icon="🔄" label="Low-flow moyen"
+            value={avgLowFlow !== null ? `${avgLowFlow.toFixed(1)} min` : "—"}
+            sub={`${lowFlowVals.length} cas renseignés`} color={P.tealText} />
+        </div>
+
+        {/* Taux de RACS selon le rythme initial */}
+        <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, padding:"14px" }}>
+          <p style={{ margin:"0 0 10px", fontSize:10, fontWeight:700, color:P.textSoft,
+            textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>
+            Taux de RACS selon le rythme initial
+          </p>
+          {!rhythmChocable && !rhythmNonChocable ? (
+            <p style={{ margin:0, fontSize:12, color:P.textSoft }}>Aucun rythme initial renseigné sur cette période.</p>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {[["Choquable (FV/TV)", rhythmChocable, P.rose],["Non choquable (AESP/Asystolie)", rhythmNonChocable, P.slate]].map(([label, g, c]) => (
+                <div key={label}>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                    <span style={{ fontSize:11.5, color:P.text }}>{label}</span>
+                    <span style={{ fontSize:11.5, fontWeight:700, color:c, fontFamily:mono }}>
+                      {g ? `${g.rate}% (${g.count} cas)` : "—"}
+                    </span>
+                  </div>
+                  <div style={{ height:6, background:`${c}25`, borderRadius:3, overflow:"hidden" }}>
+                    <div style={{ width:`${g?.rate||0}%`, height:"100%", background:c, borderRadius:3, transition:"width 0.5s" }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Taux de RACS selon RCP par témoin */}
+        <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, padding:"14px" }}>
+          <p style={{ margin:"0 0 10px", fontSize:10, fontWeight:700, color:P.textSoft,
+            textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>
+            Taux de RACS selon RCP par témoin
+          </p>
+          {!rcpTemoinOui && !rcpTemoinNon ? (
+            <p style={{ margin:0, fontSize:12, color:P.textSoft }}>Aucun contexte témoin renseigné sur cette période.</p>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {[["RCP réalisée par témoin", rcpTemoinOui, P.green],["Pas de RCP témoin", rcpTemoinNon, P.slate]].map(([label, g, c]) => (
+                <div key={label}>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                    <span style={{ fontSize:11.5, color:P.text }}>{label}</span>
+                    <span style={{ fontSize:11.5, fontWeight:700, color:c, fontFamily:mono }}>
+                      {g ? `${g.rate}% (${g.count} cas)` : "—"}
+                    </span>
+                  </div>
+                  <div style={{ height:6, background:`${c}25`, borderRadius:3, overflow:"hidden" }}>
+                    <div style={{ width:`${g?.rate||0}%`, height:"100%", background:c, borderRadius:3, transition:"width 0.5s" }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <p style={{ margin:"10px 0 0", fontSize:9.5, color:P.textSoft, fontStyle:"italic" }}>
+            Taux de RACS dans chaque groupe — reflète la valeur de la RCP précoce, pas une garantie individuelle.
+          </p>
         </div>
 
         {/* Répartition types */}
@@ -7221,6 +7582,7 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
           Données anonymisées · Stockées localement sur cet appareil
         </p>
       </div>
+      )}
     </div>
   );
 }
@@ -7331,6 +7693,7 @@ function App() {
   const [adrTimerStart, setAdrTimerStart] = useLocalState("acr_adulte_adrStart", 0);
   // Réglages globaux lus ici pour être disponibles dans les effets ci-dessous
   const [adrIntervalGlobal, setAdrIntervalGlobal] = useLocalState("acr_adr_interval", 4);
+  const [voiceWakeWord, setVoiceWakeWord] = useLocalState("acr_voice_wakeword", "Alpha");
   const [metronomeEnabled, setMetronomeEnabled] = useLocalState("acr_metronome_enabled", false);
 
   // Onglets : "actions" | "etiologie" | "therap"
@@ -7428,6 +7791,8 @@ function App() {
   const voiceAnswerRef = useRef(null);
   const lastWakeWordTimeRef = useRef(0);
   const matchVoiceCommandRef = useRef(null);
+  const voiceWakeWordRef = useRef(voiceWakeWord);
+  useEffect(() => { voiceWakeWordRef.current = voiceWakeWord; }, [voiceWakeWord]);
 
   // ── Questions vocales — réponse immédiate parlée, ne modifie jamais rien ──
   const answerVoiceQuestion = React.useCallback((raw, n) => {
@@ -7563,11 +7928,12 @@ function App() {
   const matchVoiceCommand = React.useCallback((raw, wakeWordActive) => {
     const n = normalizeVoice(raw);
 
-    // Mot-code : une commande n'est prise en compte que si "copilote" a été
-    // entendu dans cette phrase OU dans les ~4 dernières secondes (une pause
-    // naturelle après "Copilote," coupe souvent la phrase en deux segments
-    // distincts côté reconnaissance vocale — sans cette tolérance, dire
-    // "Copilote... adrénaline" avec une virgule ne déclenchait rien).
+    // Mot-code : une commande n'est prise en compte que si le mot-code configuré
+    // (voir buildWakeWordRegex — "Alpha" par défaut, personnalisable dans Réglages)
+    // a été entendu dans cette phrase OU dans les ~4 dernières secondes. Une pause
+    // naturelle après le mot-code coupe parfois la phrase en deux segments distincts
+    // côté reconnaissance vocale — sans cette tolérance de 4s, dire "Alpha... adrénaline"
+    // avec une pause ne déclencherait rien.
     if (!wakeWordActive) return null;
 
     // Question ? Toujours testé AVANT la liste de commandes, pour qu'une phrase
@@ -7605,6 +7971,8 @@ function App() {
         confirm:()=> setRunning(false) },
       { kw:["reprendre","continuer","resume","relancer"], label:"Reprendre compressions", icon:"▶",
         confirm:()=> setRunning(true) },
+      { kw:["annule","annuler","supprime","efface"], label:"Annuler le dernier geste", icon:"↩️",
+        confirm:()=> undoLast() },
       { kw:["deces","constat","mort","decede"], label:"Constat de décès", icon:"🕊️",
         confirm:()=> setModalDeces(true) },
       { kw:["analyse","rythme","check","verification"], label:"Analyse de rythme", icon:"⚡",
@@ -7639,14 +8007,14 @@ function App() {
       const interim = results.map(r => r[0].transcript).join(" ");
       setVoiceTranscript(interim);
       // Détection précoce du mot-code, même avant que le résultat soit "final"
-      if (/\bco\s?pilote\b/.test(normalizeVoice(interim))) {
+      if (buildWakeWordRegex(voiceWakeWordRef.current).test(normalizeVoice(interim))) {
         lastWakeWordTimeRef.current = Date.now();
       }
 
       const finalResult = results.find(r => r.isFinal);
       if (finalResult) {
         const text = Array.from(e.results).map(r => r[0].transcript).join(" ");
-        const hasWakeWordNow = /\bco\s?pilote\b/.test(normalizeVoice(text));
+        const hasWakeWordNow = buildWakeWordRegex(voiceWakeWordRef.current).test(normalizeVoice(text));
         if (hasWakeWordNow) {
           lastWakeWordTimeRef.current = Date.now();
           setVoiceWakeFlash(true);
@@ -7703,11 +8071,19 @@ function App() {
 
     try { rec.start(); } catch(e) { setVoiceTranscript("🚫 Impossible de démarrer le micro"); setTimeout(() => setVoiceTranscript(""), 4000); }
 
+    const onOffline = () => {
+      setVoiceTranscript("🚫 Connexion perdue — reconnaissance vocale interrompue");
+      setTimeout(() => setVoiceTranscript(""), 5000);
+      setVoiceActive(false);
+    };
+    window.addEventListener("offline", onOffline);
+
     return () => {
       voiceRecRef.current = null;
       try { rec.abort(); } catch(e) {}
       clearTimeout(voiceToastRef.current);
       setVoiceTranscript("");
+      window.removeEventListener("offline", onOffline);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceActive]);
@@ -7914,6 +8290,9 @@ function App() {
   // Réglages globaux — doivent être déclarés tôt (utilisés dans des effets)
   const [modalSettings, setModalSettings] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
+  const [pendingImportFile, setPendingImportFile] = useState(null);
+  const [importResult, setImportResult] = useState(null); // { ok, error } | null
+  const importFileRef = useRef(null);
   const [ccfEnabled, setCcfEnabled] = useLocalState("acr_ccf_enabled", false);
   const [debriefEnabled, setDebriefEnabled] = useLocalState("acr_debrief_enabled", false);
   const [pedDiluEnabled, setPedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
@@ -8335,6 +8714,35 @@ function App() {
             </div>
           </div>
 
+          {/* Mot-code vocal */}
+          <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <p style={{ margin:"0 0 8px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>
+              Mot-code vocal
+            </p>
+            <p style={{ margin:"0 0 10px", fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+              Mot à prononcer avant chaque commande ou question vocale (ex : « {voiceWakeWord || "Alpha"}, adrénaline »).
+              Il filtre le bruit ambiant d'une réanimation pour que l'app ne réagisse pas à une simple conversation.
+            </p>
+            <input value={voiceWakeWord} onChange={e => setVoiceWakeWord(e.target.value)}
+              placeholder="Alpha"
+              style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
+                borderRadius:10, padding:"11px 12px", fontSize:15, fontWeight:700,
+                color:P.text, fontFamily:sans, outline:"none", boxSizing:"border-box", marginBottom:10 }}
+              onFocus={e => e.target.style.borderColor = P.rose}
+              onBlur={e  => e.target.style.borderColor = P.border} />
+            <div style={{ background:`color-mix(in srgb, ${P.amber} 12%, ${P.surface})`,
+              border:`1px solid color-mix(in srgb, ${P.amber} 35%, transparent)`,
+              borderRadius:10, padding:"9px 11px", display:"flex", gap:8, alignItems:"flex-start" }}>
+              <span style={{ fontSize:14, flexShrink:0 }}>💡</span>
+              <p style={{ margin:0, fontSize:11, color:P.amberText, lineHeight:1.5 }}>
+                Choisissez un mot qui ne risque pas d'être prononcé par hasard pendant une prise en charge :
+                évitez les mots médicaux courants (comme « urgence » ou « protocole »), préférez un mot court,
+                et si possible un mot qu'on ne prononcerait pas naturellement en deux temps avec une pause au milieu
+                (ex : « Co-pilote » peut se couper en « Co… pilote »).
+              </p>
+            </div>
+          </div>
+
           {/* Protocoles de dilution pédiatrique */}
           <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
             <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom: pedDiluEnabled ? 14 : 0 }}>
@@ -8421,6 +8829,81 @@ function App() {
                 borderRadius:"50%", background:"#fff", transition:"left 0.15s", boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
             </button>
           </div>
+
+          {/* Sauvegarde des données */}
+          <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <p style={{ margin:"0 0 8px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>
+              Sauvegarde des données
+            </p>
+            <p style={{ margin:"0 0 12px", fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+              Les données restent uniquement sur cet appareil. Exportez un fichier de sauvegarde
+              avant un changement de téléphone, une mise à jour d'OS, ou pour vous prémunir d'une perte.
+              Noms et prénoms sont réduits à leurs initiales dans le fichier exporté.
+            </p>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              <button onClick={exportBackup}
+                style={{ background:P.green, border:"none", borderRadius:11, color:"#fff",
+                  padding:"11px 0", fontSize:12.5, fontWeight:700, cursor:"pointer", fontFamily:sans,
+                  display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                ⬇ Exporter
+              </button>
+              <button onClick={() => importFileRef.current?.click()}
+                style={{ background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:11, color:P.text,
+                  padding:"11px 0", fontSize:12.5, fontWeight:700, cursor:"pointer", fontFamily:sans,
+                  display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                ⬆ Importer
+              </button>
+              <input ref={importFileRef} type="file" accept="application/json,.json" style={{ display:"none" }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) setPendingImportFile(f); e.target.value = ""; }} />
+            </div>
+            {importResult && (
+              <p style={{ margin:"10px 0 0", fontSize:11.5, fontWeight:600,
+                color: importResult.ok ? P.greenText : P.roseText }}>
+                {importResult.ok ? "✓ Sauvegarde importée avec succès." : `✕ ${importResult.error}`}
+              </p>
+            )}
+          </div>
+
+          {/* Confirmation avant import — remplace les réglages actuels */}
+          {pendingImportFile && (
+            <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", zIndex:200,
+              display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+              onClick={() => setPendingImportFile(null)}>
+              <div onClick={e => e.stopPropagation()}
+                style={{ background:P.surface, borderRadius:18, padding:"22px 20px", maxWidth:340,
+                  boxShadow:"0 12px 40px rgba(0,0,0,0.3)" }}>
+                <p style={{ margin:"0 0 10px", fontSize:16, fontWeight:800, color:P.text, fontFamily:disp }}>
+                  ⚠️ Confirmer l'import
+                </p>
+                <p style={{ margin:"0 0 18px", fontSize:12.5, color:P.textMid, lineHeight:1.6 }}>
+                  Les <b>archives</b> du fichier seront fusionnées avec celles déjà présentes (aucune perte).
+                  Les <b>réglages</b> et une éventuelle <b>session en cours</b> seront en revanche
+                  remplacés par le contenu du fichier — cette partie est irréversible.
+                </p>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                  <button onClick={() => setPendingImportFile(null)}
+                    style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:11,
+                      color:P.textMid, padding:"11px 0", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                    Annuler
+                  </button>
+                  <button onClick={async () => {
+                    const r = await importBackup(pendingImportFile);
+                    setPendingImportFile(null);
+                    if (r.ok) { window.location.reload(); }
+                    else { setImportResult(r); setTimeout(() => setImportResult(null), 6000); }
+                  }} style={{ background:P.rose, border:"none", borderRadius:11, color:"#fff",
+                    padding:"11px 0", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                    Importer
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Numéro de version — utile pour vérifier que toute l'équipe a bien la même version */}
+          <p style={{ margin:"14px 0 0", textAlign:"center", fontSize:11, color:P.textSoft, fontFamily:mono }}>
+            Copilote ACR · Version {APP_VERSION}
+          </p>
         </Modal>
       )}
 
@@ -8507,6 +8990,12 @@ function App() {
             <p style={{ margin:"10px 0 0", fontSize:12, color:P.greenText, fontWeight:700 }}>
               🟢 {team.teamDeviceCount} appareil(s) connecté(s)
             </p>
+            <p style={{ margin:"4px 0 0", fontSize:10.5,
+              color: team.syncStatus === "error" ? P.roseText : P.textSoft }}>
+              {team.syncStatus === "error" ? "⚠️ Échec de synchronisation — nouvelle tentative au prochain geste"
+                : team.syncStatus === "syncing" ? "🟡 Synchronisation en cours…"
+                : team.lastSyncedAt ? `Synchronisé ${fmtSyncAge(team.lastSyncedAt)}` : "En attente de données…"}
+            </p>
           </div>
           <button onClick={() => { team.disconnect(); setModalTeam(false); }}
             style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
@@ -8541,7 +9030,7 @@ function App() {
             border:`1px solid ${team.teamConnected ? P.green : P.border}`, borderRadius:10,
             padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
             alignItems:"center", gap:5, flexShrink:0 }}>
-          <span style={{ fontSize:13 }}>{team.teamConnected ? "🟢" : "👥"}</span>
+          <span style={{ fontSize:13 }}>{team.syncStatus === "error" ? "🔴" : team.syncStatus === "syncing" ? "🟡" : team.teamConnected ? "🟢" : "👥"}</span>
           <span style={{ fontSize:10.5, fontWeight:700, color: team.teamConnected ? P.greenText : P.textMid }}>
             {team.teamConnected ? `${team.teamCode} · ${team.teamDeviceCount}` : "Équipe"}
           </span>
@@ -10211,7 +10700,7 @@ function App() {
                 border:`1px solid ${team.teamConnected ? P.green : P.border}`, borderRadius:10,
                 padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
                 alignItems:"center", gap:5 }}>
-              <span style={{ fontSize:13 }}>{team.teamConnected ? "🟢" : "👥"}</span>
+              <span style={{ fontSize:13 }}>{team.syncStatus === "error" ? "🔴" : team.syncStatus === "syncing" ? "🟡" : team.teamConnected ? "🟢" : "👥"}</span>
               <span style={{ fontSize:10.5, fontWeight:700, color: team.teamConnected ? P.greenText : P.textMid }}>
                 {team.teamConnected ? `${team.teamCode} · ${team.teamDeviceCount}` : "Équipe"}
               </span>
@@ -11010,7 +11499,7 @@ function App() {
               <div style={{ background:"rgba(0,0,0,0.65)", borderRadius:10,
                 padding:"5px 10px", maxWidth:220 }}>
                 <p style={{ margin:0, fontSize:10.5, color:"rgba(255,255,255,0.85)", fontFamily:mono }}>
-                  Dites <b>« Copilote »</b> avant l'action
+                  Dites <b>« {voiceWakeWord || "Alpha"} »</b> avant l'action
                 </p>
               </div>
             )}
@@ -11019,6 +11508,11 @@ function App() {
             <button
               onClick={() => {
                 if (!voiceActive) {
+                  if (!navigator.onLine) {
+                    setVoiceTranscript("🚫 Pas de connexion internet — la reconnaissance vocale ne fonctionne pas hors ligne");
+                    setTimeout(() => setVoiceTranscript(""), 5000);
+                    return;
+                  }
                   // Déverrouiller l'audio sur iOS
                   try { new (window.AudioContext||window.webkitAudioContext)().resume(); } catch(e){}
                 }
