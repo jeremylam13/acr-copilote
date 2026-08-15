@@ -911,11 +911,26 @@ function Collapsible({ icon, title, children, badge }) {
 function GuideApp({ onClose }) {
   const sections = [
     {
+      title: "Repères de l'écran",
+      color: "slate",
+      items: [
+        { icon:"🪪", title:"Encart Patient", desc:"Nom, âge, sexe — toujours accessible en un tap en haut de l'écran, à compléter dès que l'identité est connue." },
+        { icon:"📻", title:"Transmission", desc:"Ce qui s'est passé avant l'arrivée du SMUR (témoin, massage par un tiers, sapeurs-pompiers). Les heures saisies s'ajoutent automatiquement à la chronologie. Important : le nombre de chocs DSA pompiers renseigné ici s'ajoute aux chocs SMUR pour déclencher le rappel Cordarone au bon moment (3ᵉ puis 5ᵉ choc cumulé). Régulation est juste à côté, sur la même rangée." },
+        { icon:"🔍", title:"Onglet Étiologie", desc:"Liste des causes réversibles (5H/5T) à cocher au fur et à mesure qu'elles sont évoquées ou écartées — la réflexion diagnostique se retrouve ensuite dans la chronologie." },
+        { icon:"💊", title:"Onglet Thérapeutiques", desc:"Regroupe amines, remplissage vasculaire et sédation — tout ce qui accompagne la réa sans être un geste d'urgence immédiat." },
+        { icon:"⏱", title:"No-flow / Low-flow", desc:"Deux durées clés pour le pronostic : No-flow = temps sans massage avant la prise en charge ; Low-flow = temps de massage efficace depuis l'effondrement. À renseigner une fois — elles alimentent le compte-rendu et les critères d'arrêt." },
+      ],
+    },
+    {
       title: "Général",
       color: "slate",
       items: [
         { icon:"⏱", title:"Chronomètre & minuteur adrénaline", desc:"Le chrono démarre au lancement de la réa. Un minuteur dédié rappelle l'échéance de la prochaine adrénaline avec une alarme sonore, et se relance automatiquement à chaque administration." },
         { icon:"📋", title:"Chronologie complète", desc:"Chaque geste (choc, adrénaline, intubation, RACS...) est horodaté automatiquement. La liste est repliée par défaut pour ne pas encombrer l'écran — dépliez-la à tout moment. Un geste ajouté par erreur peut être annulé juste après (toast \"Annuler\")." },
+        { icon:"🔴", title:"Badges & vibrations sur les boutons", desc:"Un badge \"!\" rouge clignote sur Adrénaline dès que le délai avant la prochaine dose est dépassé, \"FV\" apparaît sur Défibrillation après un rythme choquable, \"✓\" sur Intubation une fois faite. Chaque geste a aussi sa propre vibration (longue pour l'adrénaline, double pour le choc) pour le reconnaître sans regarder l'écran." },
+        { icon:"➕", title:"Grille d'actions repliable", desc:"Les gestes les plus fréquents restent toujours visibles. Un bouton \"+ Plus d'actions\" révèle les gestes secondaires (Planche à masser, Fast-écho, Soins post-RACS, Constat de décès) pour garder l'écran principal lisible." },
+        { icon:"📞", title:"Appel régulation", desc:"Bandeau toujours accessible pour horodater un appel à la régulation, avec un champ libre pour noter ce qui a été dit et la destination du patient." },
+        { icon:"📝", title:"Note libre", desc:"Un encart de texte libre, entre les Soins post-RACS et la chronologie, pour consigner une information qui ne rentre dans aucune case." },
         { icon:"📄", title:"Compte-rendu automatique", desc:"Un rapport structuré façon SBAR est généré en continu à partir de la chronologie — prêt à copier, imprimer ou partager en fin de réanimation, sans ressaisie." },
         { icon:"🌗", title:"Thème jour / nuit", desc:"Bascule en un tap, en haut de l'écran. Le thème jour est pensé pour la lisibilité en plein soleil, le thème nuit pour ne pas éblouir en intervention de nuit." },
         { icon:"💾", title:"Sauvegarde automatique locale", desc:"Toutes les données sont enregistrées en continu sur l'appareil. Fermeture accidentelle, batterie déchargée, crash de l'app : rien n'est perdu, la session reprend exactement où elle s'est arrêtée." },
@@ -1002,17 +1017,27 @@ function ActionBtn({ action, onClick }) {
   const [press, setPress] = useState(false);
   const [flash, setFlash] = useState(false);
   const vital = action.vital;
+  const badge = action.badge; // { text, color, pulse } | undefined
+  const haptic = () => {
+    try {
+      if (!navigator.vibrate) return;
+      if (action.hapticType === "long") navigator.vibrate(200);
+      else if (action.hapticType === "double") navigator.vibrate([100,50,100]);
+      else navigator.vibrate(28);
+    } catch(e) {}
+  };
   return (
     <button
       onPointerDown={() => setPress(true)}
       onPointerUp={() => setPress(false)}
       onPointerLeave={() => setPress(false)}
-      onClick={() => { setFlash(true); setTimeout(() => setFlash(false), 700); try { if (navigator.vibrate) navigator.vibrate(28); } catch(e){} onClick(); }}
+      onClick={() => { setFlash(true); setTimeout(() => setFlash(false), 700); haptic(); onClick(); }}
       style={vital ? {
         // ── Bouton VITAL : aplat saturé ──
         background:`linear-gradient(135deg, ${action.accent}, ${action.textC})`,
         border:"none", borderRadius:16, padding:"15px 14px", cursor:"pointer", fontFamily:sans,
         display:"flex", flexDirection:"column", alignItems:"flex-start", gap:7,
+        position:"relative",
         transform: press ? "scale(0.96)" : "scale(1)",
         transition:"transform 0.08s, filter 0.15s",
         filter: flash ? "brightness(1.4)" : "brightness(1)",
@@ -1024,11 +1049,24 @@ function ActionBtn({ action, onClick }) {
         border: `1.5px solid ${flash ? P.green : P.border}`,
         borderRadius:15, padding:"13px 12px", cursor:"pointer", fontFamily:sans,
         display:"flex", alignItems:"center", gap:11, textAlign:"left",
+        position:"relative",
         transform: press ? "scale(0.96)" : "scale(1)",
         transition:"transform 0.08s, border-color 0.15s, box-shadow 0.15s, background 0.15s",
         boxShadow: flash ? `0 0 0 3px color-mix(in srgb, ${P.green} 25%, transparent)` : "0 1px 4px rgba(0,0,0,0.05)",
         minWidth:0, boxSizing:"border-box", width:"100%", minHeight:64,
       }}>
+      {/* Badge dynamique (ex : ! alarme adrénaline, FV rythme choc, ✓ intubation faite) */}
+      {badge && !flash && (
+        <span style={{
+          position:"absolute", top:-6, right:-6, minWidth:20, height:20, borderRadius:10,
+          background: badge.color || P.rose, color:"#fff", fontSize:10.5, fontWeight:900,
+          display:"flex", alignItems:"center", justifyContent:"center", padding:"0 5px",
+          boxShadow:"0 2px 6px rgba(0,0,0,0.25)", fontFamily:sans, lineHeight:1, zIndex:2,
+          animation: badge.pulse ? "rythmPulse 1.2s ease-in-out infinite" : "none",
+        }}>
+          {badge.text}
+        </span>
+      )}
       {/* Pastille d'icône (✓ vert pendant la confirmation) */}
       <span style={{
         width: vital ? 40 : 38, height: vital ? 40 : 38, borderRadius:11, flexShrink:0,
@@ -4657,11 +4695,17 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         </div>
 
         {/* ── Contenu Actions (grille pédiatrique) ── */}
-        {mainTabPed === "actions" && (
+        {mainTabPed === "actions" && (() => {
+          const adrAlarmActivePed = adrTimerStartPed > 0 && running && !events.find(e => e.id === "rosc")
+            && ((Date.now() - adrTimerStartPed) / 1000 >= adrIntervalGlobal * 60);
+          const lastRhythmPed = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
+          return (
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:10}}>
-          <ActionBtn action={{label:"Adrénaline",dose:`${localMat?.adrenalineMg||""} mg`,vital:true,svg:ICONS.adr,accent:P.rose,soft:P.roseSoft,textC:P.roseText}}
+          <ActionBtn action={{label:"Adrénaline",dose:`${localMat?.adrenalineMg||""} mg`,vital:true,svg:ICONS.adr,accent:P.rose,soft:P.roseSoft,textC:P.roseText,
+              hapticType:"long", badge: adrAlarmActivePed ? { text:"!", color:P.rose, pulse:true } : null}}
             onClick={()=>{ addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }}/>
-          <ActionBtn action={{label:"Défibrillation",dose:"4 J/kg",vital:true,svg:ICONS.choc,accent:P.blue,soft:P.blueSoft,textC:P.blueText}}
+          <ActionBtn action={{label:"Défibrillation",dose:"4 J/kg",vital:true,svg:ICONS.choc,accent:P.blue,soft:P.blueSoft,textC:P.blueText,
+              hapticType:"double", badge: lastRhythmPed?.id === "rv_fvtv" ? { text:"FV", color:P.blue, pulse:false } : null}}
             onClick={()=>setModalChocPed(true)}/>
           <ActionBtn action={{label:"Analyse de rythme",svg:ICONS.rythme,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
             onClick={()=>setModalRythme(true)}/>
@@ -4669,7 +4713,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             onClick={()=>setModalVvpPed(true)}/>
           <ActionBtn action={{label:amioLabel,svg:ICONS.amio,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
             onClick={()=>addEvent("cord",`Amiodarone ${localMat?.amio||""}mg IV/IO (5mg/kg)`,"💊")}/>
-          <ActionBtn action={{label:"Intubation",svg:ICONS.iot,accent:P.violet,soft:P.violetSoft,textC:P.violetText}}
+          <ActionBtn action={{label:"Intubation",svg:ICONS.iot,accent:P.violet,soft:P.violetSoft,textC:P.violetText,
+              badge: events.some(e => e.id === "iot") ? { text:"✓", color:P.green, pulse:false } : null}}
             onClick={()=>setModalIotPed(true)}/>
 
           {/* ── Bouton + : révèle les actions secondaires ── */}
@@ -4693,7 +4738,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               onClick={()=>setModalDecesPed(true)}/>
           </>)}
         </div>
-        )}
+          );
+        })()}
 
         {/* ── Contenu Étiologie pédiatrique ── */}
         {mainTabPed === "etio" && (
@@ -5375,7 +5421,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               }
               setVoiceActivePed(v => !v);
             }}
-            style={{ width:56, height:56, borderRadius:"50%", border:"none",
+            style={{ width:56, height:56, borderRadius:"50%",
               cursor:"pointer", fontSize:26,
               background: voiceWakeFlashPed
                 ? `linear-gradient(135deg, ${P.green}, #2A7D57)`
@@ -10411,12 +10457,22 @@ function App() {
           {mainTab === "actions" && (
           <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
             {/* Gestes rythmés — vitaux */}
+            {(() => {
+              const adrAlarmActive = adrTimerStart > 0 && started && !events.find(e => e.id === "rosc")
+                && ((Date.now() - adrTimerStart) / 1000 >= adrIntervalGlobal * 60);
+              const lastRhythm = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
+              const iotDone = events.some(e => e.id === "iot");
+              return (
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-              <ActionBtn action={{ label:"Adrénaline", dose:"1 mg IV/IO", vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText }}
+              <ActionBtn action={{ label:"Adrénaline", dose:"1 mg IV/IO", vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText,
+                  hapticType:"long", badge: adrAlarmActive ? { text:"!", color:P.rose, pulse:true } : null }}
                 onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
-              <ActionBtn action={{ label:"Défibrillation", dose:"4 J/kg", vital:true, svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
+              <ActionBtn action={{ label:"Défibrillation", dose:"4 J/kg", vital:true, svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText,
+                  hapticType:"double", badge: lastRhythm?.id === "rv_fvtv" ? { text:"FV", color:P.blue, pulse:false } : null }}
                 onClick={() => setModalChoc(true)} />
             </div>
+              );
+            })()}
             {/* Voies & gestes */}
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
@@ -10427,7 +10483,8 @@ function App() {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                 onClick={() => setModalCord(true)} />
-              <ActionBtn action={{ label:"Intubation", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText }}
+              <ActionBtn action={{ label:"Intubation", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText,
+                  badge: events.some(e => e.id === "iot") ? { text:"✓", color:P.green, pulse:false } : null }}
                 onClick={() => setModalIot(true)} />
             </div>
 
@@ -10833,7 +10890,7 @@ function App() {
                 }
                 setVoiceActive(v => !v);
               }}
-              style={{ width:56, height:56, borderRadius:"50%", border:"none",
+              style={{ width:56, height:56, borderRadius:"50%",
                 cursor:"pointer", fontSize:26,
                 background: voiceWakeFlash
                   ? `linear-gradient(135deg, ${P.green}, #2A7D57)`
