@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-8";
+const APP_VERSION = "2026.08.15-18";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -300,6 +300,25 @@ function fmtSyncAge(lastSyncedAt) {
   return `${Math.round(s / 60)} min`;
 }
 
+// Petit badge de tendance (↑/↓) comparant une valeur en cours de saisie à la
+// dernière mesure enregistrée — affiché en overlay sur un champ de saisie.
+function TrendBadge({ current, last, P, goodDir }) {
+  const c = parseFloat(String(current).replace(",", "."));
+  const l = parseFloat(String(last).replace(",", "."));
+  if (isNaN(c) || isNaN(l) || c === l) return null;
+  const diff = c - l;
+  const up = diff > 0;
+  // goodDir : "up" si une hausse est plutôt rassurante (ex: TA, EtCO₂), "down" si une baisse l'est (ex: FC)
+  const color = !goodDir ? P.textMid : (goodDir === "up" ? (up ? P.green : P.rose) : (up ? P.rose : P.green));
+  return (
+    <span style={{ position:"absolute", top:-6, right:-4, background:color, color:"#fff", borderRadius:6,
+      fontSize:9, fontWeight:800, padding:"1px 4px", boxShadow:"0 1px 3px rgba(0,0,0,0.25)", zIndex:1,
+      fontFamily:"monospace", whiteSpace:"nowrap" }}>
+      {up ? "↑" : "↓"} {up ? "+" : ""}{Number.isInteger(diff) ? diff : diff.toFixed(1)}
+    </span>
+  );
+}
+
 // ── Reconnaissance vocale ─────────────────────────────────────────────────────
 const SpeechRecognitionAPI = typeof window !== "undefined"
   ? (window.SpeechRecognition || window.webkitSpeechRecognition || null)
@@ -472,6 +491,7 @@ function clearSession(prefix) {
 
 // ── ARCHIVES LOCALES DES ARRÊTS ────────────────────────────────────────────────
 const ARCHIVE_KEY = "acr_archives";
+const ARCHIVE_CAP = 200; // au-delà, prévenir plutôt que supprimer silencieusement (voir Dashboard)
 
 // Réduit nom/prénom à leurs initiales ("Dupont Jean" → "D.J.") — utilisé pour
 // l'affichage dashboard et systématiquement dans les exports de sauvegarde,
@@ -491,7 +511,7 @@ function saveArchive(snapshot) {
   try {
     const list = loadArchives();
     list.unshift(snapshot);                 // plus récent en tête
-    const capped = list.slice(0, 50);       // plafond 50 arrêts
+    const capped = list.slice(0, ARCHIVE_CAP);
     localStorage.setItem(ARCHIVE_KEY, JSON.stringify(capped));
     return capped;
   } catch { return loadArchives(); }
@@ -578,7 +598,7 @@ function importBackup(file) {
           const current = loadArchives();
           const merged = new Map();
           [...payload.data[ARCHIVE_KEY], ...current].forEach(a => { if (a && a.key) merged.set(a.key, a); });
-          const list = [...merged.values()].sort((a, b) => (b.key || 0) - (a.key || 0)).slice(0, 50);
+          const list = [...merged.values()].sort((a, b) => (b.key || 0) - (a.key || 0)).slice(0, ARCHIVE_CAP);
           localStorage.setItem(ARCHIVE_KEY, JSON.stringify(list));
         }
         resolve({ ok: true });
@@ -1051,9 +1071,9 @@ function GuideApp({ onClose }) {
       title: "Repères de l'écran",
       color: "slate",
       items: [
-        { icon:"🪪", title:"Encart Patient", desc:"Nom, âge, sexe — toujours accessible en un tap en haut de l'écran, à compléter dès que l'identité est connue." },
+        { icon:"🪪", title:"Encart Patient", desc:"Nom, âge, sexe — toujours accessible en un tap en haut de l'écran, à compléter dès que l'identité est connue. En mode Traumatique, un sélecteur de mécanisme lésionnel (AVP, chute, arme blanche/à feu, écrasement, blast...) y apparaît aussi — il préremplit automatiquement \"pénétrant\" et \"haute cinétique\" dans le calculateur BATT." },
         { icon:"📻", title:"Transmission", desc:"Ce qui s'est passé avant l'arrivée du SMUR (témoin, massage par un tiers, sapeurs-pompiers). Les heures saisies s'ajoutent automatiquement à la chronologie. Important : le nombre de chocs DSA pompiers renseigné ici s'ajoute aux chocs SMUR pour déclencher le rappel Cordarone au bon moment (3ᵉ puis 5ᵉ choc cumulé). Régulation est juste à côté, sur la même rangée." },
-        { icon:"🔍", title:"Onglet Étiologie", desc:"Liste des causes réversibles (5H/5T) à cocher au fur et à mesure qu'elles sont évoquées ou écartées — la réflexion diagnostique se retrouve ensuite dans la chronologie." },
+        { icon:"🔍", title:"Onglet Étiologie", desc:"ACR Adulte médical uniquement : liste des causes réversibles (5H/5T) à cocher au fur et à mesure qu'elles sont évoquées ou écartées — la réflexion diagnostique se retrouve ensuite dans la chronologie. En Traumatique, cet onglet est remplacé par la carte HOTT persistante (voir section Adulte & Traumatique)." },
         { icon:"💊", title:"Onglet Thérapeutiques", desc:"Regroupe amines, remplissage vasculaire et sédation — tout ce qui accompagne la réa sans être un geste d'urgence immédiat." },
         { icon:"⏱", title:"No-flow / Low-flow", desc:"Deux durées clés pour le pronostic : No-flow = temps sans massage avant la prise en charge ; Low-flow = temps de massage efficace depuis l'effondrement. À renseigner une fois — elles alimentent le compte-rendu et les critères d'arrêt." },
       ],
@@ -1073,6 +1093,7 @@ function GuideApp({ onClose }) {
         { icon:"🌗", title:"Thème jour / nuit", desc:"Bascule en un tap, en haut de l'écran. Le thème jour est pensé pour la lisibilité en plein soleil, le thème nuit pour ne pas éblouir en intervention de nuit." },
         { icon:"💾", title:"Sauvegarde automatique locale", desc:"Toutes les données sont enregistrées en continu sur l'appareil. Fermeture accidentelle, batterie déchargée, crash de l'app : rien n'est perdu, la session reprend exactement où elle s'est arrêtée." },
         { icon:"📦", title:"Export / import de sauvegarde", desc:"Depuis Réglages : exportez un fichier contenant toutes les archives et tous les réglages, à conserver ailleurs ou à transférer sur un nouveau téléphone. Utile avant un changement d'appareil, une mise à jour d'OS, ou simplement par précaution — les données restent sinon uniquement sur ce téléphone. Noms et prénoms sont automatiquement réduits à leurs initiales dans le fichier exporté (le fichier peut quitter l'appareil — minimisation des données médicales) ; ils restent en clair dans le détail d'un cas consulté directement sur le téléphone. À l'import, les archives sont fusionnées sans rien effacer ; les réglages, eux, sont remplacés par ceux du fichier importé (une confirmation est demandée avant)." },
+        { icon:"✉️", title:"Contact / Retours", desc:"Depuis Réglages : trois boutons pour signaler un bug, suggérer une amélioration, ou simplement faire un retour positif — chacun ouvre l'app mail avec le sujet et la version de l'app déjà pré-remplis, pour ne rien avoir à taper à la main." },
         { icon:"📊", title:"Dashboard & archives", desc:"Chaque réanimation clôturée est archivée localement avec sa durée, son issue et ses données clés — consultable ensuite depuis le tableau de bord pour un retour d'expérience ou des statistiques de service." },
       ],
     },
@@ -1080,15 +1101,16 @@ function GuideApp({ onClose }) {
       title: "ACR Adulte & Traumatique",
       color: "rose",
       items: [
+        { icon:"🔍", title:"Carte HOTT persistante (trauma)", desc:"En ACR Traumatique, une carte reste visible en haut de l'onglet Actions tant que les 4 causes HOTT (Hypovolémie, Hypoxie, pneumothOrax, Tamponnade) n'ont pas toutes été recherchées. Chaque tap ouvre directement le bon geste (contrôle hémorragie, intubation, thoracostomie, Fast-écho) et coche la cause automatiquement. Une fois les 4 traitées, la carte se réduit en un simple bandeau vert — toujours visible, jamais masquée, réouvrable en un tap." },
         { icon:"⚡", title:"Analyse de rythme guidée", desc:"Toutes les 2 minutes, un flash rappelle d'analyser le rythme avec 4 choix en un tap (FV/TV, AESP, asystolie, RACS) — rien à chercher dans un menu pendant le no-flow." },
         { icon:"💊", title:"Cordarone — rappel automatique", desc:"Un rappel apparaît automatiquement au 3ᵉ choc (300 mg) puis au 5ᵉ choc (150 mg), conformément aux recommandations ERC 2021." },
         { icon:"🫁", title:"Ratio compressions/ventilation", desc:"L'affichage bascule automatiquement de 30:2 à un rythme continu dès que l'intubation est enregistrée." },
         { icon:"📈", title:"EtCO₂ & alertes intelligentes", desc:"Saisie rapide de l'EtCO₂ avec alertes si la valeur est insuffisante (MCE inefficace) ou si une remontée brutale évoque un RACS." },
-        { icon:"💚", title:"Soins post-RACS — détail", desc:"Écran dédié en 3 onglets : Ventilation (FR, Vt, PEP, SpO₂, FiO₂, EtCO₂), Sédation (Hypnovel, Sufentanyl, curare — le débit en mL/h saisi convertit automatiquement la dose en mg/h ou μg/h), Hémo. (TA avec PAM calculée automatiquement, FC, température, remplissage total, amines). Chaque valeur saisie s'ajoute au compte-rendu et alimente le graphique hémodynamique." },
-        { icon:"🩸", title:"OctaplasLG & score BATT", desc:"Calculateur de score BATT avec préremplissage automatique depuis les dernières constantes saisies, et indication d'administration d'OctaplasLG selon le score." },
-        { icon:"🔍", title:"FAST écho (traumatique)", desc:"Sélecteurs rapides par espace anatomique (Morrison, Köhler, Douglas, plèvres, péricarde) pour tracer l'échographie ciblée." },
+        { icon:"💚", title:"Soins post-RACS — détail", desc:"Écran dédié en 3 onglets : Ventilation (FR, Vt, PEP, SpO₂, FiO₂, EtCO₂ — avec graphique live et alerte couleur si SpO₂ ou EtCO₂ sort de la cible), Sédation (Hypnovel, Sufentanyl, curare — le débit en mL/h saisi convertit automatiquement la dose en mg/h ou μg/h), Hémo. (TA avec PAM calculée automatiquement, FC, graphique live TA/FC, température, glycémie, remplissage total, amines). Un badge ↑/↓ compare chaque nouvelle mesure (TA, FC, EtCO₂) à la dernière valeur enregistrée. Chaque valeur saisie s'ajoute au compte-rendu." },
+        { icon:"🩸", title:"OctaplasLG & score BATT", desc:"Calculateur de score BATT avec préremplissage automatique depuis les dernières constantes saisies. En mode Traumatique, les cases \"pénétrant\" et \"haute cinétique\" se cochent aussi automatiquement selon le mécanisme lésionnel renseigné sur la fiche patient." },
+        { icon:"🔍", title:"FAST écho (traumatique)", desc:"Sélecteurs rapides par espace anatomique (Morrison, Köhler, Douglas, plèvres, péricarde) pour tracer l'échographie ciblée. En mode Traumatique, Fast-écho remonte dans la grille principale (à la place de Cordarone, moins pertinent en arrêt traumatique) — Cordarone reste accessible derrière le bouton \"+ Plus d'actions\"." },
         { icon:"↩", title:"Récidive d'arrêt après RACS", desc:"Si le patient refait un arrêt après un RACS, un bouton dédié relance immédiatement le mode réanimation active (métronome, minuteur adrénaline, cycle de compressions) sans perdre l'historique." },
-        { icon:"⏱", title:"Critères d'arrêt de réanimation", desc:"Passé 20 minutes sans RACS, un rappel propose d'ouvrir la check-list des critères d'arrêt — à titre indicatif, la décision reste médicale." },
+        { icon:"⏱", title:"Critères d'arrêt de réanimation", desc:"Passé 20 minutes sans RACS, un rappel propose d'ouvrir la check-list des critères d'arrêt — à titre indicatif, la décision reste médicale. En Traumatique, la check-list est spécifique (HOTT, thoracostomies, contrôle hémorragique, pronostic selon mécanisme fermé/pénétrant) plutôt que les critères médicaux génériques." },
         { icon:"🕊️", title:"Constat de décès", desc:"Formulaire dédié avec champ libre pour préciser le destinataire du constat (\"sans OML\")." },
       ],
     },
@@ -1099,6 +1121,8 @@ function GuideApp({ onClose }) {
         { icon:"⚖️", title:"Doses calculées par poids", desc:"Adrénaline, amiodarone, remplissage : toutes les doses s'ajustent automatiquement dès que le poids de l'enfant est renseigné — aucun calcul à faire en urgence." },
         { icon:"🧰", title:"Matériel adapté", desc:"Taille de sonde, repère à la commissure, matériel recommandé : tout est affiché selon le poids sélectionné (table pédiatrique standardisée)." },
         { icon:"🔁", title:"Mêmes automatismes que l'adulte", desc:"Flash d'analyse de rythme, minuteur adrénaline, suivi post-RACS, mode équipe et reconnaissance vocale existent aussi en pédiatrique, avec les doses et le vocabulaire adaptés." },
+        { icon:"⏱", title:"Critères d'arrêt de réanimation (40 min)", desc:"Passé 40 minutes sans RACS (délai plus long qu'en adulte, la réanimation pédiatrique se poursuivant généralement davantage), un rappel propose une check-list dédiée : causes réversibles pédiatriques (hypoglycémie, intoxication, obstruction des voies aériennes, noyade, sepsis, mort inexpliquée du nourrisson), hypothermie, décision collégiale et accompagnement de la famille." },
+        { icon:"🕊️", title:"Mort inattendue du nourrisson (MIN)", desc:"Pour un enfant < 2 ans sans signe de violence évident, le constat de décès propose un parcours dédié conforme au protocole national (HAS/DGOS) : transport du corps avec les parents vers le Centre de Référence MIN (CRMIN) le plus proche, pas de constat classique sur place. Rappel des éléments à préserver pour l'enquête (position de découverte, literie, contexte) avec champs dédiés pour les documenter." },
       ],
     },
     {
@@ -1543,6 +1567,9 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     const adrs2  = events.filter(e => e.id === "adr").length;
     const cordEvts2 = events.filter(e => e.id === "cord300" || e.id === "cord150");
     const rv2 = events.find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
+    const startSec2 = events.find(e => e.id === "start")?.sec || 0;
+    const firstChocEvt2 = events.find(e => e.id === "choc" || e.id === "doublechoc");
+    const delaiChocSec2 = firstChocEvt2 ? firstChocEvt2.sec - startSec2 : null;
     const patientDesc2 = [
       patient?.nom && patient?.prenom ? `${patient.nom} ${patient.prenom}` : patient?.nom || null,
       patient?.age ? `${patient.age}` : patient?.ddn ? calcAge(patient.ddn) : null,
@@ -1606,7 +1633,8 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
 
     const section = (title, color, soft, inner) => `
       <div style="background:${C.surface};border:1px solid ${C.border};border-left:4px solid ${color};
-        border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 3px rgba(10,17,27,0.06)">
+        border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 3px rgba(10,17,27,0.06);
+        page-break-inside:avoid;break-inside:avoid">
         <p style="margin:0 0 10px;font-size:11px;font-weight:800;color:${color};text-transform:uppercase;
           letter-spacing:0.1em;font-family:'JetBrains Mono',monospace">${title}</p>
         ${inner}
@@ -1617,6 +1645,58 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         <span style="font-size:13px;color:${C.textMid}">${esc(label)}</span>
         <span style="font-size:14px;font-weight:700;color:${valColor||C.text};font-family:'JetBrains Mono',monospace">${esc(value)}</span>
       </div>`;
+
+    // Frise chronologique visuelle — repères proportionnels au temps écoulé.
+    // Seuls Début / 1er choc / issue finale sont étiquetés en texte (évite toute
+    // collision d'étiquettes quel que soit le nombre de gestes du cas) ; les
+    // autres gestes (chocs suivants, adrénaline, cordarone, intubation)
+    // apparaissent en simples pastilles colorées sur la ligne.
+    const timelineHtml = () => {
+      if (!totalSec || totalSec <= 0) return "";
+      const pct = (sec) => Math.min(100, Math.max(0, ((sec - startSec2) / totalSec) * 100));
+      const dots = [];
+      events.forEach(e => {
+        if (e.id === "start") return;
+        if (e.id === "choc" || e.id === "doublechoc") dots.push({ sec:e.sec, icon:"⚡", color:C.blue });
+        else if (e.id === "adr") dots.push({ sec:e.sec, icon:"💉", color:C.rose });
+        else if (e.id === "cord300" || e.id === "cord150") dots.push({ sec:e.sec, icon:"💊", color:C.amber });
+        else if (e.id === "iot") dots.push({ sec:e.sec, icon:"🫁", color:C.violet });
+      });
+      const finalEvt = rosc2 || deces2;
+      if (dots.length === 0 && !finalEvt) return "";
+
+      let h = `<div style="position:relative;height:54px;margin:10px 4px 6px">`;
+      const lastPct = finalEvt ? pct(finalEvt.sec) : Math.max(...dots.map(d => pct(d.sec)));
+      h += `<div style="position:absolute;top:24px;left:0;right:0;height:3px;background:${C.borderSoft};border-radius:2px"></div>`;
+      h += `<div style="position:absolute;top:24px;left:0;width:${lastPct.toFixed(1)}%;height:3px;background:${finalEvt===rosc2?C.green:C.textMid};border-radius:2px"></div>`;
+      // Début
+      h += `<div style="position:absolute;left:0%;top:16px;width:19px;height:19px;border-radius:50%;background:${C.textMid};border:2px solid ${C.surface};box-shadow:0 1px 4px rgba(10,17,27,0.2);transform:translateX(-50%)"></div>`;
+      h += `<p style="position:absolute;left:0%;top:0;font-size:9px;font-weight:700;color:${C.textMid};transform:translateX(-50%);white-space:nowrap">Début</p>`;
+      // Gestes intermédiaires (pastilles simples)
+      dots.forEach(d => {
+        const p = pct(d.sec).toFixed(1);
+        h += `<div style="position:absolute;left:${p}%;top:16px;width:19px;height:19px;border-radius:50%;background:${d.color};border:2px solid ${C.surface};box-shadow:0 1px 4px rgba(10,17,27,0.2);transform:translateX(-50%);display:flex;align-items:center;justify-content:center;font-size:10px">${d.icon}</div>`;
+      });
+      // 1er choc — seul geste intermédiaire explicitement étiqueté (repère clé du pronostic)
+      const firstChoc = dots.find(d => d.icon === "⚡");
+      if (firstChoc) {
+        const p = pct(firstChoc.sec).toFixed(1);
+        const t = events.find(e => e.sec === firstChoc.sec)?.time || "";
+        h += `<p style="position:absolute;left:${p}%;top:45px;font-size:9px;font-weight:700;color:${C.blueText};transform:translateX(-50%);white-space:nowrap">${esc(t)}</p>`;
+      }
+      // Issue finale
+      if (finalEvt) {
+        const p = pct(finalEvt.sec).toFixed(1);
+        const isRosc = finalEvt === rosc2;
+        const col = isRosc ? C.greenText : C.textSoft;
+        const lbl = isRosc ? `RACS ${finalEvt.time}` : finalEvt.label;
+        h += `<div style="position:absolute;left:${p}%;top:14px;width:23px;height:23px;border-radius:50%;background:${isRosc?C.green:C.textMid};border:2.5px solid ${C.surface};box-shadow:0 2px 6px rgba(10,17,27,0.25);transform:translateX(-50%);display:flex;align-items:center;justify-content:center;font-size:11px">${isRosc?"✅":"⬛"}</div>`;
+        h += `<p style="position:absolute;left:${p}%;top:0;font-size:9.5px;font-weight:800;color:${col};transform:translateX(-50%);white-space:nowrap">${esc(lbl)}</p>`;
+      }
+      h += `</div>`;
+      h += `<p style="margin:4px 0 0;font-size:9.5px;color:${C.textSoft};text-align:center">Repères proportionnels au temps écoulé depuis le début de la RCP</p>`;
+      return h;
+    };
 
     let html = `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1640,13 +1720,96 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         Compte-rendu de réanimation</p>
       <p style="margin:0;font-size:11px;color:${C.textSoft}">${new Date().toLocaleDateString("fr-FR")} · ${getNow()}</p>
     </div>
-  </div>`;
+  </div>
+
+  <!-- Identité patient compacte, tout en haut -->
+  ${(patient?.nom || patient?.prenom || patient?.age || patient?.ddn) ? `
+  <div style="background:${C.surface};border:1px solid ${C.border};border-radius:12px;padding:12px 16px;margin-bottom:14px;
+    display:flex;align-items:center;gap:12px;box-shadow:0 1px 3px rgba(10,17,27,0.06)">
+    <span style="font-size:20px;flex-shrink:0">🪪</span>
+    <div style="flex:1;min-width:0">
+      <p style="margin:0;font-size:16px;font-weight:800;color:${C.text};font-family:'Archivo',sans-serif;letter-spacing:-0.01em">${esc([patient.nom,patient.prenom].filter(Boolean).join(" ") || "Patient non identifié")}</p>
+      <p style="margin:0;font-size:12px;color:${C.textSoft};font-family:'JetBrains Mono',monospace">${[patient.age && `${esc(patient.age)}`, patient.ddn && `né(e) le ${esc(new Date(patient.ddn).toLocaleDateString("fr-FR"))}`].filter(Boolean).join(" · ") || "—"}</p>
+    </div>
+  </div>` : ""}
+
+  <!-- Bandeau "coup d'œil" -->
+  <div style="background:linear-gradient(135deg,${rosc2?C.green:deces2?C.textMid:C.amber},${rosc2?C.greenText:deces2?C.text:C.amberText});
+    border-radius:16px;padding:18px 20px;margin-bottom:16px;box-shadow:0 6px 20px rgba(10,17,27,0.2)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <span style="font-size:28px">${rosc2?"✅":deces2?"⬛":"❓"}</span>
+      <div>
+        <p style="margin:0;font-size:10px;font-weight:800;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.12em;font-family:'JetBrains Mono',monospace">Issue</p>
+        <p style="margin:0;font-size:22px;font-weight:900;color:#fff;font-family:'Archivo',sans-serif;letter-spacing:-0.01em">${esc(rosc2?`RACS obtenu à ${rosc2.time}`:deces2?deces2.label:"Non stabilisé à ce stade")}</p>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px">
+      ${[["Durée RCP",fmtSec(totalSec)],["No-flow",noFlow?noFlow+" min":"—"],["Low-flow",lowFlow?lowFlow+" min":"—"],["Délai 1er choc",delaiChocSec2!==null?fmtSec(delaiChocSec2):"—"]].map(([l,v])=>`
+      <div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:8px 6px;text-align:center">
+        <p style="margin:0;font-size:17px;font-weight:800;color:#fff;font-family:'JetBrains Mono',monospace">${esc(v)}</p>
+        <p style="margin:0;font-size:9px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.06em">${esc(l)}</p>
+      </div>`).join("")}
+    </div>
+  </div>
+
+  <!-- Frise chronologique visuelle -->
+  ${(() => { const tl = timelineHtml(); return tl ? section("🕐 Frise chronologique", C.blue, C.blueSoft, tl) : ""; })()}`;
+
+    // SBAR — résumé de transmission, remonté juste après la frise (avant le détail)
+    const sbarRows = [
+      { L:"S", title:"Situation", c:C.rose, soft:C.roseSoft, lines:[
+        `${patientDesc2||"Patient"} · ACR extra-hospitalier`,
+        `Heure arrêt : ${acrTime||"inconnue"} · No-flow : ${noFlow||"?"}min · Low-flow : ${lowFlow||"—"}min · Durée : ${fmtSec(totalSec)}`,
+      ]},
+      { L:"B", title:"Contexte", c:C.blue, soft:C.blueSoft, lines:[
+        MECANISMES_TRAUMA.find(m => m.id === patient?.mecanisme)?.label && `Mécanisme : ${MECANISMES_TRAUMA.find(m => m.id === patient.mecanisme).label}`,
+        patient?.atcd && `ATCD : ${patient.atcd}`,
+        patient?.histoire && `Circonstances : ${patient.histoire}`,
+        patient?.temp && `Température : ${patient.temp} °C`,
+        preSMUR2 && `Pré-SMUR : ${preSMUR2}`,
+      ].filter(Boolean)},
+      { L:"A", title:"Évaluation", c:C.amber, soft:C.amberSoft, lines:[
+        rv2 && `Rythme initial SMUR : ${rv2.label}`,
+        chocs2 ? `${chocs2} choc(s) électrique(s)` : "Aucun choc",
+        adrs2 ? `Adrénaline : ${adrs2} × 1 mg = ${adrs2} mg` : "Adrénaline non administrée",
+        cordEvts2.length>0 && cordEvts2.map(e=>e.label).join(" + "),
+        iot?.sonde && `Intubation : sonde ${iot.sonde} mm · repère ${iot.repere||"—"} cm${iot.capno?` · EtCO₂ initial ${iot.capno} mmHg`:""}`,
+        rosc2 ? `RACS à ${rosc2.time}` : deces2 ? deces2.label : "Issue non renseignée",
+      ].filter(Boolean)},
+      { L:"R", title:"Résultat / État actuel", c:C.green, soft:C.greenSoft, lines:[
+        lastH2 && `Hémodynamique : TA ${lastH2.pas||"—"}/${lastH2.pad||"—"} mmHg · FC ${lastH2.fc||"—"} bpm${lastPam2?` · PAM ${lastPam2} mmHg`:""}`,
+        amines&&amines.length>0 && `Amines : ${amines.map(a=>a.label).join(" + ")}`,
+        etco2&&etco2.length>0 && `EtCO₂ : ${etco2[etco2.length-1].val} mmHg`,
+        !rosc2 && "Pas de RACS obtenu à ce stade.",
+      ].filter(Boolean)},
+    ];
+    html += `<div style="margin-bottom:14px">
+      <p style="margin:0 0 10px;font-size:13px;font-weight:800;color:${C.text};font-family:'Archivo',sans-serif">
+        📢 Résumé de transmission (SBAR)</p>
+      ${sbarRows.map(r => `
+        <div style="display:flex;gap:10px;background:${r.soft};border:1px solid ${r.c}33;border-radius:11px;
+          padding:11px 13px;margin-bottom:8px;page-break-inside:avoid;break-inside:avoid">
+          <div style="width:28px;height:28px;border-radius:9px;background:${r.c};flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;
+            font-family:'JetBrains Mono',monospace;font-size:13px">${r.L}</div>
+          <div style="flex:1;min-width:0">
+            <p style="margin:0 0 3px;font-size:10px;font-weight:700;color:${r.c};text-transform:uppercase;
+              letter-spacing:0.1em;font-family:'JetBrains Mono',monospace">${r.title}</p>
+            ${r.lines.length>0 ? r.lines.map((l,i)=>`<p style="margin:${i===0?0:"2px"} 0 0;font-size:13px;
+              font-weight:${i===0?700:400};color:${C.text};line-height:1.5">${esc(l)}</p>`).join("")
+              : `<p style="margin:0;font-size:12px;color:${C.textSoft};font-style:italic">Non renseigné</p>`}
+          </div>
+        </div>`).join("")}
+    </div>
+    <p style="text-align:center;font-size:10.5px;color:${C.textSoft};margin:0 0 16px;text-transform:uppercase;letter-spacing:0.08em;font-family:'JetBrains Mono',monospace">— Détail complet ci-dessous —</p>`;
 
     // Identité
-    if (patient?.nom || patient?.prenom || patient?.age || patient?.atcd || patient?.histoire) {
+    if (patient?.nom || patient?.prenom || patient?.age || patient?.atcd || patient?.histoire || patient?.mecanisme) {
+      const mecLabel = MECANISMES_TRAUMA.find(m => m.id === patient.mecanisme)?.label;
       html += section("🪪 Identité patient", C.blue, C.blueSoft, `
         ${(patient.nom||patient.prenom) ? row("Nom", [patient.nom,patient.prenom].filter(Boolean).join(" ")) : ""}
         ${patient.age ? row("Âge", patient.age) : ""}
+        ${mecLabel ? row("Mécanisme lésionnel", mecLabel) : ""}
         ${patient.atcd ? row("ATCD", patient.atcd) : ""}
         ${patient.histoire ? row("Circonstances", patient.histoire) : ""}
       `);
@@ -1717,52 +1880,6 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         </div>`).join("") +
       `</div>`
     );
-
-    // SBAR
-    const sbarRows = [
-      { L:"S", title:"Situation", c:C.rose, soft:C.roseSoft, lines:[
-        `${patientDesc2||"Patient"} · ACR extra-hospitalier`,
-        `Heure arrêt : ${acrTime||"inconnue"} · No-flow : ${noFlow||"?"}min · Low-flow : ${lowFlow||"—"}min · Durée : ${fmtSec(totalSec)}`,
-      ]},
-      { L:"B", title:"Contexte", c:C.blue, soft:C.blueSoft, lines:[
-        patient?.atcd && `ATCD : ${patient.atcd}`,
-        patient?.histoire && `Circonstances : ${patient.histoire}`,
-        patient?.temp && `Température : ${patient.temp} °C`,
-        preSMUR2 && `Pré-SMUR : ${preSMUR2}`,
-      ].filter(Boolean)},
-      { L:"A", title:"Évaluation", c:C.amber, soft:C.amberSoft, lines:[
-        rv2 && `Rythme initial SMUR : ${rv2.label}`,
-        chocs2 ? `${chocs2} choc(s) électrique(s)` : "Aucun choc",
-        adrs2 ? `Adrénaline : ${adrs2} × 1 mg = ${adrs2} mg` : "Adrénaline non administrée",
-        cordEvts2.length>0 && cordEvts2.map(e=>e.label).join(" + "),
-        iot?.sonde && `Intubation : sonde ${iot.sonde} mm · repère ${iot.repere||"—"} cm${iot.capno?` · EtCO₂ initial ${iot.capno} mmHg`:""}`,
-        rosc2 ? `RACS à ${rosc2.time}` : deces2 ? deces2.label : "Issue non renseignée",
-      ].filter(Boolean)},
-      { L:"R", title:"Résultat / État actuel", c:C.green, soft:C.greenSoft, lines:[
-        lastH2 && `Hémodynamique : TA ${lastH2.pas||"—"}/${lastH2.pad||"—"} mmHg · FC ${lastH2.fc||"—"} bpm${lastPam2?` · PAM ${lastPam2} mmHg`:""}`,
-        amines&&amines.length>0 && `Amines : ${amines.map(a=>a.label).join(" + ")}`,
-        etco2&&etco2.length>0 && `EtCO₂ : ${etco2[etco2.length-1].val} mmHg`,
-        !rosc2 && "Pas de RACS obtenu à ce stade.",
-      ].filter(Boolean)},
-    ];
-    html += `<div style="margin-bottom:14px">
-      <p style="margin:0 0 10px;font-size:13px;font-weight:800;color:${C.text};font-family:'Archivo',sans-serif">
-        📡 Transmission SBAR — au réanimateur</p>
-      ${sbarRows.map(r => `
-        <div style="display:flex;gap:10px;background:${r.soft};border:1px solid ${r.c}33;border-radius:11px;
-          padding:11px 13px;margin-bottom:8px">
-          <div style="width:28px;height:28px;border-radius:9px;background:${r.c};flex-shrink:0;
-            display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;
-            font-family:'JetBrains Mono',monospace;font-size:13px">${r.L}</div>
-          <div style="flex:1;min-width:0">
-            <p style="margin:0 0 3px;font-size:10px;font-weight:700;color:${r.c};text-transform:uppercase;
-              letter-spacing:0.1em;font-family:'JetBrains Mono',monospace">${r.title}</p>
-            ${r.lines.length>0 ? r.lines.map((l,i)=>`<p style="margin:${i===0?0:"2px"} 0 0;font-size:13px;
-              font-weight:${i===0?700:400};color:${C.text};line-height:1.5">${esc(l)}</p>`).join("")
-              : `<p style="margin:0;font-size:12px;color:${C.textSoft};font-style:italic">Non renseigné</p>`}
-          </div>
-        </div>`).join("")}
-    </div>`;
 
     html += `
       <p style="text-align:center;font-size:10px;color:${C.textSoft};margin-top:18px;font-style:italic;line-height:1.6">
@@ -2963,6 +3080,9 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
 
   const [modalDecesPed, setModalDecesPed] = useState(false);
   const [omlStepPed,    setOmlStepPed]    = useState(0);
+  const [minPositionPed, setMinPositionPed] = useState("");
+  const [minContextePed, setMinContextePed] = useState("");
+  const [modalCriteresPed, setModalCriteresPed] = useState(false);
   const [omlTxtPed,     setOmlTxtPed]     = useState("");
   const [decesRemisAPed, setDecesRemisAPed] = useState("");
   const [showPatPed,    setShowPatPed]    = useState(false);
@@ -3096,7 +3216,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [showDopee,    setShowDopee]    = useState(false);
   const [racsPed, setRacsPed] = useState({
     fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"",
-    tas:"", tad:"", fc:"", noradrV:"",
+    tas:"", tad:"", fc:"", tempRacs:"", glycemie:"", noradrV:"",
     midazolamV:"", sufentaV:"", autresHemo:"",
     remplissagesPed:[]
   });
@@ -3243,6 +3363,10 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
     if (n.includes("poids")) {
       return { label:"⚖️ Poids", icon:"⚖️",
         speak: poids ? `Poids renseigné : ${poids} kilos.` : "Poids non renseigné." };
+    }
+    if (n.includes("temperature") || n.includes("temp")) {
+      return { label:"🌡 Température", icon:"🌡",
+        speak: racsPed.tempRacs ? `Dernière température : ${racsPed.tempRacs} degrés.` : "Température non renseignée." };
     }
     if ((n.includes("dernier") || n.includes("derniere")) && (n.includes("geste") || n.includes("action") || n.includes("fait"))) {
       return { label:"📋 Dernier geste", icon:"📋",
@@ -3439,6 +3563,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
     if (hasContent) {
       const outcome = events.find(e => e.id === "rosc") ? "RACS"
                     : events.find(e => e.id === "deces") ? "Décès" : "—";
+      const recidive = events.some(e => e.id === "re_arret");
       saveArchive({
         key: Date.now(),
         archivedAt: new Date().toISOString(),
@@ -3446,6 +3571,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         label: patPed.nom ? `${patPed.nom} ${patPed.prenom}`.trim() : `${poids} kg`,
         durationSec: sec,
         outcome,
+        recidive,
         props: {
           patient: { nom:patPed.nom, prenom:patPed.prenom, ddn:patPed.ddn,
             age: patPed.age || calcAge(patPed.ddn) || localRow?.age || "", sexe:"",
@@ -3580,7 +3706,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   };
 
   useEffect(() => {
-    if (!metronomeEnabledPed || !running) {
+    if (!metronomeEnabled || !running) {
       clearInterval(metroTimerPedRef.current);
       if (metroCtxPedRef.current) { metroCtxPedRef.current.close().catch(()=>{}); metroCtxPedRef.current = null; }
       return;
@@ -3597,7 +3723,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
       clearInterval(metroTimerPedRef.current);
       if (metroCtxPedRef.current) { metroCtxPedRef.current.close().catch(()=>{}); metroCtxPedRef.current = null; }
     };
-  }, [metronomeEnabledPed, running]);
+  }, [metronomeEnabled, running]);
   const compPausedPed = ccfPausedSincePed != null;
   const ccfPausedNowPed = ccfPausedTotalPed + (compPausedPed ? Math.max(0, sec - ccfPausedSincePed) : 0);
   const ccfPctPed = sec > 0 ? Math.max(0, Math.min(100, Math.round(((sec - ccfPausedNowPed) / sec) * 100))) : 100;
@@ -4103,26 +4229,58 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                     [["sat","SpO₂","%"],["capno","EtCO₂","mmHg"]],
                   ].map((pair,ri)=>(
                     <div key={ri} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
-                      {pair.map(([k,l,u])=>(
-                        <div key={k} style={{minWidth:0}}>
+                      {pair.map(([k,l,u])=>{
+                        const isSpo2 = k === "sat";
+                        const isEtco2 = k === "capno";
+                        const val = parseFloat(String(racsPed[k]).replace(",","."));
+                        const spo2Out = isSpo2 && !isNaN(val) && (val < 94 || val > 98);
+                        const etco2Out = isEtco2 && !isNaN(val) && (val < 35 || val > 45);
+                        const alertColor = spo2Out || etco2Out ? P.rose : isEtco2 && !isNaN(val) ? P.green : null;
+                        const lastEtco2 = isEtco2 && etco2ListPed.length > 0 ? etco2ListPed[etco2ListPed.length-1].val : null;
+                        return (
+                        <div key={k} style={{minWidth:0, position:"relative"}}>
                           <p style={{margin:"0 0 4px",fontSize:9,fontWeight:500,color:P.textSoft,
                             textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>{l}</p>
+                          {isEtco2 && lastEtco2 != null && <TrendBadge current={racsPed.capno} last={lastEtco2} P={P} goodDir="up" />}
                           <div style={{display:"flex",alignItems:"center",gap:4}}>
                             <input type="number" inputMode="decimal" value={racsPed[k]} onChange={e=>srp(k)(e.target.value)}
-                              style={{flex:1,minWidth:0,background:P.surfaceAlt,border:`1.5px solid ${P.border}`,
-                                borderRadius:8,padding:"9px 4px",fontSize:15,color:P.text,fontFamily:mono,
-                                outline:"none",textAlign:"center",fontWeight:600,boxSizing:"border-box"}}
+                              style={{flex:1,minWidth:0,
+                                background: alertColor ? (alertColor===P.rose?P.roseSoft:P.greenSoft) : P.surfaceAlt,
+                                border:`1.5px solid ${alertColor || P.border}`,
+                                borderRadius:8,padding:"9px 4px",fontSize:15,
+                                color: alertColor ? (alertColor===P.rose?P.roseText:P.greenText) : P.text,
+                                fontFamily:mono, outline:"none",textAlign:"center",
+                                fontWeight: alertColor ? 800 : 600, boxSizing:"border-box"}}
                               onFocus={e=>e.target.style.borderColor=P.blue}
-                              onBlur={e=>e.target.style.borderColor=P.border}/>
-                            <span style={{fontSize:9,color:P.textSoft,flexShrink:0,whiteSpace:"nowrap"}}>{u}</span>
+                              onBlur={e=>e.target.style.borderColor=alertColor || P.border}/>
+                            <span style={{fontSize:9, color: alertColor ? (alertColor===P.rose?P.roseText:P.greenText) : P.textSoft,
+                              flexShrink:0, whiteSpace:"nowrap", fontWeight: alertColor ? 700 : 400}}>{u}</span>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ))}
-                  <p style={{margin:"2px 0 0",fontSize:9,color:P.textSoft,fontStyle:"italic",textAlign:"right"}}>
-                    SpO₂ 94–98 % · EtCO₂ 35–45 mmHg
-                  </p>
+                  {(() => {
+                    const spo2 = parseFloat(String(racsPed.sat).replace(",","."));
+                    const spo2Out = !isNaN(spo2) && (spo2 < 94 || spo2 > 98);
+                    const etco2 = parseFloat(String(racsPed.capno).replace(",","."));
+                    const etco2Out = !isNaN(etco2) && (etco2 < 35 || etco2 > 45);
+                    if (spo2Out) return <p style={{margin:"2px 0 10px",fontSize:9.5,color:P.roseText,fontWeight:700,textAlign:"right"}}>⚠️ SpO₂ {spo2>98?"> 98% — risque d'hyperoxie":"< 94% — hypoxie"}</p>;
+                    if (etco2Out) return <p style={{margin:"2px 0 10px",fontSize:9.5,color:P.roseText,fontWeight:700,textAlign:"right"}}>⚠️ EtCO₂ hors cible (35–45 mmHg)</p>;
+                    return <p style={{margin:"2px 0 10px",fontSize:9,color:P.textSoft,fontStyle:"italic",textAlign:"right"}}>SpO₂ 94–98 % · EtCO₂ 35–45 mmHg</p>;
+                  })()}
+
+                  {/* Graphique live EtCO2 */}
+                  {etco2ListPed.length > 0 && (
+                    <div style={{background:P.surfaceAlt,borderRadius:12,padding:"10px 12px",marginBottom:12}}>
+                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:700,color:P.textMid,
+                        textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
+                        EtCO₂ — {etco2ListPed.length} mesure{etco2ListPed.length>1?"s":""}
+                      </p>
+                      <Etco2Curve data={etco2ListPed} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />
+                    </div>
+                  )}
 
                   {/* Accordéon DOPÉE */}
                   <div style={{marginTop:12}}>
@@ -4363,20 +4521,29 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                       <p style={{margin:"5px 0 0",fontSize:8,color:P.amberText,fontStyle:"italic"}}>ACSOS : normotout · O₂/EtCO₂/Hb {">"} 7g/L · T°/Glycémie</p>
                     </div>
                   )}
-                  {/* TAs / TAd / FC — 3 colonnes compactes sans overflow */}
+                  {/* TAs / TAd / FC — 3 colonnes compactes sans overflow, avec tendance */}
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:4}}>
-                    {[["tas","TAs",P.rose],["tad","TAd",P.rose],["fc","FC",P.rose]].map(([k,l,a])=>(
-                      <div key={k} style={{minWidth:0}}>
+                    {[["tas","TAs",P.rose,"up"],["tad","TAd",P.rose,"up"],["fc","FC",P.rose,"down"]].map(([k,l,a,goodDir])=>{
+                      const lastVal = hemoListPed.length > 0 ? hemoListPed[hemoListPed.length - 1][k] : null;
+                      return (
+                      <div key={k} style={{minWidth:0, position:"relative"}}>
                         <p style={{margin:"0 0 3px",fontSize:9,fontWeight:500,color:P.textSoft,
                           textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:mono}}>{l}</p>
+                        {lastVal != null && <TrendBadge current={racsPed[k]} last={lastVal} P={P} goodDir={goodDir} />}
                         <input type="number" inputMode="decimal" value={racsPed[k]} onChange={e=>srp(k)(e.target.value)}
                           style={{width:"100%",minWidth:0,background:P.surfaceAlt,border:`1.5px solid ${P.border}`,
                             borderRadius:8,padding:"8px 2px",fontSize:14,color:P.text,fontFamily:mono,
                             outline:"none",textAlign:"center",fontWeight:600,boxSizing:"border-box"}}
                           onFocus={e=>e.target.style.borderColor=a} onBlur={e=>e.target.style.borderColor=P.border}/>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
+                  {hemoListPed.length > 0 && (
+                    <p style={{margin:"6px 0 10px",fontSize:9,color:P.textSoft,textAlign:"right",fontStyle:"italic"}}>
+                      vs dernière mesure enregistrée
+                    </p>
+                  )}
                   {/* PAM calculée */}
                   {(()=>{
                     const sys=parseFloat(racsPed.tas),dia=parseFloat(racsPed.tad);
@@ -4389,6 +4556,74 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                           <span style={{fontSize:16,fontWeight:700,fontFamily:mono,color:pam!==null?(pamOk?P.greenText:P.roseText):P.textSoft}}>{pam!==null?`${pam} mmHg`:"—"}</span>
                         </div>
                         {pam!==null&&localMat&&(<p style={{margin:0,fontSize:9,color:P.textSoft,fontStyle:"italic"}}>Objectif hors TC {">"} {localMat.pamHTC} · si TC {">"} {localMat.pamTC} mmHg</p>)}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Graphique live — évolution TA/FC (mesures déjà enregistrées) */}
+                  {hemoListPed.length > 0 && (
+                    <div style={{background:P.surfaceAlt,borderRadius:12,padding:"10px 12px",marginBottom:14}}>
+                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:700,color:P.textMid,
+                        textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
+                        Évolution — {hemoListPed.length} mesure{hemoListPed.length>1?"s":""}
+                      </p>
+                      <HemoCurve hemoList={hemoListPed} amineList={amineListPed} P={P} mono={mono}
+                        refSec={events.find(e=>e.id==="rosc")?.sec||0} />
+                    </div>
+                  )}
+
+                  {/* Température — contrôle ciblé (ERC 2025 : prévention stricte de l'hyperthermie) */}
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
+                    background: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.roseSoft : P.amberSoft,
+                    border:`1px solid ${parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
+                    borderRadius:9, padding:"7px 10px" }}>
+                    <span style={{ fontSize:13, flexShrink:0 }}>🌡️</span>
+                    <input type="number" inputMode="decimal" step="0.1" value={racsPed.tempRacs}
+                      onChange={e => srp("tempRacs")(e.target.value)} placeholder="36,5"
+                      style={{ width:62,
+                        background:P.surface,
+                        border:`1px solid ${parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
+                        borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
+                        fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
+                        boxSizing:"border-box", flexShrink:0 }}
+                      onFocus={e => e.target.style.borderColor = P.amberText}
+                      onBlur={e  => e.target.style.borderColor = P.amber} />
+                    <span style={{ fontSize:12,
+                      color: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
+                      fontWeight:600, flexShrink:0 }}>°C</span>
+                    <span style={{ fontSize:10,
+                      color: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
+                      fontWeight: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? 700 : 400,
+                      lineHeight:1.3 }}>
+                      {parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5
+                        ? "⚠️ > 37,5 °C — hyperthermie à traiter"
+                        : "Objectif : éviter > 37,5 °C (72h)"}
+                    </span>
+                  </div>
+
+                  {/* Glycémie — ACSOS : éviter hypo/hyperglycémie */}
+                  {(() => {
+                    const g = parseFloat(String(racsPed.glycemie).replace(",","."));
+                    const out = !isNaN(g) && (g < 0.7 || g > 1.8);
+                    return (
+                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
+                        background: out ? P.roseSoft : P.amberSoft,
+                        border:`1px solid ${out ? P.rose : P.amber}`,
+                        borderRadius:9, padding:"7px 10px" }}>
+                        <span style={{ fontSize:13, flexShrink:0 }}>🩸</span>
+                        <input type="number" inputMode="decimal" step="0.01" value={racsPed.glycemie}
+                          onChange={e => srp("glycemie")(e.target.value)} placeholder="0,90"
+                          style={{ width:62, background:P.surface, border:`1px solid ${out ? P.rose : P.amber}`,
+                            borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
+                            fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
+                            boxSizing:"border-box", flexShrink:0 }}
+                          onFocus={e => e.target.style.borderColor = P.amberText}
+                          onBlur={e  => e.target.style.borderColor = P.amber} />
+                        <span style={{ fontSize:12, color: out ? P.roseText : P.amberText, fontWeight:600, flexShrink:0 }}>g/L</span>
+                        <span style={{ fontSize:10, color: out ? P.roseText : P.amberText,
+                          fontWeight: out ? 700 : 400, lineHeight:1.3 }}>
+                          {out ? "⚠️ Hors cible — corriger hypo/hyperglycémie" : "Objectif : 0,7-1,8 g/L (éviter hypo/hyper)"}
+                        </span>
                       </div>
                     );
                   })()}
@@ -4458,6 +4693,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               // Hémodynamique — seulement si saisi
               if(racsPed.tas && racsPed.tad) p.push(`TA ${racsPed.tas}/${racsPed.tad}mmHg`);
               if(racsPed.fc)  p.push(`FC ${racsPed.fc}/min`);
+              if(racsPed.tempRacs) p.push(`T° ${racsPed.tempRacs} °C`);
               // Amines — seulement si vitesse saisie
               if(adrVitesse)  p.push(`Adrénaline IVSE ${adrVitesse}mL/h`);
               // Remplissage pédiatrique
@@ -4972,6 +5208,29 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             </button>
           )}
 
+          {/* ── Critères d'arrêt de réanimation (>40 min, sans RACS) — pédiatrique ── */}
+          {running && sec >= 2400 && !events.find(e => e.id === "rosc") && !events.find(e => e.id === "deces") && (
+            <button onClick={() => setModalCriteresPed(true)}
+              style={{ gridColumn:"1 / -1", display:"flex", alignItems:"center", gap:10,
+                background:`color-mix(in srgb, ${P.amber} 12%, ${P.surface})`,
+                border:`1.5px solid ${P.amber}`, borderRadius:13, padding:"11px 14px",
+                cursor:"pointer", fontFamily:sans, textAlign:"left",
+                boxShadow:`0 2px 8px color-mix(in srgb, ${P.amber} 15%, transparent)` }}>
+              <span style={{ width:32, height:32, borderRadius:10,
+                background:`color-mix(in srgb, ${P.amber} 20%, transparent)`,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>⏱</span>
+              <div style={{ flex:1, minWidth:0 }}>
+                <p style={{ margin:0, fontSize:12.5, fontWeight:800, color:P.amberText, fontFamily:disp }}>
+                  Critères d'arrêt à évaluer
+                </p>
+                <p style={{ margin:0, fontSize:10.5, color:P.amberText, opacity:0.8 }}>
+                  Réanimation en cours depuis {Math.floor(sec/60)} min · ouvrir la check-list
+                </p>
+              </div>
+              <span style={{ fontSize:16, color:P.amberText, flexShrink:0 }}>›</span>
+            </button>
+          )}
+
           {/* ── Bouton + : révèle les actions secondaires ── */}
           <button onClick={() => setShowMoreActionsPed(v => !v)}
             style={{ gridColumn:"1 / -1", background:"transparent", border:`1.5px dashed ${P.border}`,
@@ -5400,17 +5659,165 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
       )}
 
       {/* ── Modal Constat de décès — pédiatrique ── */}
+      {/* ── Modal Critères d'arrêt de réanimation — pédiatrique ── */}
+      {modalCriteresPed && (
+        <div style={{ position:"fixed", inset:0, zIndex:80, background:"rgba(0,0,0,0.55)",
+          display:"flex", alignItems:"flex-end", fontFamily:sans }}
+          onClick={e => { if(e.target===e.currentTarget) setModalCriteresPed(false); }}>
+          <div style={{ width:"100%", background:P.bg, borderRadius:"20px 20px 0 0",
+            padding:"20px 16px 32px", maxHeight:"92vh", overflowY:"auto",
+            boxShadow:"0 -16px 50px rgba(0,0,0,0.3)" }}>
+
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16 }}>
+              <div style={{ width:42, height:42, borderRadius:13,
+                background:`linear-gradient(135deg, ${P.amber}, ${P.amberText})`,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:22,
+                boxShadow:`0 5px 14px color-mix(in srgb, ${P.amber} 35%, transparent)` }}>⏱</div>
+              <div>
+                <p style={{ margin:"0 0 1px", fontSize:9.5, fontWeight:700, color:P.amber,
+                  textTransform:"uppercase", letterSpacing:"0.14em", fontFamily:mono }}>Évaluation après {Math.floor(sec/60)} min</p>
+                <p style={{ margin:0, fontSize:18, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>
+                  Critères d'arrêt — Pédiatrique
+                </p>
+              </div>
+              <button onClick={() => setModalCriteresPed(false)}
+                style={{ marginLeft:"auto", background:"transparent", border:"none",
+                  color:P.textSoft, fontSize:22, cursor:"pointer" }}>×</button>
+            </div>
+
+            <div style={{ background:P.blueSoft, borderRadius:10, padding:"10px 12px", marginBottom:14,
+              border:`1px solid ${P.blue}` }}>
+              <p style={{ margin:0, fontSize:11.5, color:P.blueText, lineHeight:1.5 }}>
+                ℹ️ En pédiatrie, la réanimation est généralement poursuivie <b>plus longtemps</b> que chez l'adulte,
+                notamment tant qu'une cause réversible n'a pas été formellement écartée.
+              </p>
+            </div>
+
+            <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:18 }}>
+              {[
+                { icon:"🔍", text:"Cause réversible recherchée et traitée (hypoglycémie, intoxication, obstruction VAS, noyade, sepsis, mort inexpliquée du nourrisson) ?" },
+                { icon:"📈", text:"EtCO₂ persistant très bas malgré MCE de qualité ?" },
+                { icon:"⏱", text:"Durée ≥ 40 min sans signe de vie ni RACS ?" },
+                { icon:"💊", text:"Tous les traitements administrés (adrénaline, amiodarone si FV/TV) ?" },
+                { icon:"🌡️", text:"Hypothermie exclue comme cause réversible (noyade, exposition) ?" },
+                { icon:"🤝", text:"Décision collégiale d'équipe ?" },
+                { icon:"👨‍👩‍👧", text:"Famille présente / accompagnée ? Annonce préparée avec l'équipe ?" },
+              ].map((c, i) => (
+                <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
+                  background:P.surfaceAlt, borderRadius:11, padding:"10px 12px",
+                  border:`1px solid ${P.border}` }}>
+                  <span style={{ fontSize:18, flexShrink:0 }}>{c.icon}</span>
+                  <p style={{ margin:0, fontSize:13, color:P.text, lineHeight:1.4 }}>{c.text}</p>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ background:P.amberSoft, borderRadius:10, padding:"10px 12px", marginBottom:16,
+              border:`1px solid ${P.amber}` }}>
+              <p style={{ margin:0, fontSize:11.5, color:P.amberText, lineHeight:1.5 }}>
+                ℹ️ Cette check-list est un <b>aide-mémoire non bloquant</b>.
+                Chaque médecin demeure seul responsable de la décision d'arrêt,
+                selon le contexte clinique global. Si mort inattendue du nourrisson suspectée
+                (&lt; 2 ans, sans signe de violence), le protocole MIN s'applique — voir le
+                constat de décès dédié.
+              </p>
+            </div>
+
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <button onClick={() => {
+                addEvent("arret_decision", `Décision d'arrêt de réanimation après ${Math.floor(sec/60)} min`, "🕊️");
+                setModalCriteresPed(false);
+              }} style={{ background:`linear-gradient(135deg, ${P.slateText}, #374151)`,
+                border:"none", borderRadius:13, color:"#fff", fontSize:13, fontWeight:800,
+                fontFamily:disp, padding:"14px 10px", cursor:"pointer",
+                display:"flex", alignItems:"center", justifyContent:"center", gap:7 }}>
+                🕊️ Arrêt décidé
+              </button>
+              <button onClick={() => setModalCriteresPed(false)}
+                style={{ background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:13,
+                  color:P.textMid, fontSize:13, fontWeight:700, fontFamily:sans,
+                  padding:"14px 10px", cursor:"pointer" }}>
+                Poursuivre
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {modalDecesPed && (
         <Modal title="Constat de décès" icon="🕊️" soft={P.slateSoft}
-          onClose={() => { setModalDecesPed(false); setOmlStepPed(0); setOmlTxtPed(""); setDecesRemisAPed(""); }}>
+          onClose={() => { setModalDecesPed(false); setOmlStepPed(0); setOmlTxtPed(""); setDecesRemisAPed("");
+            setMinPositionPed(""); setMinContextePed(""); }}>
           {omlStepPed === 0 ? (
             <>
+              <ChoiceBtn label="Mort inattendue du nourrisson (MIN)" sub="< 2 ans, sans signe de violence évident — protocole national dédié"
+                accent={P.violet} soft={P.violetSoft} textC={P.violetText}
+                onClick={() => setOmlStepPed(3)} />
               <ChoiceBtn label="Avec OML" sub="Obstacle médico-légal — signalement nécessaire"
                 accent={P.rose} soft={P.roseSoft} textC={P.roseText}
                 onClick={() => setOmlStepPed(1)} />
               <ChoiceBtn label="Sans OML" sub="Pas d'obstacle médico-légal"
                 accent={P.slate} soft={P.slateSoft} textC={P.slateText}
                 onClick={() => setOmlStepPed(2)} />
+            </>
+          ) : omlStepPed === 3 ? (
+            <>
+              <p style={{ margin:"0 0 10px", fontSize:12.5, fontWeight:600, color:P.text }}>
+                🕊️ Mort inattendue du nourrisson (MIN)
+              </p>
+              <div style={{ background:P.violetSoft, border:`1px solid ${P.violet}`, borderRadius:10,
+                padding:"11px 13px", marginBottom:14 }}>
+                <p style={{ margin:"0 0 6px", fontSize:11.5, color:P.violetText, lineHeight:1.55 }}>
+                  📋 <b>Protocole national (HAS/DGOS)</b> — en l'absence de signes de violence
+                  évidents (obstacle médico-légal), le corps doit être <b>transporté avec les
+                  parents</b> (s'ils sont présents) vers le <b>Centre de Référence MIN (CRMIN)</b>
+                  le plus proche : pas d'inhumation ni de constat classique sur place.
+                </p>
+                <p style={{ margin:0, fontSize:11.5, color:P.violetText, lineHeight:1.55 }}>
+                  ☎️ Contacter le CRMIN régional (ou le SAMU pour coordination) avant le transport.
+                </p>
+              </div>
+
+              <div style={{ background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:10,
+                padding:"10px 12px", marginBottom:14 }}>
+                <p style={{ margin:"0 0 6px", fontSize:11, fontWeight:700, color:P.amberText,
+                  textTransform:"uppercase", letterSpacing:"0.06em", fontFamily:mono }}>
+                  À préserver pour l'enquête du CRMIN
+                </p>
+                <p style={{ margin:0, fontSize:11.5, color:P.amberText, lineHeight:1.6 }}>
+                  Ne pas laver ni changer l'enfant · ne pas modifier la literie/l'environnement
+                  de couchage si possible · noter la position exacte dans laquelle l'enfant a
+                  été trouvé.
+                </p>
+              </div>
+
+              <Lbl>Position et environnement de découverte</Lbl>
+              <TArea value={minPositionPed} onChange={setMinPositionPed} rows={2}
+                placeholder="Ex : décubitus ventral, dans son lit, literie molle..." />
+
+              <div style={{ marginTop:10 }}>
+                <Lbl>Contexte / antécédents</Lbl>
+                <TArea value={minContextePed} onChange={setMinContextePed} rows={2}
+                  placeholder="Ex : dernier repas, maladie récente, antécédents familiaux..." />
+              </div>
+
+              <button onClick={() => {
+                const parts = [
+                  minPositionPed.trim() && `Position/découverte : ${minPositionPed.trim()}`,
+                  minContextePed.trim() && `Contexte : ${minContextePed.trim()}`,
+                ].filter(Boolean).join(" — ");
+                addEvent("min_nourrisson", `Mort inattendue du nourrisson (MIN) — transport organisé vers CRMIN${parts ? " · " + parts : ""}`, "🕊️");
+                setModalDecesPed(false); setOmlStepPed(0); setMinPositionPed(""); setMinContextePed("");
+              }} style={{ width:"100%", background:`linear-gradient(135deg, ${P.violet}, #4A2494)`,
+                border:"none", borderRadius:11, color:"#fff", fontSize:14, fontWeight:700,
+                fontFamily:disp, padding:"13px", cursor:"pointer", marginTop:14, marginBottom:8 }}>
+                ✓ Confirmer — transport vers CRMIN
+              </button>
+              <button onClick={() => setOmlStepPed(0)}
+                style={{ width:"100%", background:"transparent", border:"none",
+                  color:P.textSoft, fontSize:12, cursor:"pointer", fontFamily:sans, padding:"6px" }}>
+                ← Retour
+              </button>
             </>
           ) : omlStepPed === 2 ? (
             <>
@@ -5703,7 +6110,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
       <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:30,
         background:P.surface,borderTop:`1px solid ${P.border}`,
         padding:"7px 14px 10px",boxShadow:"0 -4px 16px rgba(0,0,0,0.08)"}}>
-        {metronomeEnabledPed && (
+        {metronomeEnabled && (
           <button onClick={() => setMetronomeMutedPed(v => !v)}
             style={{ width:"100%", marginBottom:8,
               background: metronomeMutedPed ? P.surfaceAlt : `color-mix(in srgb, ${P.blue} 12%, ${P.surface})`,
@@ -6730,6 +7137,22 @@ const THERAPEUTIQUES_ADULTE = [
 // ── ACR TRAUMATIQUE (TCA) ──────────────────────────────────────────────────────
 
 // Causes réversibles traumatiques — algorithme HOTT
+// Mécanismes lésionnels structurés (trauma) — chaque mécanisme porte les flags
+// "pénétrant" et "haute cinétique" utilisés pour préremplir automatiquement
+// le score BATT, au lieu de les cocher à la main à chaque fois.
+const MECANISMES_TRAUMA = [
+  { id:"avp_pieton",     label:"AVP piéton",          icon:"🚶", penetrant:false, hcin:true  },
+  { id:"avp_2roues",     label:"AVP 2-roues",         icon:"🏍️", penetrant:false, hcin:true  },
+  { id:"avp_vl",         label:"AVP véhicule léger",  icon:"🚗", penetrant:false, hcin:true  },
+  { id:"chute_hauteur",  label:"Chute de hauteur",    icon:"🪜", penetrant:false, hcin:true  },
+  { id:"chute_simple",   label:"Chute simple",        icon:"⬇️", penetrant:false, hcin:false },
+  { id:"arme_blanche",   label:"Arme blanche",        icon:"🔪", penetrant:true,  hcin:false },
+  { id:"arme_feu",       label:"Arme à feu",          icon:"🔫", penetrant:true,  hcin:false },
+  { id:"ecrasement",     label:"Écrasement",          icon:"🏗️", penetrant:false, hcin:true  },
+  { id:"blast",          label:"Blast / explosion",   icon:"💥", penetrant:false, hcin:true  },
+  { id:"autre",          label:"Autre",               icon:"❓", penetrant:false, hcin:false },
+];
+
 const CAUSES_HOTT = [
   { id:"hypovolemie", label:"Hypovolémie (hémorragie)", icon:"🩸", sub:"Contrôle hémorragie + produits sanguins · hypotension permissive" },
   { id:"hypoxie",     label:"Hypoxie (oxygénation)",    icon:"💨", sub:"Contrôle des voies aériennes · ventilation" },
@@ -7255,15 +7678,18 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
       nbChocs:    evts.filter(e => e.id === "choc").length,
       nbAdrs:     evts.filter(e => e.id === "adr").length,
       roscSec:    rosc ? rosc.sec - start : null,
+      // Rétro-compatible : les archives antérieures à ce champ n'ont pas
+      // `recidive` enregistré, mais l'info est déjà présente dans leur chronologie
+      recidive:   a.recidive ?? evts.some(e => e.id === "re_arret"),
     };
   });
 
   // Export CSV — toujours basé sur les cas filtrés actuellement affichés
   const exportCsv = () => {
-    const headers = ["Date","Type","Libellé","Issue","Durée (s)","Délai 1er choc (s)","Délai 1ère adré (s)","Nb chocs","Nb doses adré","RACS à (s)","No-flow (min)","Low-flow (min)","Rythme initial","RCP témoin"];
+    const headers = ["Date","Type","Libellé","Issue","Récidive","Durée (s)","Délai 1er choc (s)","Délai 1ère adré (s)","Nb chocs","Nb doses adré","RACS à (s)","No-flow (min)","Low-flow (min)","Rythme initial","RCP témoin"];
     const rows = stats.map(s => [
       s.date ? new Date(s.date).toLocaleString("fr-FR") : "",
-      s.type, s.label, s.outcome, s.durationSec,
+      s.type, s.label, s.outcome, s.recidive ? "Oui" : "Non", s.durationSec,
       s.delaiChoc ?? "", s.delaiAdr ?? "", s.nbChocs, s.nbAdrs, s.roscSec ?? "",
       s.noFlowMin ?? "", s.lowFlowMin ?? "",
       s.initialRhythm === "choquable" ? "Choquable" : s.initialRhythm === "nonChoquable" ? "Non choquable" : "",
@@ -7300,6 +7726,12 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
   const roscCases   = stats.filter(s => s.outcome === "RACS");
   const deathCases  = stats.filter(s => s.outcome === "Décès");
   const roscRate    = n > 0 ? Math.round(roscCases.length / n * 100) : 0;
+  const recidiveCases = stats.filter(s => s.recidive);
+  // Dénominateur : cas ayant obtenu au moins un RACS à un moment (RACS final,
+  // OU récidive constatée — puisqu'une récidive implique un RACS antérieur,
+  // même si l'événement a ensuite été retiré de la chronologie par le bouton dédié)
+  const everHadRosc = stats.filter(s => s.outcome === "RACS" || s.recidive);
+  const recidiveRate = everHadRosc.length ? Math.round(recidiveCases.length / everHadRosc.length * 100) : null;
   const avgDur      = n > 0 ? stats.reduce((a,s) => a + s.durationSec, 0) / n : 0;
   const chocStats   = stats.filter(s => s.delaiChoc !== null);
   const avgDelaiChoc= chocStats.length ? chocStats.reduce((a,s) => a + s.delaiChoc, 0) / chocStats.length : null;
@@ -7358,6 +7790,28 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
         <button onClick={onClose} style={{ background:"transparent", border:"none",
           color:P.textSoft, fontSize:22, cursor:"pointer" }}>×</button>
       </div>
+
+      {/* Alerte proactive : approche du plafond de stockage local */}
+      {archives.length >= ARCHIVE_CAP * 0.9 && (
+        <div style={{ margin:"12px 14px 0", background:`color-mix(in srgb, ${P.amber} 12%, ${P.surface})`,
+          border:`1.5px solid ${P.amber}`, borderRadius:13, padding:"11px 13px",
+          display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:18, flexShrink:0 }}>⚠️</span>
+          <div style={{ flex:1, minWidth:0 }}>
+            <p style={{ margin:0, fontSize:12, fontWeight:700, color:P.amberText }}>
+              {archives.length}/{ARCHIVE_CAP} cas archivés — proche de la limite de stockage local
+            </p>
+            <p style={{ margin:"2px 0 0", fontSize:10.5, color:P.amberText, opacity:0.85 }}>
+              Au-delà, les cas les plus anciens seront supprimés automatiquement. Exportez une sauvegarde pour ne rien perdre.
+            </p>
+          </div>
+          <button onClick={exportBackup}
+            style={{ flexShrink:0, background:P.amber, border:"none", borderRadius:9, color:"#fff",
+              padding:"8px 11px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+            Exporter
+          </button>
+        </div>
+      )}
 
       {/* Barre de filtres */}
       <div style={{ padding:"12px 14px 0", display:"flex", flexDirection:"column", gap:8 }}>
@@ -7433,6 +7887,22 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
               background:P.green, borderRadius:4, transition:"width 0.5s" }} />
           </div>
         </div>
+
+        {/* Taux de récidive après RACS */}
+        {recidiveRate !== null && (
+          <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, padding:"12px 14px",
+            display:"flex", alignItems:"center", gap:12 }}>
+            <span style={{ fontSize:22 }}>↩️</span>
+            <div style={{ flex:1 }}>
+              <p style={{ margin:0, fontSize:11.5, fontWeight:700, color:P.text }}>
+                {recidiveRate}% de récidive d'arrêt après RACS
+              </p>
+              <p style={{ margin:0, fontSize:10.5, color:P.textSoft }}>
+                {recidiveCases.length} cas sur {everHadRosc.length} ayant obtenu un RACS
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Grid stats */}
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
@@ -7588,7 +8058,7 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
 }
 
 function App() {
-  const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"" });
+  const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"", mecanisme:"" });
   const sf = k => v => setPat(p => ({ ...p, [k]: v }));
 
   // Durées manuelles no-flow / low-flow (en minutes)
@@ -7721,7 +8191,7 @@ function App() {
   const [racs, setRacs] = useState({
     fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"",
     hypnovelV:"", sufentaV:"", curare:"", autresDrogues:"",
-    tas:"", tad:"", fc:"", tempRacs:"", noradrV:"", dobut:"", autresHemo:"",
+    tas:"", tad:"", fc:"", tempRacs:"", glycemie:"", noradrV:"", dobut:"", autresHemo:"",
     remplissages:[]
   });
   const sr = k => v => setRacs(p => ({ ...p, [k]: v }));
@@ -8219,6 +8689,7 @@ function App() {
     if (hasContent) {
       const outcome = events.find(e => e.id === "rosc") ? "RACS"
                     : events.find(e => e.id === "deces") ? "Décès" : "—";
+      const recidive = events.some(e => e.id === "re_arret");
       const snapshot = {
         key: Date.now(),
         archivedAt: new Date().toISOString(),
@@ -8226,6 +8697,7 @@ function App() {
         label: pat.nom ? `${pat.nom} ${pat.prenom}`.trim() : "Sans nom",
         durationSec: sec,
         outcome,
+        recidive,
         props: {
           patient: { ...pat },
           noFlow: noFlowMin, lowFlow: lowFlowMin, acrTime,
@@ -8240,12 +8712,12 @@ function App() {
     setAcrTime(""); setNoFlowMin(""); setLowFlowMin(""); setLowFlowStart("");
     setEvents([]); setAlert(null); setCycleOffset(0);
     setShowPdf(false); setShowLog(false);
-    setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"" });
+    setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"" });
     setIot({ cormack:"", sonde:"", repere:"", capno:"" });
     setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, rythmeDSA:"", gestesSecouristes:"", note:"", saved:false });
     setModalTrans(false);
     setAdrTimerStart(0);
-    setMainTab("actions"); setSuspectedAd([]); setModalEcmo(false); setModalDdac(false);
+    setMainTab("actions"); setSuspectedAd([]); setModalEcmo(false); setModalDdac(false); setHottManualExpand(false);
     setModalFastTrauma(false); setFastTr({ morrison:"", kohler:"", douglas:"", pleureD:"", pleureG:"", pericarde:"",
       morrisonMode:"", kohlerMode:"", douglasMode:"", pleureDMode:"", pleureGMode:"", pericardeMode:"" });
     setModalThoraco(null); setModalHemocue(false); setHemocueVal(""); setModalTransfu(false); setTransfu({ cgr:"", pfc:"", plaq:"" });
@@ -8261,7 +8733,7 @@ function App() {
     setEtco2List([]);
     setCcfPausedTotal(0); setCcfPausedSince(null);
     setHemoList([]); setAmineList([]);
-    setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"" });
+    setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"" });
   };
 
   const cp = (sec - cycleOffset) % 120, pct = (cp/120)*100, rem = 120 - cp;
@@ -8274,6 +8746,12 @@ function App() {
   const [showOnboarding, setShowOnboarding] = useLocalState("acr_onboarding_done", false);
   const [showDashboard, setShowDashboard] = useState(false);
   const isTrauma = module === "traumatique";
+  // mainTab est partagé entre Adulte/Trauma (même composant) — si un onglet "etio"
+  // persistait d'une session adulte précédente, on le redirige en trauma puisque
+  // cet onglet n'existe plus (remplacé par la carte HOTT persistante).
+  useEffect(() => {
+    if (isTrauma && mainTab === "etio") setMainTab("actions");
+  }, [isTrauma, mainTab]);
 
   // Thème jour/nuit — choisi par le médecin, persisté
   const [theme, setTheme] = useLocalState("acr_theme", "day");
@@ -8320,6 +8798,7 @@ function App() {
   const [modalHemoExt, setModalHemoExt] = useState(false);
   const [garrotSite, setGarrotSite] = useState("");
   const [garrotHeure, setGarrotHeure] = useState("");
+  const [hottManualExpand, setHottManualExpand] = useState(false); // ré-ouvrir la carte HOTT une fois réduite
 
   // Détection sessions sauvegardées
   const sessionAdulte = (events && events.length > 0) || sec > 0 || pat.nom;
@@ -8899,6 +9378,37 @@ function App() {
               </div>
             </div>
           )}
+
+          {/* Contact / Retours — bug, amélioration, compliment */}
+          <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <p style={{ margin:"0 0 8px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>
+              Contact / Retours
+            </p>
+            <p style={{ margin:"0 0 12px", fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+              Un bug, une idée d'amélioration, ou juste un mot gentil — tout est bienvenu.
+              Chaque bouton ouvre votre app mail avec le sujet pré-rempli.
+            </p>
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {[
+                { icon:"🐛", label:"Signaler un bug", color:P.rose, soft:P.roseSoft, textC:P.roseText,
+                  subject:"[Copilote ACR] Bug", body:`Décrivez ce qui s'est passé, et si possible les étapes pour reproduire :\n\n\n— \nVersion de l'app : ${APP_VERSION}` },
+                { icon:"💡", label:"Suggérer une amélioration", color:P.amber, soft:P.amberSoft, textC:P.amberText,
+                  subject:"[Copilote ACR] Suggestion", body:`Votre idée :\n\n\n— \nVersion de l'app : ${APP_VERSION}` },
+                { icon:"👍", label:"Complimenter", color:P.green, soft:P.greenSoft, textC:P.greenText,
+                  subject:"[Copilote ACR] Retour positif", body:`\n\n— \nVersion de l'app : ${APP_VERSION}` },
+              ].map(c => (
+                <a key={c.label}
+                  href={`mailto:copilote.acr@gmail.com?subject=${encodeURIComponent(c.subject)}&body=${encodeURIComponent(c.body)}`}
+                  style={{ display:"flex", alignItems:"center", gap:10, textDecoration:"none",
+                    background:c.soft, border:`1px solid ${c.color}`, borderRadius:11,
+                    padding:"11px 13px" }}>
+                  <span style={{ fontSize:17, flexShrink:0 }}>{c.icon}</span>
+                  <span style={{ fontSize:13, fontWeight:700, color:c.textC, flex:1 }}>{c.label}</span>
+                  <span style={{ fontSize:14, color:c.textC, flexShrink:0 }}>›</span>
+                </a>
+              ))}
+            </div>
+          </div>
 
           {/* Numéro de version — utile pour vérifier que toute l'équipe a bien la même version */}
           <p style={{ margin:"14px 0 0", textAlign:"center", fontSize:11, color:P.textSoft, fontFamily:mono }}>
@@ -10352,24 +10862,41 @@ function App() {
                           <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>cmH₂O</span>
                         </div>
                       </div>
-                      <div style={{ minWidth:0 }}>
-                        <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
-                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>SpO₂</p>
-                        <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                          <input type="number" inputMode="decimal" value={racs.sat}
-                            onChange={e => sr("sat")(e.target.value)} placeholder="96"
-                            style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-                              borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
-                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                            onFocus={e => e.target.style.borderColor = P.blue}
-                            onBlur={e  => e.target.style.borderColor = P.border} />
-                          <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>%</span>
-                        </div>
-                      </div>
+                      {/* SpO2 — alerte si hors cible 94–98% (hyperoxie/hypoxie) */}
+                      {(() => {
+                        const s = parseFloat(String(racs.sat).replace(",","."));
+                        const out = !isNaN(s) && (s < 94 || s > 98);
+                        return (
+                          <div style={{ minWidth:0 }}>
+                            <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>SpO₂</p>
+                            <div style={{ display:"flex", alignItems:"center", gap:4,
+                              background: out ? P.roseSoft : "transparent", borderRadius:8 }}>
+                              <input type="number" inputMode="decimal" value={racs.sat}
+                                onChange={e => sr("sat")(e.target.value)} placeholder="96"
+                                style={{ flex:1, minWidth:0, background: out ? "transparent" : P.surfaceAlt,
+                                  border:`1.5px solid ${out ? P.rose : P.border}`,
+                                  borderRadius:8, padding:"9px 4px", fontSize:15, color: out ? P.roseText : P.text,
+                                  fontFamily:mono, outline:"none", textAlign:"center", fontWeight: out ? 800 : 600, boxSizing:"border-box" }}
+                                onFocus={e => e.target.style.borderColor = P.blue}
+                                onBlur={e  => e.target.style.borderColor = out ? P.rose : P.border} />
+                              <span style={{ fontSize:9, color: out ? P.roseText : P.textSoft, flexShrink:0, fontWeight: out?700:400 }}>%</span>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
-                    <p style={{ margin:"0 0 10px", fontSize:9, color:P.textSoft, fontStyle:"italic", textAlign:"right" }}>
-                      Objectif SpO₂ 94–98 %
-                    </p>
+                    {(() => {
+                      const s = parseFloat(String(racs.sat).replace(",","."));
+                      const out = !isNaN(s) && (s < 94 || s > 98);
+                      return (
+                        <p style={{ margin:"0 0 10px", fontSize:9, textAlign:"right",
+                          color: out ? P.roseText : P.textSoft, fontWeight: out ? 700 : 400,
+                          fontStyle: out ? "normal" : "italic" }}>
+                          {out ? (s > 98 ? "⚠️ SpO₂ > 98% — risque d'hyperoxie, diminuer FiO₂" : "⚠️ SpO₂ < 94% — hypoxie") : "Objectif SpO₂ 94–98 %"}
+                        </p>
+                      );
+                    })()}
 
                     {/* FiO2 / EtCO2 avec objectif Capno */}
                     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:4 }}>
@@ -10387,24 +10914,52 @@ function App() {
                           <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>%</span>
                         </div>
                       </div>
-                      <div style={{ minWidth:0 }}>
-                        <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
-                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>EtCO₂</p>
-                        <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                          <input type="number" inputMode="decimal" value={racs.capno}
-                            onChange={e => sr("capno")(e.target.value)} placeholder="35"
-                            style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-                              borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
-                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                            onFocus={e => e.target.style.borderColor = P.blue}
-                            onBlur={e  => e.target.style.borderColor = P.border} />
-                          <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>mmHg</span>
-                        </div>
-                      </div>
+                      {/* EtCO2 — alerte si hors cible 35–45mmHg + tendance vs dernière valeur enregistrée */}
+                      {(() => {
+                        const v = parseFloat(String(racs.capno).replace(",","."));
+                        const out = !isNaN(v) && (v < 35 || v > 45);
+                        const lastVal = etco2List.length > 0 ? etco2List[etco2List.length - 1].val : null;
+                        return (
+                          <div style={{ minWidth:0, position:"relative" }}>
+                            <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>EtCO₂</p>
+                            {lastVal != null && <TrendBadge current={racs.capno} last={lastVal} P={P} goodDir="up" />}
+                            <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                              <input type="number" inputMode="decimal" value={racs.capno}
+                                onChange={e => sr("capno")(e.target.value)} placeholder="35"
+                                style={{ flex:1, minWidth:0, background: out ? P.roseSoft : P.greenSoft,
+                                  border:`1.5px solid ${out ? P.rose : P.green}`,
+                                  borderRadius:8, padding:"9px 4px", fontSize:15, color: out ? P.roseText : P.greenText,
+                                  fontFamily:mono, outline:"none", textAlign:"center", fontWeight:800, boxSizing:"border-box" }}
+                                onFocus={e => e.target.style.borderColor = P.blue}
+                                onBlur={e  => e.target.style.borderColor = out ? P.rose : P.green} />
+                              <span style={{ fontSize:9, color: out ? P.roseText : P.greenText, flexShrink:0, fontWeight:700 }}>mmHg</span>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
-                    <p style={{ margin:"0", fontSize:9, color:P.textSoft, fontStyle:"italic", textAlign:"right" }}>
-                      Objectif EtCO₂ 35–45 mmHg
-                    </p>
+                    {(() => {
+                      const v = parseFloat(String(racs.capno).replace(",","."));
+                      const out = !isNaN(v) && (v < 35 || v > 45);
+                      return (
+                        <p style={{ margin:"0 0 4px", fontSize:9.5, textAlign:"right",
+                          color: out ? P.roseText : P.greenText, fontWeight: out ? 700 : 600 }}>
+                          {isNaN(v) ? "Objectif EtCO₂ 35–45 mmHg" : out ? "⚠️ EtCO₂ hors cible" : "✓ EtCO₂ dans la cible (35–45 mmHg)"}
+                        </p>
+                      );
+                    })()}
+
+                    {/* Graphique live EtCO2 */}
+                    {etco2List.length > 0 && (
+                      <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"10px 12px", marginTop:10 }}>
+                        <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:700, color:P.textMid,
+                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
+                          EtCO₂ — {etco2List.length} mesure{etco2List.length>1?"s":""}
+                        </p>
+                        <Etco2Curve data={etco2List} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -10492,16 +11047,19 @@ function App() {
                 {racsTab === "hemo" && (
                   <div style={{ width:"100%" }}>
 
-                    {/* TAs / TAd / FC — 3 champs séparés */}
+                    {/* TAs / TAd / FC — 3 champs séparés, avec tendance vs dernière mesure enregistrée */}
                     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, marginBottom:4 }}>
                       {[
-                        { label:"TAs",        key:"tas", ph:"120", accent:P.rose },
-                        { label:"TAd",        key:"tad", ph:"80",  accent:P.rose },
-                        { label:"FC /min",    key:"fc",  ph:"80",  accent:P.rose },
-                      ].map(f => (
-                        <div key={f.key} style={{ minWidth:0 }}>
+                        { label:"TAs",        key:"tas", ph:"120", accent:P.rose, goodDir:"up" },
+                        { label:"TAd",        key:"tad", ph:"80",  accent:P.rose, goodDir:"up" },
+                        { label:"FC /min",    key:"fc",  ph:"80",  accent:P.rose, goodDir:"down" },
+                      ].map(f => {
+                        const lastVal = hemoList.length > 0 ? hemoList[hemoList.length - 1][f.key] : null;
+                        return (
+                        <div key={f.key} style={{ minWidth:0, position:"relative" }}>
                           <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
                             textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>{f.label}</p>
+                          {lastVal != null && <TrendBadge current={racs[f.key]} last={lastVal} P={P} goodDir={f.goodDir} />}
                           <input type="number" inputMode="decimal" value={racs[f.key]}
                             onChange={e => sr(f.key)(e.target.value)} placeholder={f.ph}
                             style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
@@ -10511,8 +11069,14 @@ function App() {
                             onFocus={e => e.target.style.borderColor = f.accent}
                             onBlur={e  => e.target.style.borderColor = P.border} />
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
+                    {hemoList.length > 0 && (
+                      <p style={{ margin:"6px 0 10px", fontSize:9, color:P.textSoft, textAlign:"right", fontStyle:"italic" }}>
+                        vs dernière mesure enregistrée
+                      </p>
+                    )}
 
                     {/* PAM calculée */}
                     {(() => {
@@ -10536,21 +11100,73 @@ function App() {
                       );
                     })()}
 
-                    {/* Température — contrôle ciblé */}
+                    {/* Graphique live — évolution TA/FC (les mesures déjà enregistrées) */}
+                    {hemoList.length > 0 && (
+                      <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"10px 12px", marginBottom:12 }}>
+                        <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:700, color:P.textMid,
+                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
+                          Évolution — {hemoList.length} mesure{hemoList.length>1?"s":""}
+                        </p>
+                        <HemoCurve hemoList={hemoList} amineList={amineList} P={P} mono={mono}
+                          refSec={events.find(e=>e.id==="rosc")?.sec||0} />
+                      </div>
+                    )}
+
+                    {/* Température — contrôle ciblé (ERC 2025 : prévention stricte de l'hyperthermie) */}
                     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
-                      background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:9, padding:"7px 10px" }}>
+                      background: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.roseSoft : P.amberSoft,
+                      border:`1px solid ${parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
+                      borderRadius:9, padding:"7px 10px" }}>
                       <span style={{ fontSize:13, flexShrink:0 }}>🌡️</span>
                       <input type="number" inputMode="decimal" step="0.1" value={racs.tempRacs}
                         onChange={e => sr("tempRacs")(e.target.value)} placeholder="36,5"
-                        style={{ width:62, background:P.surface, border:`1px solid ${P.amber}`,
+                        style={{ width:62,
+                          background:P.surface,
+                          border:`1px solid ${parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
                           borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
                           fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
                           boxSizing:"border-box", flexShrink:0 }}
                         onFocus={e => e.target.style.borderColor = P.amberText}
                         onBlur={e  => e.target.style.borderColor = P.amber} />
-                      <span style={{ fontSize:12, color:P.amberText, fontWeight:600, flexShrink:0 }}>°C</span>
-                      <span style={{ fontSize:10, color:P.amberText, lineHeight:1.3 }}>Éviter l'hyperthermie</span>
+                      <span style={{ fontSize:12,
+                        color: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
+                        fontWeight:600, flexShrink:0 }}>°C</span>
+                      <span style={{ fontSize:10,
+                        color: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
+                        fontWeight: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? 700 : 400,
+                        lineHeight:1.3 }}>
+                        {parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5
+                          ? "⚠️ > 37,5 °C — hyperthermie à traiter"
+                          : "Objectif : éviter > 37,5 °C (72h)"}
+                      </span>
                     </div>
+
+                    {/* Glycémie — ACSOS : éviter hypo/hyperglycémie */}
+                    {(() => {
+                      const g = parseFloat(String(racs.glycemie).replace(",","."));
+                      const out = !isNaN(g) && (g < 1.0 || g > 1.8);
+                      return (
+                        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
+                          background: out ? P.roseSoft : P.amberSoft,
+                          border:`1px solid ${out ? P.rose : P.amber}`,
+                          borderRadius:9, padding:"7px 10px" }}>
+                          <span style={{ fontSize:13, flexShrink:0 }}>🩸</span>
+                          <input type="number" inputMode="decimal" step="0.01" value={racs.glycemie}
+                            onChange={e => sr("glycemie")(e.target.value)} placeholder="1,20"
+                            style={{ width:62, background:P.surface, border:`1px solid ${out ? P.rose : P.amber}`,
+                              borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
+                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
+                              boxSizing:"border-box", flexShrink:0 }}
+                            onFocus={e => e.target.style.borderColor = P.amberText}
+                            onBlur={e  => e.target.style.borderColor = P.amber} />
+                          <span style={{ fontSize:12, color: out ? P.roseText : P.amberText, fontWeight:600, flexShrink:0 }}>g/L</span>
+                          <span style={{ fontSize:10, color: out ? P.roseText : P.amberText,
+                            fontWeight: out ? 700 : 400, lineHeight:1.3 }}>
+                            {out ? "⚠️ Hors cible — corriger hypo/hyperglycémie" : "Objectif : 1,0-1,8 g/L (éviter hypo/hyper)"}
+                          </span>
+                        </div>
+                      );
+                    })()}
 
                     {/* Noradrénaline */}
                     <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px", marginBottom:10 }}>
@@ -11030,14 +11646,17 @@ function App() {
             </div>
           )}
 
-          {/* ── Tab bar Actions / Étiologie / Thérapeutiques ── */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5,
+          {/* ── Tab bar Actions / (Étiologie) / Thérapeutiques ── */}
+          <div style={{ display:"grid", gridTemplateColumns: isTrauma ? "1fr 1fr" : "1fr 1fr 1fr", gap:5,
             background:P.surfaceAlt, borderRadius:12, padding:4, marginBottom:10 }}>
-            {[
+            {(isTrauma ? [
+              { id:"actions", label:"Actions",       icon:"⚡" },
+              { id:"ther",    label:"Thérapeutiques", icon:"💊" },
+            ] : [
               { id:"actions", label:"Actions",       icon:"⚡" },
               { id:"etio",    label:"Étiologie",     icon:"🔍" },
               { id:"ther",    label:"Thérapeutiques", icon:"💊" },
-            ].map(t => (
+            ]).map(t => (
               <button key={t.id} onClick={() => setMainTab(t.id)}
                 style={{ padding:"8px 4px", borderRadius:9, border:"none",
                   background: mainTab===t.id ? P.surface : "transparent",
@@ -11053,6 +11672,92 @@ function App() {
           {/* ── Contenu Actions (grille existante) ── */}
           {mainTab === "actions" && (
           <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
+
+            {/* ── Carte HOTT persistante (trauma uniquement) — remplace l'ancien onglet Étiologie ── */}
+            {isTrauma && (() => {
+              const HOTT_STEPS = {
+                hypovolemie: { sub:"Contrôle hémorragie", action: () => setModalHemoExt(true) },
+                hypoxie:     { sub:"Intubation",           action: () => setModalIot(true) },
+                pno:         { sub:"Thoracostomie",        action: () => setModalThoraco("d") },
+                tamponnade:  { sub:"Fast-écho",            action: () => setModalFastTrauma(true) },
+              };
+              const doneIds = CAUSES_HOTT.filter(c => suspectedAd.includes(c.id));
+              const allDone = doneIds.length === CAUSES_HOTT.length;
+              const collapsed = allDone && !hottManualExpand;
+              const markDone = (c) => {
+                if (!suspectedAd.includes(c.id)) {
+                  setSuspectedAd(prev => [...prev, c.id]);
+                  addEvent("etio", `Cause recherchée : ${c.label}`, "🔍");
+                }
+                HOTT_STEPS[c.id].action();
+              };
+
+              if (collapsed) return (
+                <button onClick={() => setHottManualExpand(true)}
+                  style={{ width:"100%", display:"flex", alignItems:"center", gap:9,
+                    background:P.greenSoft, border:`1px solid ${P.green}`, borderRadius:12,
+                    padding:"10px 13px", cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+                  <span style={{ width:26, height:26, borderRadius:"50%", background:P.green,
+                    display:"flex", alignItems:"center", justifyContent:"center", color:"#fff",
+                    fontSize:14, fontWeight:900, flexShrink:0 }}>✓</span>
+                  <span style={{ flex:1, fontSize:12.5, fontWeight:700, color:P.greenText }}>
+                    {CAUSES_HOTT.length}/{CAUSES_HOTT.length} causes HOTT recherchées
+                  </span>
+                  <span style={{ fontSize:14, color:P.greenText }}>›</span>
+                </button>
+              );
+
+              const cardColor = allDone ? P.green : doneIds.length > 0 ? P.amber : P.rose;
+              const cardSoft  = allDone ? P.greenSoft : doneIds.length > 0 ? P.amberSoft : P.roseSoft;
+              const cardText  = allDone ? P.greenText : doneIds.length > 0 ? P.amberText : P.roseText;
+              return (
+                <div style={{ background:cardSoft, border:`1.5px solid ${cardColor}`, borderRadius:14,
+                  padding:"13px 14px", boxShadow:`0 3px 12px color-mix(in srgb, ${cardColor} 15%, transparent)` }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+                    <span style={{ fontSize:16 }}>🔍</span>
+                    <p style={{ margin:0, fontSize:12.5, fontWeight:800, color:cardText, fontFamily:disp, flex:1 }}>
+                      Causes HOTT à rechercher
+                    </p>
+                    <span style={{ background:cardColor, color:"#fff", fontSize:11, fontWeight:800,
+                      padding:"2px 8px", borderRadius:8, fontFamily:mono }}>
+                      {doneIds.length}/{CAUSES_HOTT.length}
+                    </span>
+                  </div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
+                    {CAUSES_HOTT.map(c => {
+                      const done = suspectedAd.includes(c.id);
+                      const doneEvt = done ? [...events].reverse().find(e => e.id === "etio" && e.label.includes(c.label)) : null;
+                      return done ? (
+                        <div key={c.id} style={{ display:"flex", alignItems:"center", gap:9,
+                          background:P.greenSoft, borderRadius:10, padding:"9px 10px", opacity:0.8 }}>
+                          <span style={{ width:22, height:22, borderRadius:"50%", background:P.green,
+                            display:"flex", alignItems:"center", justifyContent:"center", color:"#fff",
+                            fontSize:13, fontWeight:900, flexShrink:0 }}>✓</span>
+                          <span style={{ fontSize:16, flexShrink:0 }}>{c.icon}</span>
+                          <span style={{ flex:1, fontSize:12.5, fontWeight:700, color:P.greenText,
+                            textDecoration:"line-through" }}>{c.label}</span>
+                          {doneEvt && <span style={{ fontSize:9.5, color:P.greenText, flexShrink:0 }}>{doneEvt.time}</span>}
+                        </div>
+                      ) : (
+                        <button key={c.id} onClick={() => markDone(c)}
+                          style={{ display:"flex", alignItems:"center", gap:9, background:P.surface,
+                            border:"none", borderRadius:10, padding:"9px 10px", cursor:"pointer",
+                            textAlign:"left", fontFamily:sans }}>
+                          <span style={{ width:22, height:22, borderRadius:"50%", border:`2px solid ${cardColor}`,
+                            flexShrink:0 }} />
+                          <span style={{ fontSize:16, flexShrink:0 }}>{c.icon}</span>
+                          <span style={{ flex:1, fontSize:12.5, fontWeight:700, color:P.text }}>{c.label}</span>
+                          <span style={{ fontSize:10.5, color:cardText, fontWeight:700, flexShrink:0, whiteSpace:"nowrap" }}>
+                            {HOTT_STEPS[c.id].sub} ›
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Gestes rythmés — vitaux */}
             {(() => {
               const adrAlarmActive = adrTimerStart > 0 && started && !events.find(e => e.id === "rosc")
@@ -11078,8 +11783,13 @@ function App() {
                 onClick={() => setModalVvp(true)} />
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-              <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
-                onClick={() => setModalCord(true)} />
+              {isTrauma ? (
+                <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
+                  onClick={() => setModalFastTrauma(true)} />
+              ) : (
+                <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
+                  onClick={() => setModalCord(true)} />
+              )}
               <ActionBtn action={{ label:"Intubation", svg:ICONS.iot, accent:P.violet, soft:P.violetSoft, textC:P.violetText,
                   badge: events.some(e => e.id === "iot") ? { text:"✓", color:P.green, pulse:false } : null }}
                 onClick={() => setModalIot(true)} />
@@ -11122,8 +11832,13 @@ function App() {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Planche à masser", svg:ICONS.planche, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
                 onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
-              <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
-                onClick={() => isTrauma ? setModalFastTrauma(true) : setModalFast(true)} />
+              {isTrauma ? (
+                <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
+                  onClick={() => setModalCord(true)} />
+              ) : (
+                <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
+                  onClick={() => setModalFast(true)} />
+              )}
             </div>
             <div style={{ display:"grid", gridTemplateColumns: events.some(e => e.id === "rosc") ? "1fr" : "1fr 1fr", gap:9 }}>
               {!events.some(e => e.id === "rosc") && (
@@ -11140,20 +11855,6 @@ function App() {
           {/* ── Contenu Étiologie ── */}
           {mainTab === "etio" && (
             <>
-              {isTrauma ? (
-                <EtiologieTab title="HOTT — Causes réversibles traumatiques" causes={CAUSES_HOTT}
-                  suspected={suspectedAd}
-                  onToggle={(id, label) => {
-                    if (suspectedAd.includes(id)) {
-                      setSuspectedAd(suspectedAd.filter(x => x !== id));
-                    } else {
-                      setSuspectedAd([...suspectedAd, id]);
-                      addEvent("etio", `Cause suspectée : ${label}`, "🔍");
-                    }
-                  }}
-                  P={P} mono={mono} sans={sans} />
-              ) : (
-              <>
               <EtiologieTab title="5H — Causes métaboliques" causes={CAUSES_5H}
                 suspected={suspectedAd}
                 onToggle={(id, label) => {
@@ -11176,8 +11877,6 @@ function App() {
                   }
                 }}
                 P={P} mono={mono} sans={sans} />
-              </>
-              )}
             </>
           )}
 
@@ -11196,6 +11895,7 @@ function App() {
                 else if (id === "octaplas") {
                   const lastHemo = hemoList.length > 0 ? hemoList[hemoList.length - 1] : null;
                   const ageNum = pat?.age ? String(pat.age).match(/\d+/)?.[0] || "" : "";
+                  const mec = MECANISMES_TRAUMA.find(m => m.id === pat?.mecanisme);
                   // Priorité aux valeurs en cours de saisie sur l'écran post-RACS (plus récentes
                   // que la dernière entrée enregistrée dans l'historique hémodynamique)
                   setBattForm({
@@ -11205,7 +11905,7 @@ function App() {
                     fr: racs.fr || "",
                     spo2: racs.sat || "",
                     fc: racs.fc || lastHemo?.fc || "",
-                    penetrant: false, hcin: false,
+                    penetrant: mec?.penetrant || false, hcin: mec?.hcin || false,
                   });
                   setModalOctaplas(true);
                 }
@@ -11553,6 +12253,34 @@ function App() {
               <div><Lbl>Date de naissance</Lbl><TInput type="date" value={pat.ddn} onChange={v => { sf("ddn")(v); sf("age")(calcAge(v)); }} /></div>
               <div><Lbl>Âge</Lbl><TInput value={pat.age} onChange={sf("age")} placeholder="67 ans" /></div>
             </div>
+            {isTrauma && (
+              <div>
+                <Lbl>Mécanisme lésionnel</Lbl>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+                  {MECANISMES_TRAUMA.map(m => (
+                    <button key={m.id} onClick={() => sf("mecanisme")(pat.mecanisme === m.id ? "" : m.id)}
+                      style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 8px",
+                        borderRadius:9, border:`1.5px solid ${pat.mecanisme===m.id ? P.rose : P.border}`,
+                        background: pat.mecanisme===m.id ? P.roseSoft : P.surface,
+                        color: pat.mecanisme===m.id ? P.roseText : P.textMid,
+                        fontSize:12, fontWeight: pat.mecanisme===m.id ? 700 : 500,
+                        cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+                      <span style={{ fontSize:14, flexShrink:0 }}>{m.icon}</span>
+                      <span style={{ minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{m.label}</span>
+                    </button>
+                  ))}
+                </div>
+                {pat.mecanisme && (() => {
+                  const m = MECANISMES_TRAUMA.find(x => x.id === pat.mecanisme);
+                  return (m.penetrant || m.hcin) ? (
+                    <p style={{ margin:"6px 0 0", fontSize:9.5, color:P.textSoft, fontStyle:"italic" }}>
+                      {m.penetrant && "Trauma pénétrant"}{m.penetrant && m.hcin && " · "}{m.hcin && "Haute cinétique"}
+                      {" "}— préremplira automatiquement le score BATT
+                    </p>
+                  ) : null;
+                })()}
+              </div>
+            )}
             <div><Lbl>Température (°C)</Lbl>
               <TInput value={pat.temp} onChange={sf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
             <div><Lbl>Antécédents médicaux</Lbl>
@@ -12042,7 +12770,7 @@ function App() {
                 <p style={{ margin:"0 0 1px", fontSize:9.5, fontWeight:700, color:P.amber,
                   textTransform:"uppercase", letterSpacing:"0.14em", fontFamily:mono }}>Évaluation après {Math.floor(sec/60)} min</p>
                 <p style={{ margin:0, fontSize:18, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>
-                  Critères d'arrêt
+                  Critères d'arrêt{isTrauma ? " — Trauma" : ""}
                 </p>
               </div>
               <button onClick={() => setModalCriteres(false)}
@@ -12052,14 +12780,22 @@ function App() {
 
             {/* Check-list */}
             <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:18 }}>
-              {[
+              {(isTrauma ? [
+                { icon:"🔍", text:"Causes HOTT recherchées et traitées (Hypovolémie, Hypoxie, pneumothOrax, Tamponnade) ?" },
+                { icon:"🫁", text:"Thoracostomies bilatérales réalisées (exclut pneumothorax suffocant) ?" },
+                { icon:"🩸", text:"Contrôle hémorragique tenté (externe, ceinture pelvienne, produits sanguins/Exacyl) ?" },
+                { icon:"⚠️", text:"Traumatisme fermé + no-flow prolongé + aucun signe de vie : pronostic quasi nul" },
+                { icon:"🔪", text:"Traumatisme pénétrant : thoracotomie de sauvetage envisagée si perte de vitalité récente et centre équipé ?" },
+                { icon:"🤝", text:"Décision collégiale d'équipe ?" },
+                { icon:"👨‍👩‍👧", text:"Famille informée / présence souhaitée ?" },
+              ] : [
                 { icon:"🔍", text:"Cause réversible recherchée et traitée (5H/5T) ?" },
                 { icon:"📈", text:"EtCO₂ persistant < 10 mmHg malgré MCE de qualité ?" },
                 { icon:"⏱", text:"Durée ≥ 20 min (≥ 30 min si rythme choquable initial) ?" },
                 { icon:"💊", text:"Tous les traitements administrés (adré, cordarone si FV/TV) ?" },
                 { icon:"🤝", text:"Décision collégiale d'équipe ?" },
                 { icon:"👨‍👩‍👧", text:"Famille informée / présence souhaitée ?" },
-              ].map((c, i) => (
+              ]).map((c, i) => (
                 <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
                   background:P.surfaceAlt, borderRadius:11, padding:"10px 12px",
                   border:`1px solid ${P.border}` }}>
