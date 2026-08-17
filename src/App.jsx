@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-23";
+const APP_VERSION = "2026.08.15-24";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -2883,8 +2883,12 @@ function calcMateriel(poids) {
     fr:                 row.fr,
     vt:                 row.vt,
     ezio:               row.ezio,
-    adrenalineMg:       row.adrMg,
-    adrenalineMl:       row.adrMl,
+    // Calculé en direct depuis le poids (10 μg/kg exact) — jamais depuis la table
+    // statique (row.adrMg/adrMl), pour garantir une cohérence parfaite et permanente
+    // avec le calcul affiché dans le guide de dilution (Protocole 1 et 2), quel que
+    // soit le poids, sans dépendre d'une valeur pré-calculée qui pourrait diverger.
+    adrenalineMg:       Math.round(p * 0.01 * 1000) / 1000,
+    adrenalineMl:       Math.round(p * 0.1 * 100) / 100,
     amioMg:             row.amioMg,
     amioMl:             row.amioMl,
     defibJ:             row.defib4,
