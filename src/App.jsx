@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-26";
+const APP_VERSION = "2026.08.15-27";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1084,7 +1084,7 @@ function GuideApp({ onClose }) {
         { icon:"💾", title:"Sauvegarde automatique locale", desc:"Toutes les données sont enregistrées en continu sur l'appareil. Fermeture accidentelle, batterie déchargée, crash de l'app : rien n'est perdu, la session reprend exactement où elle s'est arrêtée." },
         { icon:"📦", title:"Export / import de sauvegarde", desc:"Depuis Réglages : exportez un fichier contenant toutes les archives et tous les réglages, à conserver ailleurs ou à transférer sur un nouveau téléphone. Utile avant un changement d'appareil, une mise à jour d'OS, ou simplement par précaution — les données restent sinon uniquement sur ce téléphone. Noms et prénoms sont automatiquement réduits à leurs initiales dans le fichier exporté (le fichier peut quitter l'appareil — minimisation des données médicales) ; ils restent en clair dans le détail d'un cas consulté directement sur le téléphone. À l'import, les archives sont fusionnées sans rien effacer ; les réglages, eux, sont remplacés par ceux du fichier importé (une confirmation est demandée avant)." },
         { icon:"✉️", title:"Contact / Retours", desc:"Depuis Réglages : trois boutons pour signaler un bug, suggérer une amélioration, ou simplement faire un retour positif — chacun ouvre l'app mail avec le sujet et la version de l'app déjà pré-remplis, pour ne rien avoir à taper à la main." },
-        { icon:"📊", title:"Dashboard & archives", desc:"Chaque réanimation clôturée est archivée localement avec sa durée, son issue et ses données clés — consultable ensuite depuis le tableau de bord pour un retour d'expérience ou des statistiques de service. Filtrable par type et période, avec export Excel (.xlsx, colonnes numériques natives pour trier/comparer directement) ou CSV, toujours limité aux cas actuellement filtrés." },
+        { icon:"📊", title:"Dashboard & archives", desc:"Chaque réanimation clôturée est archivée localement avec sa durée, son issue et ses données clés — consultable ensuite depuis le tableau de bord pour un retour d'expérience ou des statistiques de service. Filtrable par type et période, avec export Excel (.xlsx, deux onglets : \"Résumé\" pré-agrégé prêt pour un graphique en 2 clics, et \"Cas archivés\" détaillé avec colonnes numériques natives) ou CSV, toujours limité aux cas actuellement filtrés." },
       ],
     },
     {
@@ -7852,7 +7852,58 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       ws["!cols"] = headers.map((h, i) => ({ wch: Math.max(h.length, i === 2 ? 14 : 10) }));
       ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:aoa.length-1, c:headers.length-1} }) };
+
+      // ── Onglet "Résumé" — statistiques déjà agrégées, prêtes pour un graphique
+      // Excel en 2 clics (sélectionner un tableau → Insertion → Graphique recommandé) ──
+      const monthlyMap = {};
+      stats.forEach(s => {
+        if (!s.date) return;
+        const month = s.date.slice(0, 7); // YYYY-MM
+        if (!monthlyMap[month]) monthlyMap[month] = { total:0, racs:0 };
+        monthlyMap[month].total++;
+        if (s.outcome === "RACS") monthlyMap[month].racs++;
+      });
+      const monthlyRows = Object.keys(monthlyMap).sort().map(m => [
+        m, monthlyMap[m].total, monthlyMap[m].racs,
+        monthlyMap[m].total ? Math.round(monthlyMap[m].racs / monthlyMap[m].total * 100) : 0,
+      ]);
+
+      const resumeAoa = [
+        ["Copilote ACR — Résumé statistique"],
+        ["Généré le", new Date().toLocaleString("fr-FR")],
+        ["Période", hasActiveFilter ? `${dateFrom || "…"} → ${dateTo || "…"} · ${filterType === "all" ? "Tous types" : filterType}` : "Toutes périodes, tous types"],
+        [],
+        ["VUE D'ENSEMBLE"],
+        ["Nombre de cas", n],
+        ["Taux de RACS global (%)", roscRate],
+        ["Durée moyenne RCP (min)", n > 0 ? Math.round(avgDur / 60 * 10) / 10 : ""],
+        ["Délai moyen 1er choc (min)", avgDelaiChoc !== null ? Math.round(avgDelaiChoc / 60 * 10) / 10 : ""],
+        ["Délai moyen 1ère adrénaline (min)", avgDelaiAdr !== null ? Math.round(avgDelaiAdr / 60 * 10) / 10 : ""],
+        ["No-flow moyen (min)", avgNoFlow !== null ? Math.round(avgNoFlow * 10) / 10 : ""],
+        ["Low-flow moyen (min)", avgLowFlow !== null ? Math.round(avgLowFlow * 10) / 10 : ""],
+        ["Taux de récidive après RACS (%)", recidiveRate ?? ""],
+        [],
+        ["RÉPARTITION PAR TYPE", "Nb cas"],
+        ["Adulte", stats.filter(s => s.type === "Adulte").length],
+        ["Traumatique", stats.filter(s => s.type === "Traumatique").length],
+        ["Pédiatrique", stats.filter(s => s.type === "Pédiatrique").length],
+        [],
+        ["RACS SELON RYTHME INITIAL", "Taux (%)", "Nb cas"],
+        ["Choquable (FV/TV)", rhythmChocable?.rate ?? "", rhythmChocable?.count ?? 0],
+        ["Non choquable (AESP/Asystolie)", rhythmNonChocable?.rate ?? "", rhythmNonChocable?.count ?? 0],
+        [],
+        ["RACS SELON RCP TÉMOIN", "Taux (%)", "Nb cas"],
+        ["Avec RCP témoin", rcpTemoinOui?.rate ?? "", rcpTemoinOui?.count ?? 0],
+        ["Sans RCP témoin", rcpTemoinNon?.rate ?? "", rcpTemoinNon?.count ?? 0],
+        [],
+        ["ÉVOLUTION MENSUELLE", "Nb cas", "Nb RACS", "Taux RACS (%)"],
+        ...(monthlyRows.length ? monthlyRows : [["Aucune donnée datée", 0, 0, 0]]),
+      ];
+      const wsResume = XLSX.utils.aoa_to_sheet(resumeAoa);
+      wsResume["!cols"] = [{ wch: 32 }, { wch: 14 }, { wch: 12 }, { wch: 14 }];
+
       const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, wsResume, "Résumé");
       XLSX.utils.book_append_sheet(wb, ws, "Cas archivés");
       XLSX.writeFile(wb, `copilote-acr-stats-${new Date().toISOString().slice(0,10)}.xlsx`);
     } catch (e) {
