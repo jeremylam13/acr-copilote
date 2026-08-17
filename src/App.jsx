@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-18";
+const APP_VERSION = "2026.08.15-23";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -703,19 +703,9 @@ function playCycleBip() {
 }
 
 // ── Tick métronome CPR 100 bpm (tick court aigu) ─────────────────────────────
-function playMetronomeTick() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.connect(g); g.connect(ctx.destination);
-    o.type = "square"; o.frequency.value = 1000;
-    const t = ctx.currentTime;
-    g.gain.setValueAtTime(0.12, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.025);
-    o.start(t); o.stop(t + 0.03);
-  } catch {}
-}
+// Note : cette fonction a été retirée du flux pédiatrique (elle faisait doublon
+// avec le scheduler Web Audio lookahead, causant un effet de double bip). Le
+// métronome des deux modules passe désormais uniquement par ce scheduler.
 
 // Démarre l'alarme en boucle jusqu'à acquittement (plafond ~30 s de sécurité).
 function startAlarm() {
@@ -2850,8 +2840,8 @@ const PED_TABLE = [
   { age:"6 mois",   p:7,  masque:"0-1",  aspi:"6-8",  lame:"1",       mandrin:"6",      sonde:"3.5", repere:10, guedel:"0",   fr:25, vt:50,  ezio:"E-ZIO 25mm",         adrMg:0.1,  adrMl:1,   amioMg:35,  amioMl:1,   defib4:30,  defib6:42,  defib8:60,  fcN:120, pasN:80,  pamTC:55, pamHTC:40, vtR:"25-30",  frR:"25",  ie:"1/2", peep:5, sng:8,  fio2:"100% puis QSP 94-98%", midPSE:0.7, sufBolus:1.4, sufPSE:1.4 , nimbex1:2, nimbex2:0.7, rempliVol:70, rempliDebit:28, adrPSE1:4.2, adrPSE2:10.5, adrPSE3:21, adrPSE4:31.5 },
   { age:"8 mois",   p:8,  masque:"0-1",  aspi:"6-8",  lame:"1",       mandrin:"6",      sonde:"3.5", repere:11, guedel:"0",   fr:25, vt:50,  ezio:"E-ZIO 25mm",         adrMg:0.1,  adrMl:1,   amioMg:40,  amioMl:1,   defib4:35,  defib6:48,  defib8:70,  fcN:115, pasN:80,  pamTC:55, pamHTC:40, vtR:"25-30",  frR:"25",  ie:"1/2", peep:5, sng:8,  fio2:"100% puis QSP 94-98%", midPSE:0.8, sufBolus:1.6, sufPSE:1.6 , nimbex1:2.4, nimbex2:0.8, rempliVol:80, rempliDebit:32, adrPSE1:4.8, adrPSE2:12, adrPSE3:24, adrPSE4:36 },
   { age:"12 mois",  p:10, masque:"1-2",  aspi:"8",    lame:"1",       mandrin:"10",     sonde:"4",   repere:11, guedel:"1",   fr:20, vt:60,  ezio:"E-ZIO 25mm",         adrMg:0.1,  adrMl:1,   amioMg:50,  amioMl:1,   defib4:40,  defib6:60,  defib8:80,  fcN:110, pasN:90,  pamTC:55, pamHTC:40, vtR:"25-30",  frR:"25",  ie:"1/2", peep:5, sng:8,  fio2:"100% puis QSP 94-98%", midPSE:1.0, sufBolus:2.0, sufPSE:2.0 , nimbex1:3, nimbex2:1, rempliVol:100, rempliDebit:40, adrPSE1:6, adrPSE2:15, adrPSE3:30, adrPSE4:45 },
-  { age:"18 mois",  p:11, masque:"1-2",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:12, guedel:"1",   fr:20, vt:66,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:55,  amioMl:1.5, defib4:45,  defib6:66,  defib8:90,  fcN:110, pasN:90,  pamTC:57, pamHTC:42, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.1, sufBolus:2.2, sufPSE:2.2 , nimbex1:3.3, nimbex2:1.1, rempliVol:110, rempliDebit:40, adrPSE1:1.3, adrPSE2:3.3, adrPSE3:6.6, adrPSE4:9.9 },
-  { age:"2 ans",    p:12, masque:"1-2",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:12, guedel:"1",   fr:20, vt:72,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:60,  amioMl:1.5, defib4:50,  defib6:72,  defib8:100, fcN:110, pasN:100, pamTC:58, pamHTC:43, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.2, sufBolus:2.4, sufPSE:2.4 , nimbex1:3.6, nimbex2:1.2, rempliVol:120, rempliDebit:40, adrPSE1:1.4, adrPSE2:3.6, adrPSE3:7.2, adrPSE4:10.8 },
+  { age:"18 mois",  p:11, masque:"1-2",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:12, guedel:"1",   fr:20, vt:66,  ezio:"E-ZIO 25mm",         adrMg:0.10, adrMl:1.0, amioMg:55,  amioMl:1.5, defib4:45,  defib6:66,  defib8:90,  fcN:110, pasN:90,  pamTC:57, pamHTC:42, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.1, sufBolus:2.2, sufPSE:2.2 , nimbex1:3.3, nimbex2:1.1, rempliVol:110, rempliDebit:40, adrPSE1:1.3, adrPSE2:3.3, adrPSE3:6.6, adrPSE4:9.9 },
+  { age:"2 ans",    p:12, masque:"1-2",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:12, guedel:"1",   fr:20, vt:72,  ezio:"E-ZIO 25mm",         adrMg:0.10, adrMl:1.0, amioMg:60,  amioMl:1.5, defib4:50,  defib6:72,  defib8:100, fcN:110, pasN:100, pamTC:58, pamHTC:43, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.2, sufBolus:2.4, sufPSE:2.4 , nimbex1:3.6, nimbex2:1.2, rempliVol:120, rempliDebit:40, adrPSE1:1.4, adrPSE2:3.6, adrPSE3:7.2, adrPSE4:10.8 },
   { age:"3 ans",    p:14, masque:"3",  aspi:"8",    lame:"1-2",     mandrin:"10",     sonde:"4",   repere:13, guedel:"1",   fr:20, vt:84,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:70,  amioMl:1.5, defib4:55,  defib6:84,  defib8:110, fcN:105, pasN:100, pamTC:60, pamHTC:45, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.4, sufBolus:2.8, sufPSE:2.8 , nimbex1:4.2, nimbex2:1.4, rempliVol:140, rempliDebit:40, adrPSE1:1.7, adrPSE2:4.2, adrPSE3:8.4, adrPSE4:12.6 },
   { age:"4 ans",    p:15, masque:"3",    aspi:"8-10", lame:"1-2",     mandrin:"10",     sonde:"4.5", repere:14, guedel:"1",   fr:20, vt:90,  ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:75,  amioMl:1.5, defib4:60,  defib6:90,  defib8:120, fcN:105, pasN:100, pamTC:61, pamHTC:46, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.5, sufBolus:3.0, sufPSE:3.0 , nimbex1:4.5, nimbex2:1.5, rempliVol:150, rempliDebit:40, adrPSE1:1.8, adrPSE2:4.5, adrPSE3:9, adrPSE4:13.5 },
   { age:"5 ans",    p:17, masque:"3",    aspi:"8-10", lame:"1-2",     mandrin:"10",     sonde:"4.5", repere:14, guedel:"1",   fr:20, vt:102, ezio:"E-ZIO 25mm",         adrMg:0.15, adrMl:1.5, amioMg:85,  amioMl:2,   defib4:70,  defib6:102, defib8:140, fcN:105, pasN:105, pamTC:63, pamHTC:48, vtR:"20-25",  frR:"25",  ie:"1/2", peep:5, sng:10, fio2:"100% puis QSP 94-98%", midPSE:1.7, sufBolus:3.4, sufPSE:3.4 , nimbex1:5, nimbex2:1.7, rempliVol:170, rempliDebit:40, adrPSE1:2, adrPSE2:5.1, adrPSE3:10.2, adrPSE4:15.3 },
@@ -3129,25 +3119,16 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [ccfEnabled] = useLocalState("acr_ccf_enabled", false);
   const [debriefEnabled] = useLocalState("acr_debrief_enabled", false);
   const [pedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
-  const [pedDiluMode] = useLocalState("acr_ped_dilu_mode", "1");
+  const [pedDiluMode] = useLocalState("acr_ped_dilu_mode", "2");
   const [metronomeEnabled] = useLocalState("acr_metronome_enabled", false);
   const [adrIntervalGlobal] = useLocalState("acr_adr_interval", 4);
   const [voiceWakeWord] = useLocalState("acr_voice_wakeword", "Alpha");
+  // Métronome pédiatrique — le scheduler précis (Web Audio lookahead) est plus
+  // bas dans le fichier ; l'ancien système ici a été retiré (il faisait doublon
+  // et produisait un effet de double bip désynchronisé, contrairement à l'adulte
+  // qui n'a jamais eu qu'un seul système).
   const [metronomeMutedPed, setMetronomeMutedPed] = useState(false);
   const [showDebriefPed, setShowDebriefPed] = useState(false);
-
-  // Métronome pédiatrique
-  const metronomeMutedPedRef = useRef(false);
-  useEffect(() => { metronomeMutedPedRef.current = metronomeMutedPed; }, [metronomeMutedPed]);
-  const hasRoscPedRef = useRef(!!events.find(e=>e.id==="rosc"));
-  useEffect(() => { hasRoscPedRef.current = !!events.find(e=>e.id==="rosc"); }, [events]);
-  useEffect(() => {
-    if (!metronomeEnabled || !running) return;
-    const id = setInterval(() => {
-      if (!metronomeMutedPedRef.current && !hasRoscPedRef.current) playMetronomeTick();
-    }, 600);
-    return () => clearInterval(id);
-  }, [metronomeEnabled, running]);
 
   // Bip cycle pédiatrique
   const prevCpPedRef = useRef(null);
@@ -3708,19 +3689,26 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   useEffect(() => {
     if (!metronomeEnabled || !running) {
       clearInterval(metroTimerPedRef.current);
+      metroTimerPedRef.current = null;
       if (metroCtxPedRef.current) { metroCtxPedRef.current.close().catch(()=>{}); metroCtxPedRef.current = null; }
       return;
     }
-    try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      ctx.resume().catch(()=>{});
-      metroCtxPedRef.current = ctx;
-      metroNextPedRef.current = ctx.currentTime + 0.05;
-      schedulePed();
-      metroTimerPedRef.current = setInterval(schedulePed, 50);
-    } catch(e) {}
+    const startSchedulerPed = () => {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        ctx.resume().catch(()=>{});
+        metroCtxPedRef.current = ctx;
+        metroNextPedRef.current = ctx.currentTime + 0.05;
+        schedulePed();
+        metroTimerPedRef.current = setInterval(schedulePed, 50);
+      } catch(e) {}
+    };
+    if (!metroCtxPedRef.current || metroCtxPedRef.current.state === "closed") {
+      startSchedulerPed();
+    }
     return () => {
       clearInterval(metroTimerPedRef.current);
+      metroTimerPedRef.current = null;
       if (metroCtxPedRef.current) { metroCtxPedRef.current.close().catch(()=>{}); metroCtxPedRef.current = null; }
     };
   }, [metronomeEnabled, running]);
@@ -5169,6 +5157,122 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           const lastRhythmPed = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
           return (
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:10}}>
+
+          {/* ── Dilution adrénaline — identique à l'écran de préparation, mais visible ici pendant la réa ── */}
+          {pedDiluEnabled && (() => {
+            const p = poids;
+
+            // ── PROTOCOLE 2 : dilution simple universelle ──
+            if (pedDiluMode === "2") {
+              const volInj = (Math.round(p * 0.1 * 100) / 100).toString().replace(".", ",");
+              const mgInj  = (Math.round(p * 0.01 * 1000) / 1000).toString().replace(".", ",");
+              const Step2 = ({ num, bold, rest }) => (
+                <div style={{ display:"flex", gap:8, padding:"5px 0", borderBottom:`1px solid ${P.borderSoft}`, alignItems:"baseline" }}>
+                  <span style={{ width:18, height:18, borderRadius:5, background:P.tealText,
+                    display:"inline-flex", alignItems:"center", justifyContent:"center",
+                    fontSize:10, fontWeight:800, color:"#fff", flexShrink:0, fontFamily:mono }}>{num}</span>
+                  <p style={{ margin:0, fontSize:12, color:P.text, lineHeight:1.4 }}>
+                    {bold && <span style={{ fontWeight:700, color:P.tealText }}>{bold}</span>}
+                    {rest && <span>{rest}</span>}
+                  </p>
+                </div>
+              );
+              return (
+                <div style={{ gridColumn:"1 / -1", background:P.tealSoft, borderRadius:10, padding:"10px 12px", marginBottom:2,
+                  border:`1px solid ${P.teal}` }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                    <p style={{ margin:0, fontSize:9, fontWeight:800, color:P.tealText, fontFamily:mono,
+                      textTransform:"uppercase", letterSpacing:"0.08em" }}>💉 Protocole 2 — Dilution simple universelle</p>
+                    <div style={{ display:"flex", gap:6 }}>
+                      <div style={{ background:P.roseSoft, border:`1px solid ${P.rose}`, borderRadius:7,
+                        padding:"3px 8px", textAlign:"center" }}>
+                        <span style={{ fontSize:14, fontWeight:800, color:P.roseText, fontFamily:mono }}>{volInj} mL</span>
+                        <span style={{ fontSize:9, color:P.roseText, display:"block" }}>/ 4 min</span>
+                      </div>
+                      <div style={{ background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:7,
+                        padding:"3px 8px", textAlign:"center" }}>
+                        <span style={{ fontSize:14, fontWeight:800, color:P.amberText, fontFamily:mono }}>{mgInj} mg</span>
+                        <span style={{ fontSize:9, color:P.amberText, display:"block" }}>0,01 mg/kg</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p style={{ margin:"0 0 6px", fontSize:10, color:P.tealText, fontStyle:"italic" }}>
+                    Préparation identique pour tous les poids
+                  </p>
+                  <Step2 num="1" bold="Prélever 1 mL (1 mg)" rest=" d'adrénaline 1 mg/mL" />
+                  <Step2 num="2" bold="Compléter à 10 mL" rest=" (+ 9 mL NaCl 0,9 %)" />
+                  <div style={{ marginTop:6, padding:"5px 0" }}>
+                    <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>→ Concentration : 0,1 mg/mL</p>
+                    <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:800, color:P.roseText }}>
+                      → Injecter {volInj} mL = {mgInj} mg = 0,01 mg/kg ✓
+                    </p>
+                  </div>
+                </div>
+              );
+            }
+
+            // ── PROTOCOLE 1 : double/simple selon le poids ──
+            const isInfant = p < 10;
+            const vol1Inf  = p;
+            const mg1Inf   = Math.round(p * 0.1 * 100) / 100;
+            const naclInf  = Math.round((10 - p) * 10) / 10;
+            const concInf  = (mg1Inf / 10).toFixed(3);
+            const volSup   = Math.round(p / 10 * 100) / 100;
+            const naclSup  = Math.round((10 - volSup) * 100) / 100;
+            const concSup  = (volSup / 10).toFixed(3);
+            const Step1 = ({ num, bold, rest }) => (
+              <div style={{ display:"flex", gap:8, padding:"5px 0", borderBottom:`1px solid ${P.borderSoft}`, alignItems:"baseline" }}>
+                {num !== undefined && (
+                  <span style={{ width:18, height:18, borderRadius:5, background:P.tealText,
+                    display:"inline-flex", alignItems:"center", justifyContent:"center",
+                    fontSize:10, fontWeight:800, color:"#fff", flexShrink:0, fontFamily:mono }}>{num}</span>
+                )}
+                <p style={{ margin:0, fontSize:12, color:P.text, lineHeight:1.4 }}>
+                  {bold && <span style={{ fontWeight:700, color:P.tealText }}>{bold}</span>}
+                  {rest && <span>{rest}</span>}
+                </p>
+              </div>
+            );
+            return (
+              <div style={{ gridColumn:"1 / -1", background:P.tealSoft, borderRadius:10, padding:"10px 12px", marginBottom:2,
+                border:`1px solid ${P.teal}` }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                  <p style={{ margin:0, fontSize:9, fontWeight:800, color:P.tealText, fontFamily:mono,
+                    textTransform:"uppercase", letterSpacing:"0.08em" }}>
+                    💉 Protocole 1 — {isInfant ? "< 10 kg (nourrisson)" : "≥ 10 kg (enfant)"}
+                  </p>
+                  <div style={{ background:P.roseSoft, border:`1px solid ${P.rose}`, borderRadius:7,
+                    padding:"3px 8px", display:"flex", alignItems:"center", gap:4 }}>
+                    <span style={{ fontSize:13, fontWeight:800, color:P.roseText, fontFamily:mono }}>1 mL</span>
+                    <span style={{ fontSize:9, color:P.roseText }}>/ 4 min</span>
+                  </div>
+                </div>
+                {isInfant ? (
+                  <>
+                    <Step1 num="1" bold="Ampoule 1 mg → diluer à 10 mL" rest=" (+ 9 mL NaCl 0,9 %) = 0,1 mg/mL" />
+                    <Step1 num="2" bold={`Prélever ${vol1Inf} mL`} rest={` = ${mg1Inf} mg`} />
+                    <Step1 num="3" bold="Compléter à 10 mL" rest={` (+ ${naclInf} mL NaCl 0,9 %)`} />
+                    <div style={{ marginTop:6, padding:"5px 0" }}>
+                      <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>
+                        → {concInf} mg/mL · 1 mL = 10 µg/kg ✓
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Step1 num="1" bold={`Prélever ${volSup} mL`} rest=" d'adrénaline 1 mg/mL" />
+                    <Step1 num="2" bold="Compléter à 10 mL" rest={` (+ ${naclSup} mL NaCl 0,9 %)`} />
+                    <div style={{ marginTop:6, padding:"5px 0" }}>
+                      <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>
+                        → {concSup} mg/mL · 1 mL = 10 µg/kg ✓
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+
           <ActionBtn action={{label:"Adrénaline",dose:`${localMat?.adrenalineMg||""} mg`,vital:true,svg:ICONS.adr,accent:P.rose,soft:P.roseSoft,textC:P.roseText,
               hapticType:"long", badge: adrAlarmActivePed ? { text:"!", color:P.rose, pulse:true } : null}}
             onClick={()=>{ addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }}/>
@@ -6173,7 +6277,7 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
   const [idx,      setIdx]      = useState(0);
   const [showRcp,  setShowRcp]  = useState(false);
   const [pedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
-  const [pedDiluMode]    = useLocalState("acr_ped_dilu_mode", "1");
+  const [pedDiluMode]    = useLocalState("acr_ped_dilu_mode", "2");
 
   // Mode équipe — préparation AVANT le début de la réanimation (connecter les
   // téléphones pendant que l'équipe s'installe). Session "à vide" côté données
@@ -6415,6 +6519,121 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
             </div>
           </div>
 
+          {/* ── Guide de dilution adrénaline — juste après le disclaimer, bien visible dès la sélection du poids ── */}
+          {pedDiluEnabled && (() => {
+            const p = poids;
+
+            // ── PROTOCOLE 2 : dilution simple universelle ──
+            if (pedDiluMode === "2") {
+              const volInj = (Math.round(p * 0.1 * 100) / 100).toString().replace(".", ",");
+              const mgInj  = (Math.round(p * 0.01 * 1000) / 1000).toString().replace(".", ",");
+              const Step2 = ({ num, bold, rest }) => (
+                <div style={{ display:"flex", gap:8, padding:"5px 0", borderBottom:`1px solid ${P.borderSoft}`, alignItems:"baseline" }}>
+                  <span style={{ width:18, height:18, borderRadius:5, background:P.tealText,
+                    display:"inline-flex", alignItems:"center", justifyContent:"center",
+                    fontSize:10, fontWeight:800, color:"#fff", flexShrink:0, fontFamily:mono }}>{num}</span>
+                  <p style={{ margin:0, fontSize:12, color:P.text, lineHeight:1.4 }}>
+                    {bold && <span style={{ fontWeight:700, color:P.tealText }}>{bold}</span>}
+                    {rest && <span>{rest}</span>}
+                  </p>
+                </div>
+              );
+              return (
+                <div style={{ background:P.tealSoft, borderRadius:12, padding:"12px 14px", marginBottom:12,
+                  border:`1.5px solid ${P.teal}`, boxShadow:`0 2px 8px color-mix(in srgb, ${P.teal} 15%, transparent)` }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                    <p style={{ margin:0, fontSize:9, fontWeight:800, color:P.tealText, fontFamily:mono,
+                      textTransform:"uppercase", letterSpacing:"0.08em" }}>💉 Protocole 2 — Dilution simple universelle</p>
+                    <div style={{ display:"flex", gap:6 }}>
+                      <div style={{ background:P.roseSoft, border:`1px solid ${P.rose}`, borderRadius:7,
+                        padding:"3px 8px", textAlign:"center" }}>
+                        <span style={{ fontSize:14, fontWeight:800, color:P.roseText, fontFamily:mono }}>{volInj} mL</span>
+                        <span style={{ fontSize:9, color:P.roseText, display:"block" }}>/ 4 min</span>
+                      </div>
+                      <div style={{ background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:7,
+                        padding:"3px 8px", textAlign:"center" }}>
+                        <span style={{ fontSize:14, fontWeight:800, color:P.amberText, fontFamily:mono }}>{mgInj} mg</span>
+                        <span style={{ fontSize:9, color:P.amberText, display:"block" }}>0,01 mg/kg</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p style={{ margin:"0 0 6px", fontSize:10, color:P.tealText, fontStyle:"italic" }}>
+                    Préparation identique pour tous les poids
+                  </p>
+                  <Step2 num="1" bold="Prélever 1 mL (1 mg)" rest=" d'adrénaline 1 mg/mL" />
+                  <Step2 num="2" bold="Compléter à 10 mL" rest=" (+ 9 mL NaCl 0,9 %)" />
+                  <div style={{ marginTop:6, padding:"5px 0" }}>
+                    <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>→ Concentration : 0,1 mg/mL</p>
+                    <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:800, color:P.roseText }}>
+                      → Injecter {volInj} mL = {mgInj} mg = 0,01 mg/kg ✓
+                    </p>
+                  </div>
+                </div>
+              );
+            }
+
+            // ── PROTOCOLE 1 : double/simple selon le poids ──
+            const isInfant = p < 10;
+            const vol1Inf  = p;
+            const mg1Inf   = Math.round(p * 0.1 * 100) / 100;
+            const naclInf  = Math.round((10 - p) * 10) / 10;
+            const concInf  = (mg1Inf / 10).toFixed(3);
+            const volSup   = Math.round(p / 10 * 100) / 100;
+            const naclSup  = Math.round((10 - volSup) * 100) / 100;
+            const concSup  = (volSup / 10).toFixed(3);
+            const Step1 = ({ num, bold, rest }) => (
+              <div style={{ display:"flex", gap:8, padding:"5px 0", borderBottom:`1px solid ${P.borderSoft}`, alignItems:"baseline" }}>
+                {num !== undefined && (
+                  <span style={{ width:18, height:18, borderRadius:5, background:P.tealText,
+                    display:"inline-flex", alignItems:"center", justifyContent:"center",
+                    fontSize:10, fontWeight:800, color:"#fff", flexShrink:0, fontFamily:mono }}>{num}</span>
+                )}
+                <p style={{ margin:0, fontSize:12, color:P.text, lineHeight:1.4 }}>
+                  {bold && <span style={{ fontWeight:700, color:P.tealText }}>{bold}</span>}
+                  {rest && <span>{rest}</span>}
+                </p>
+              </div>
+            );
+            return (
+              <div style={{ background:P.tealSoft, borderRadius:12, padding:"12px 14px", marginBottom:12,
+                border:`1.5px solid ${P.teal}`, boxShadow:`0 2px 8px color-mix(in srgb, ${P.teal} 15%, transparent)` }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                  <p style={{ margin:0, fontSize:9, fontWeight:800, color:P.tealText, fontFamily:mono,
+                    textTransform:"uppercase", letterSpacing:"0.08em" }}>
+                    💉 Protocole 1 — {isInfant ? "< 10 kg (nourrisson)" : "≥ 10 kg (enfant)"}
+                  </p>
+                  <div style={{ background:P.roseSoft, border:`1px solid ${P.rose}`, borderRadius:7,
+                    padding:"3px 8px", display:"flex", alignItems:"center", gap:4 }}>
+                    <span style={{ fontSize:13, fontWeight:800, color:P.roseText, fontFamily:mono }}>1 mL</span>
+                    <span style={{ fontSize:9, color:P.roseText }}>/ 4 min</span>
+                  </div>
+                </div>
+                {isInfant ? (
+                  <>
+                    <Step1 num="1" bold="Ampoule 1 mg → diluer à 10 mL" rest=" (+ 9 mL NaCl 0,9 %) = 0,1 mg/mL" />
+                    <Step1 num="2" bold={`Prélever ${vol1Inf} mL`} rest={` = ${mg1Inf} mg`} />
+                    <Step1 num="3" bold="Compléter à 10 mL" rest={` (+ ${naclInf} mL NaCl 0,9 %)`} />
+                    <div style={{ marginTop:6, padding:"5px 0" }}>
+                      <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>
+                        → {concInf} mg/mL · 1 mL = 10 µg/kg ✓
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Step1 num="1" bold={`Prélever ${volSup} mL`} rest=" d'adrénaline 1 mg/mL" />
+                    <Step1 num="2" bold="Compléter à 10 mL" rest={` (+ ${naclSup} mL NaCl 0,9 %)`} />
+                    <div style={{ marginTop:6, padding:"5px 0" }}>
+                      <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>
+                        → {concSup} mg/mL · 1 mL = 10 µg/kg ✓
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+
           {/* Voies aériennes */}
           <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:12,
             padding:"12px 14px", marginBottom:10 }}>
@@ -6498,121 +6717,6 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
                 </div>
               </div>
             </div>
-
-            {/* ── Guide de dilution (protocole local activé) ── */}
-            {pedDiluEnabled && (() => {
-              const p = poids;
-
-              // ── PROTOCOLE 2 : dilution simple universelle ──
-              if (pedDiluMode === "2") {
-                const volInj = (Math.round(p * 0.1 * 100) / 100).toString().replace(".", ",");
-                const mgInj  = (Math.round(p * 0.01 * 1000) / 1000).toString().replace(".", ",");
-                const Step2 = ({ num, bold, rest }) => (
-                  <div style={{ display:"flex", gap:8, padding:"5px 0", borderBottom:`1px solid ${P.borderSoft}`, alignItems:"baseline" }}>
-                    <span style={{ width:18, height:18, borderRadius:5, background:P.tealText,
-                      display:"inline-flex", alignItems:"center", justifyContent:"center",
-                      fontSize:10, fontWeight:800, color:"#fff", flexShrink:0, fontFamily:mono }}>{num}</span>
-                    <p style={{ margin:0, fontSize:12, color:P.text, lineHeight:1.4 }}>
-                      {bold && <span style={{ fontWeight:700, color:P.tealText }}>{bold}</span>}
-                      {rest && <span>{rest}</span>}
-                    </p>
-                  </div>
-                );
-                return (
-                  <div style={{ background:P.tealSoft, borderRadius:10, padding:"10px 12px", marginBottom:8,
-                    border:`1px solid ${P.teal}` }}>
-                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
-                      <p style={{ margin:0, fontSize:9, fontWeight:800, color:P.tealText, fontFamily:mono,
-                        textTransform:"uppercase", letterSpacing:"0.08em" }}>💉 Protocole 2 — Dilution simple universelle</p>
-                      <div style={{ display:"flex", gap:6 }}>
-                        <div style={{ background:P.roseSoft, border:`1px solid ${P.rose}`, borderRadius:7,
-                          padding:"3px 8px", textAlign:"center" }}>
-                          <span style={{ fontSize:14, fontWeight:800, color:P.roseText, fontFamily:mono }}>{volInj} mL</span>
-                          <span style={{ fontSize:9, color:P.roseText, display:"block" }}>/ 4 min</span>
-                        </div>
-                        <div style={{ background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:7,
-                          padding:"3px 8px", textAlign:"center" }}>
-                          <span style={{ fontSize:14, fontWeight:800, color:P.amberText, fontFamily:mono }}>{mgInj} mg</span>
-                          <span style={{ fontSize:9, color:P.amberText, display:"block" }}>0,01 mg/kg</span>
-                        </div>
-                      </div>
-                    </div>
-                    <p style={{ margin:"0 0 6px", fontSize:10, color:P.tealText, fontStyle:"italic" }}>
-                      Préparation identique pour tous les poids
-                    </p>
-                    <Step2 num="1" bold="Prélever 1 mL (1 mg)" rest=" d'adrénaline 1 mg/mL" />
-                    <Step2 num="2" bold="Compléter à 10 mL" rest=" (+ 9 mL NaCl 0,9 %)" />
-                    <div style={{ marginTop:6, padding:"5px 0" }}>
-                      <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>→ Concentration : 0,1 mg/mL</p>
-                      <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:800, color:P.roseText }}>
-                        → Injecter {volInj} mL = {mgInj} mg = 0,01 mg/kg ✓
-                      </p>
-                    </div>
-                  </div>
-                );
-              }
-
-              // ── PROTOCOLE 1 : double/simple selon le poids ──
-              const isInfant = p < 10;
-              const vol1Inf  = p;
-              const mg1Inf   = Math.round(p * 0.1 * 100) / 100;
-              const naclInf  = Math.round((10 - p) * 10) / 10;
-              const concInf  = (mg1Inf / 10).toFixed(3);
-              const volSup   = Math.round(p / 10 * 100) / 100;
-              const naclSup  = Math.round((10 - volSup) * 100) / 100;
-              const concSup  = (volSup / 10).toFixed(3);
-              const Step1 = ({ num, bold, rest }) => (
-                <div style={{ display:"flex", gap:8, padding:"5px 0", borderBottom:`1px solid ${P.borderSoft}`, alignItems:"baseline" }}>
-                  {num !== undefined && (
-                    <span style={{ width:18, height:18, borderRadius:5, background:P.tealText,
-                      display:"inline-flex", alignItems:"center", justifyContent:"center",
-                      fontSize:10, fontWeight:800, color:"#fff", flexShrink:0, fontFamily:mono }}>{num}</span>
-                  )}
-                  <p style={{ margin:0, fontSize:12, color:P.text, lineHeight:1.4 }}>
-                    {bold && <span style={{ fontWeight:700, color:P.tealText }}>{bold}</span>}
-                    {rest && <span>{rest}</span>}
-                  </p>
-                </div>
-              );
-              return (
-                <div style={{ background:P.tealSoft, borderRadius:10, padding:"10px 12px", marginBottom:8,
-                  border:`1px solid ${P.teal}` }}>
-                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
-                    <p style={{ margin:0, fontSize:9, fontWeight:800, color:P.tealText, fontFamily:mono,
-                      textTransform:"uppercase", letterSpacing:"0.08em" }}>
-                      💉 Protocole 1 — {isInfant ? "< 10 kg (nourrisson)" : "≥ 10 kg (enfant)"}
-                    </p>
-                    <div style={{ background:P.roseSoft, border:`1px solid ${P.rose}`, borderRadius:7,
-                      padding:"3px 8px", display:"flex", alignItems:"center", gap:4 }}>
-                      <span style={{ fontSize:13, fontWeight:800, color:P.roseText, fontFamily:mono }}>1 mL</span>
-                      <span style={{ fontSize:9, color:P.roseText }}>/ 4 min</span>
-                    </div>
-                  </div>
-                  {isInfant ? (
-                    <>
-                      <Step1 num="1" bold="Ampoule 1 mg → diluer à 10 mL" rest=" (+ 9 mL NaCl 0,9 %) = 0,1 mg/mL" />
-                      <Step1 num="2" bold={`Prélever ${vol1Inf} mL`} rest={` = ${mg1Inf} mg`} />
-                      <Step1 num="3" bold="Compléter à 10 mL" rest={` (+ ${naclInf} mL NaCl 0,9 %)`} />
-                      <div style={{ marginTop:6, padding:"5px 0" }}>
-                        <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>
-                          → {concInf} mg/mL · 1 mL = 10 µg/kg ✓
-                        </p>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <Step1 num="1" bold={`Prélever ${volSup} mL`} rest=" d'adrénaline 1 mg/mL" />
-                      <Step1 num="2" bold="Compléter à 10 mL" rest={` (+ ${naclSup} mL NaCl 0,9 %)`} />
-                      <div style={{ marginTop:6, padding:"5px 0" }}>
-                        <p style={{ margin:0, fontSize:11.5, color:P.tealText, fontWeight:700 }}>
-                          → {concSup} mg/mL · 1 mL = 10 µg/kg ✓
-                        </p>
-                      </div>
-                    </>
-                  )}
-                </div>
-              );
-            })()}
 
             {/* Amiodarone */}
             <div style={{ background:P.amberSoft, borderRadius:8, padding:"8px 12px", marginBottom:8,
@@ -8774,7 +8878,7 @@ function App() {
   const [ccfEnabled, setCcfEnabled] = useLocalState("acr_ccf_enabled", false);
   const [debriefEnabled, setDebriefEnabled] = useLocalState("acr_debrief_enabled", false);
   const [pedDiluEnabled, setPedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
-  const [pedDiluMode, setPedDiluMode] = useLocalState("acr_ped_dilu_mode", "1");
+  const [pedDiluMode, setPedDiluMode] = useLocalState("acr_ped_dilu_mode", "2");
 
   // Déverrouille l'audio dès le 1er contact (requis par iOS pour jouer un son ensuite)
   useEffect(() => {
