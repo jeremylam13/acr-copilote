@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-24";
+const APP_VERSION = "2026.08.15-26";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1084,7 +1084,7 @@ function GuideApp({ onClose }) {
         { icon:"💾", title:"Sauvegarde automatique locale", desc:"Toutes les données sont enregistrées en continu sur l'appareil. Fermeture accidentelle, batterie déchargée, crash de l'app : rien n'est perdu, la session reprend exactement où elle s'est arrêtée." },
         { icon:"📦", title:"Export / import de sauvegarde", desc:"Depuis Réglages : exportez un fichier contenant toutes les archives et tous les réglages, à conserver ailleurs ou à transférer sur un nouveau téléphone. Utile avant un changement d'appareil, une mise à jour d'OS, ou simplement par précaution — les données restent sinon uniquement sur ce téléphone. Noms et prénoms sont automatiquement réduits à leurs initiales dans le fichier exporté (le fichier peut quitter l'appareil — minimisation des données médicales) ; ils restent en clair dans le détail d'un cas consulté directement sur le téléphone. À l'import, les archives sont fusionnées sans rien effacer ; les réglages, eux, sont remplacés par ceux du fichier importé (une confirmation est demandée avant)." },
         { icon:"✉️", title:"Contact / Retours", desc:"Depuis Réglages : trois boutons pour signaler un bug, suggérer une amélioration, ou simplement faire un retour positif — chacun ouvre l'app mail avec le sujet et la version de l'app déjà pré-remplis, pour ne rien avoir à taper à la main." },
-        { icon:"📊", title:"Dashboard & archives", desc:"Chaque réanimation clôturée est archivée localement avec sa durée, son issue et ses données clés — consultable ensuite depuis le tableau de bord pour un retour d'expérience ou des statistiques de service." },
+        { icon:"📊", title:"Dashboard & archives", desc:"Chaque réanimation clôturée est archivée localement avec sa durée, son issue et ses données clés — consultable ensuite depuis le tableau de bord pour un retour d'expérience ou des statistiques de service. Filtrable par type et période, avec export Excel (.xlsx, colonnes numériques natives pour trier/comparer directement) ou CSV, toujours limité aux cas actuellement filtrés." },
       ],
     },
     {
@@ -1622,9 +1622,8 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     };
 
     const section = (title, color, soft, inner) => `
-      <div style="background:${C.surface};border:1px solid ${C.border};border-left:4px solid ${color};
-        border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 3px rgba(10,17,27,0.06);
-        page-break-inside:avoid;break-inside:avoid">
+      <div class="pdf-card" style="background:${C.surface};border:1px solid ${C.border};border-left:4px solid ${color};
+        border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 3px rgba(10,17,27,0.06)">
         <p style="margin:0 0 10px;font-size:11px;font-weight:800;color:${color};text-transform:uppercase;
           letter-spacing:0.1em;font-family:'JetBrains Mono',monospace">${title}</p>
         ${inner}
@@ -1714,7 +1713,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
 
   <!-- Identité patient compacte, tout en haut -->
   ${(patient?.nom || patient?.prenom || patient?.age || patient?.ddn) ? `
-  <div style="background:${C.surface};border:1px solid ${C.border};border-radius:12px;padding:12px 16px;margin-bottom:14px;
+  <div class="pdf-card" style="background:${C.surface};border:1px solid ${C.border};border-radius:12px;padding:12px 16px;margin-bottom:14px;
     display:flex;align-items:center;gap:12px;box-shadow:0 1px 3px rgba(10,17,27,0.06)">
     <span style="font-size:20px;flex-shrink:0">🪪</span>
     <div style="flex:1;min-width:0">
@@ -1724,7 +1723,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
   </div>` : ""}
 
   <!-- Bandeau "coup d'œil" -->
-  <div style="background:linear-gradient(135deg,${rosc2?C.green:deces2?C.textMid:C.amber},${rosc2?C.greenText:deces2?C.text:C.amberText});
+  <div class="pdf-card" style="background:linear-gradient(135deg,${rosc2?C.green:deces2?C.textMid:C.amber},${rosc2?C.greenText:deces2?C.text:C.amberText});
     border-radius:16px;padding:18px 20px;margin-bottom:16px;box-shadow:0 6px 20px rgba(10,17,27,0.2)">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
       <span style="font-size:28px">${rosc2?"✅":deces2?"⬛":"❓"}</span>
@@ -1777,8 +1776,8 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       <p style="margin:0 0 10px;font-size:13px;font-weight:800;color:${C.text};font-family:'Archivo',sans-serif">
         📢 Résumé de transmission (SBAR)</p>
       ${sbarRows.map(r => `
-        <div style="display:flex;gap:10px;background:${r.soft};border:1px solid ${r.c}33;border-radius:11px;
-          padding:11px 13px;margin-bottom:8px;page-break-inside:avoid;break-inside:avoid">
+        <div class="pdf-card" style="display:flex;gap:10px;background:${r.soft};border:1px solid ${r.c}33;border-radius:11px;
+          padding:11px 13px;margin-bottom:8px">
           <div style="width:28px;height:28px;border-radius:9px;background:${r.c};flex-shrink:0;
             display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;
             font-family:'JetBrains Mono',monospace;font-size:13px">${r.L}</div>
@@ -1863,7 +1862,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     html += section(`🕐 Chronologie (${events.length} événements)`, C.blue, C.blueSoft,
       `<div style="border:1px solid ${C.borderSoft};border-radius:8px;overflow:hidden">` +
       events.map((e,i) => `
-        <div style="display:flex;gap:10px;align-items:center;padding:7px 10px;
+        <div class="pdf-card" style="display:flex;gap:10px;align-items:center;padding:7px 10px;
           background:${i%2===0?C.surface:C.surfaceAlt}">
           <span style="font-family:'JetBrains Mono',monospace;color:${C.blueText};font-weight:700;font-size:12px;flex-shrink:0">${esc(e.time)}</span>
           <span style="font-size:13px;color:${C.text};flex:1">${esc(e.label)}</span>
@@ -2662,20 +2661,36 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
                 backgroundColor: '#E9EEF5', width: 640,
                 height: iframe.contentDocument.body.scrollHeight
               });
+              // Repère la position (en pixels canvas) de chaque carte du compte-rendu,
+              // pour ne jamais couper une page en plein milieu de l'une d'elles.
+              const scale = 1.5;
+              const cards = Array.from(iframe.contentDocument.querySelectorAll('.pdf-card')).map(el => {
+                const r = el.getBoundingClientRect();
+                return { top: r.top * scale, bottom: r.bottom * scale };
+              });
               document.body.removeChild(iframe);
               const pdf = new jsPDF({ format: 'a4', orientation: 'portrait', unit: 'pt' });
               const w = pdf.internal.pageSize.getWidth();
               const ratio = canvas.width / w;
               const pageH = pdf.internal.pageSize.getHeight() * ratio;
+              const minChunk = pageH * 0.25; // évite une page quasi vide si une carte est très grande
               let srcY = 0;
               while (srcY < canvas.height) {
+                let sliceEnd = Math.min(srcY + pageH, canvas.height);
+                for (const c of cards) {
+                  // Une carte commencée sur cette page mais qui déborderait de la coupure :
+                  // on recule la coupure juste avant elle, sauf si ça laisserait une page trop vide.
+                  if (c.top > srcY && c.top < sliceEnd && c.bottom > sliceEnd) {
+                    if (c.top - srcY >= minChunk) sliceEnd = Math.min(sliceEnd, c.top);
+                  }
+                }
                 const pageCanvas = document.createElement('canvas');
                 pageCanvas.width = canvas.width;
-                pageCanvas.height = Math.min(pageH, canvas.height - srcY);
+                pageCanvas.height = sliceEnd - srcY;
                 pageCanvas.getContext('2d').drawImage(canvas, 0, srcY, canvas.width, pageCanvas.height, 0, 0, canvas.width, pageCanvas.height);
                 if (srcY > 0) pdf.addPage();
                 pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, w, pageCanvas.height / ratio);
-                srcY += pageH;
+                srcY = sliceEnd;
               }
               const nom = patient?.nom ? `_${patient.nom}` : '';
               pdf.save(`CR-SMUR${nom}_${new Date().toISOString().slice(0,10)}.pdf`);
@@ -7793,7 +7808,8 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
   });
 
   // Export CSV — toujours basé sur les cas filtrés actuellement affichés
-  const exportCsv = () => {
+  // Données communes aux deux exports (CSV et Excel)
+  const buildExportRows = () => {
     const headers = ["Date","Type","Libellé","Issue","Récidive","Durée (s)","Délai 1er choc (s)","Délai 1ère adré (s)","Nb chocs","Nb doses adré","RACS à (s)","No-flow (min)","Low-flow (min)","Rythme initial","RCP témoin"];
     const rows = stats.map(s => [
       s.date ? new Date(s.date).toLocaleString("fr-FR") : "",
@@ -7803,6 +7819,11 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
       s.initialRhythm === "choquable" ? "Choquable" : s.initialRhythm === "nonChoquable" ? "Non choquable" : "",
       s.mceTemoin || "",
     ]);
+    return { headers, rows };
+  };
+
+  const exportCsv = () => {
+    const { headers, rows } = buildExportRows();
     const csv = [headers, ...rows]
       .map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(";"))
       .join("\r\n");
@@ -7813,6 +7834,32 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
     a.download = `copilote-acr-stats-${new Date().toISOString().slice(0,10)}.csv`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const [exportingXlsx, setExportingXlsx] = useState(false);
+  const exportExcel = async () => {
+    setExportingXlsx(true);
+    try {
+      const XLSX = await import("xlsx");
+      const { headers, rows } = buildExportRows();
+      // Colonnes numériques converties en vrais nombres (pas du texte) — pour trier/filtrer/
+      // calculer directement dans Excel sans reformater à la main.
+      const numericCols = new Set([5,6,7,8,9,10,11,12]); // Durée, délais, nb chocs/doses, RACS à, no-flow, low-flow
+      const aoa = [headers, ...rows.map(r => r.map((v, i) => {
+        if (numericCols.has(i) && v !== "" && !isNaN(v)) return Number(v);
+        return v;
+      }))];
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws["!cols"] = headers.map((h, i) => ({ wch: Math.max(h.length, i === 2 ? 14 : 10) }));
+      ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:aoa.length-1, c:headers.length-1} }) };
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Cas archivés");
+      XLSX.writeFile(wb, `copilote-acr-stats-${new Date().toISOString().slice(0,10)}.xlsx`);
+    } catch (e) {
+      alert("Export Excel indisponible — le module xlsx n'est peut-être pas installé sur cette version de l'app.");
+    } finally {
+      setExportingXlsx(false);
+    }
   };
 
   const n = stats.length;
@@ -7951,11 +7998,18 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
             </button>
           )}
           <button onClick={exportCsv} disabled={n===0}
+            style={{ flexShrink:0, background: n===0 ? P.surfaceAlt : P.surface, border:`1.5px solid ${n===0?P.border:P.green}`,
+              borderRadius:9, color: n===0 ? P.textSoft : P.greenText, padding:"8px 10px", fontSize:12,
+              fontWeight:700, cursor: n===0 ? "default" : "pointer", fontFamily:sans,
+              display:"flex", alignItems:"center", gap:5, whiteSpace:"nowrap" }}>
+            ⬇ CSV
+          </button>
+          <button onClick={exportExcel} disabled={n===0 || exportingXlsx}
             style={{ flexShrink:0, background: n===0 ? P.surfaceAlt : P.green, border:"none",
               borderRadius:9, color: n===0 ? P.textSoft : "#fff", padding:"8px 12px", fontSize:12,
               fontWeight:700, cursor: n===0 ? "default" : "pointer", fontFamily:sans,
               display:"flex", alignItems:"center", gap:5, whiteSpace:"nowrap" }}>
-            ⬇ CSV
+            {exportingXlsx ? "…" : "⬇ Excel"}
           </button>
         </div>
       </div>
