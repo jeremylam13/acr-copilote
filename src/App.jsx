@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-27";
+const APP_VERSION = "2026.08.15-29";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1061,7 +1061,7 @@ function GuideApp({ onClose }) {
       title: "Repères de l'écran",
       color: "slate",
       items: [
-        { icon:"🪪", title:"Encart Patient", desc:"Nom, âge, sexe — toujours accessible en un tap en haut de l'écran, à compléter dès que l'identité est connue. En mode Traumatique, un sélecteur de mécanisme lésionnel (AVP, chute, arme blanche/à feu, écrasement, blast...) y apparaît aussi — il préremplit automatiquement \"pénétrant\" et \"haute cinétique\" dans le calculateur BATT." },
+        { icon:"🪪", title:"Encart Patient", desc:"Nom, âge, sexe — toujours accessible en un tap en haut de l'écran, à compléter dès que l'identité est connue. Un sélecteur de lieu d'intervention (domicile, établissement de santé, voie publique...) est disponible dans les trois modules, repris dans le compte-rendu et le Dashboard. En mode Traumatique, un sélecteur de mécanisme lésionnel (AVP, chute, arme blanche/à feu, écrasement, blast...) y apparaît aussi — il préremplit automatiquement \"pénétrant\" et \"haute cinétique\" dans le calculateur BATT." },
         { icon:"📻", title:"Transmission", desc:"Ce qui s'est passé avant l'arrivée du SMUR (témoin, massage par un tiers, sapeurs-pompiers). Les heures saisies s'ajoutent automatiquement à la chronologie. Important : le nombre de chocs DSA pompiers renseigné ici s'ajoute aux chocs SMUR pour déclencher le rappel Cordarone au bon moment (3ᵉ puis 5ᵉ choc cumulé). Régulation est juste à côté, sur la même rangée." },
         { icon:"🔍", title:"Onglet Étiologie", desc:"ACR Adulte médical uniquement : liste des causes réversibles (5H/5T) à cocher au fur et à mesure qu'elles sont évoquées ou écartées — la réflexion diagnostique se retrouve ensuite dans la chronologie. En Traumatique, cet onglet est remplacé par la carte HOTT persistante (voir section Adulte & Traumatique)." },
         { icon:"💊", title:"Onglet Thérapeutiques", desc:"Regroupe amines, remplissage vasculaire et sédation — tout ce qui accompagne la réa sans être un geste d'urgence immédiat." },
@@ -1747,7 +1747,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     // SBAR — résumé de transmission, remonté juste après la frise (avant le détail)
     const sbarRows = [
       { L:"S", title:"Situation", c:C.rose, soft:C.roseSoft, lines:[
-        `${patientDesc2||"Patient"} · ACR extra-hospitalier`,
+        `${patientDesc2||"Patient"} · ACR extra-hospitalier${LIEUX_INTERVENTION.find(l => l.id === patient?.lieu)?.label ? " · " + LIEUX_INTERVENTION.find(l => l.id === patient.lieu).label : ""}`,
         `Heure arrêt : ${acrTime||"inconnue"} · No-flow : ${noFlow||"?"}min · Low-flow : ${lowFlow||"—"}min · Durée : ${fmtSec(totalSec)}`,
       ]},
       { L:"B", title:"Contexte", c:C.blue, soft:C.blueSoft, lines:[
@@ -1793,11 +1793,13 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     <p style="text-align:center;font-size:10.5px;color:${C.textSoft};margin:0 0 16px;text-transform:uppercase;letter-spacing:0.08em;font-family:'JetBrains Mono',monospace">— Détail complet ci-dessous —</p>`;
 
     // Identité
-    if (patient?.nom || patient?.prenom || patient?.age || patient?.atcd || patient?.histoire || patient?.mecanisme) {
+    if (patient?.nom || patient?.prenom || patient?.age || patient?.atcd || patient?.histoire || patient?.mecanisme || patient?.lieu) {
       const mecLabel = MECANISMES_TRAUMA.find(m => m.id === patient.mecanisme)?.label;
+      const lieuLabel = LIEUX_INTERVENTION.find(l => l.id === patient.lieu)?.label;
       html += section("🪪 Identité patient", C.blue, C.blueSoft, `
         ${(patient.nom||patient.prenom) ? row("Nom", [patient.nom,patient.prenom].filter(Boolean).join(" ")) : ""}
         ${patient.age ? row("Âge", patient.age) : ""}
+        ${lieuLabel ? row("Lieu de l'intervention", lieuLabel) : ""}
         ${mecLabel ? row("Mécanisme lésionnel", mecLabel) : ""}
         ${patient.atcd ? row("ATCD", patient.atcd) : ""}
         ${patient.histoire ? row("Circonstances", patient.histoire) : ""}
@@ -2869,6 +2871,19 @@ const PED_TABLE = [
   { age:"15 ans",   p:50, masque:"4-5",  aspi:"12",   lame:"3",       mandrin:"14-15",  sonde:"7",   repere:"19-20", guedel:"2-3",   fr:10, vt:300, ezio:"E-ZIO 25mm ou 45mm", adrMg:0.5,  adrMl:5,   amioMg:250, amioMl:5,   defib4:200, defib6:250, defib8:300, fcN:75,  pasN:120, pamTC:80, pamHTC:65, vtR:"12-20",  frR:"15",  ie:"1/2", peep:5, sng:14, fio2:"100% puis QSP 94-98%", midPSE:5.0, sufBolus:10.0, sufPSE:10.0 , nimbex1:3.7, nimbex2:5, rempliVol:500, rempliDebit:"Garde veine", adrPSE1:6, adrPSE2:15, adrPSE3:30, adrPSE4:45 },
 ];
 
+// Lieu de l'intervention — catégories standard des registres SAMU/SMUR,
+// utile pour les statistiques de service (ciblage formation grand public,
+// implantation de défibrillateurs) et corrèle avec le taux de RCP par témoin.
+const LIEUX_INTERVENTION = [
+  { id:"domicile",  label:"Domicile / lieu privé",        icon:"🏠" },
+  { id:"sante",     label:"Établissement de santé",        icon:"🏥" },
+  { id:"medico",    label:"Établissement médico-social",   icon:"🏛️" },
+  { id:"travail",   label:"Lieu de travail",               icon:"🏢" },
+  { id:"public",    label:"Lieu public",                   icon:"🏬" },
+  { id:"voie",      label:"Voie publique",                 icon:"🛣️" },
+  { id:"autre",     label:"Autre",                         icon:"❓" },
+];
+
 // Trouver la ligne la plus proche par poids
 function findPedRow(poids) {
   if (!poids || parseFloat(poids) <= 0) return null;
@@ -3095,7 +3110,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [omlTxtPed,     setOmlTxtPed]     = useState("");
   const [decesRemisAPed, setDecesRemisAPed] = useState("");
   const [showPatPed,    setShowPatPed]    = useState(false);
-  const [patPed, setPatPed] = useLocalState("acr_ped_pat", { nom:"", prenom:"", ddn:"", age:"", poids:"", temp:"", atcd:"", traitement:"", histoire:"" });
+  const [patPed, setPatPed] = useLocalState("acr_ped_pat", { nom:"", prenom:"", ddn:"", age:"", poids:"", temp:"", atcd:"", traitement:"", histoire:"", lieu:"" });
   const spf = k => v => setPatPed(p => ({ ...p, [k]: v }));
   const [showNotePed,  setShowNotePed]   = useState(false);
   const [noteTextPed,  setNoteTextPed]   = useState("");
@@ -5608,6 +5623,23 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               </div>
               <div><Lbl>Poids</Lbl><TInput value={patPed.poids} onChange={spf("poids")} placeholder={`${localPoids} kg`} /></div>
             </div>
+            <div>
+              <Lbl>Lieu de l'intervention</Lbl>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+                {LIEUX_INTERVENTION.map(l => (
+                  <button key={l.id} onClick={() => spf("lieu")(patPed.lieu === l.id ? "" : l.id)}
+                    style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 8px",
+                      borderRadius:9, border:`1.5px solid ${patPed.lieu===l.id ? P.blue : P.border}`,
+                      background: patPed.lieu===l.id ? P.blueSoft : P.surface,
+                      color: patPed.lieu===l.id ? P.blueText : P.textMid,
+                      fontSize:12, fontWeight: patPed.lieu===l.id ? 700 : 500,
+                      cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+                    <span style={{ fontSize:14, flexShrink:0 }}>{l.icon}</span>
+                    <span style={{ minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
             <div><Lbl>Température (°C)</Lbl>
               <TInput value={patPed.temp} onChange={spf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
             <div><Lbl>Antécédents</Lbl>
@@ -7804,13 +7836,14 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
       // Rétro-compatible : les archives antérieures à ce champ n'ont pas
       // `recidive` enregistré, mais l'info est déjà présente dans leur chronologie
       recidive:   a.recidive ?? evts.some(e => e.id === "re_arret"),
+      lieu:       LIEUX_INTERVENTION.find(l => l.id === a.props?.patient?.lieu)?.label || null,
     };
   });
 
   // Export CSV — toujours basé sur les cas filtrés actuellement affichés
   // Données communes aux deux exports (CSV et Excel)
   const buildExportRows = () => {
-    const headers = ["Date","Type","Libellé","Issue","Récidive","Durée (s)","Délai 1er choc (s)","Délai 1ère adré (s)","Nb chocs","Nb doses adré","RACS à (s)","No-flow (min)","Low-flow (min)","Rythme initial","RCP témoin"];
+    const headers = ["Date","Type","Libellé","Issue","Récidive","Durée (s)","Délai 1er choc (s)","Délai 1ère adré (s)","Nb chocs","Nb doses adré","RACS à (s)","No-flow (min)","Low-flow (min)","Rythme initial","RCP témoin","Lieu"];
     const rows = stats.map(s => [
       s.date ? new Date(s.date).toLocaleString("fr-FR") : "",
       s.type, s.label, s.outcome, s.recidive ? "Oui" : "Non", s.durationSec,
@@ -7818,6 +7851,7 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
       s.noFlowMin ?? "", s.lowFlowMin ?? "",
       s.initialRhythm === "choquable" ? "Choquable" : s.initialRhythm === "nonChoquable" ? "Non choquable" : "",
       s.mceTemoin || "",
+      s.lieu || "",
     ]);
     return { headers, rows };
   };
@@ -7978,7 +8012,7 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
 
   return (
     <div style={{ position:"fixed", inset:0, zIndex:90, background:P.bg,
-      display:"flex", flexDirection:"column", fontFamily:sans, overflowY:"auto" }}>
+      display:"flex", flexDirection:"column", fontFamily:sans, overflowY:"auto", overflowX:"hidden" }}>
       {/* Header */}
       <div style={{ position:"sticky", top:0, background:P.bg, zIndex:1,
         borderBottom:`1px solid ${P.border}`, padding:"14px 16px",
@@ -8035,12 +8069,14 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
           <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
-            style={{ flex:1, background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:9,
+            style={{ flex:1, minWidth:0, background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:9,
               padding:"7px 8px", fontSize:12, fontFamily:mono, color:P.text, outline:"none", boxSizing:"border-box" }} />
-          <span style={{ fontSize:11, color:P.textSoft }}>→</span>
+          <span style={{ fontSize:11, color:P.textSoft, flexShrink:0 }}>→</span>
           <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
-            style={{ flex:1, background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:9,
+            style={{ flex:1, minWidth:0, background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:9,
               padding:"7px 8px", fontSize:12, fontFamily:mono, color:P.text, outline:"none", boxSizing:"border-box" }} />
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
           {hasActiveFilter && (
             <button onClick={() => { setFilterType("all"); setDateFrom(""); setDateTo(""); }}
               style={{ flexShrink:0, background:"transparent", border:"none", color:P.roseText,
@@ -8048,6 +8084,7 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
               ✕ Réinitialiser
             </button>
           )}
+          <div style={{ flex:1 }} />
           <button onClick={exportCsv} disabled={n===0}
             style={{ flexShrink:0, background: n===0 ? P.surfaceAlt : P.surface, border:`1.5px solid ${n===0?P.border:P.green}`,
               borderRadius:9, color: n===0 ? P.textSoft : P.greenText, padding:"8px 10px", fontSize:12,
@@ -8201,6 +8238,39 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
           </p>
         </div>
 
+        {/* Répartition par lieu d'intervention */}
+        {(() => {
+          const lieuStats = LIEUX_INTERVENTION
+            .map(l => ({ label: l.label, icon: l.icon, count: stats.filter(s => s.lieu === l.label).length }))
+            .filter(l => l.count > 0)
+            .sort((a, b) => b.count - a.count);
+          if (lieuStats.length === 0) return null;
+          const maxCount = Math.max(...lieuStats.map(l => l.count));
+          return (
+            <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, padding:"14px" }}>
+              <p style={{ margin:"0 0 10px", fontSize:10, fontWeight:700, color:P.textSoft,
+                textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>
+                Répartition par lieu d'intervention
+              </p>
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {lieuStats.map(l => (
+                  <div key={l.label}>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                      <span style={{ fontSize:11.5, color:P.text }}>{l.icon} {l.label}</span>
+                      <span style={{ fontSize:11.5, fontWeight:700, color:P.blueText, fontFamily:mono }}>
+                        {l.count} cas
+                      </span>
+                    </div>
+                    <div style={{ height:6, background:`${P.blue}25`, borderRadius:3, overflow:"hidden" }}>
+                      <div style={{ width:`${(l.count/maxCount)*100}%`, height:"100%", background:P.blue, borderRadius:3, transition:"width 0.5s" }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Répartition types */}
         <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, padding:"14px" }}>
           <p style={{ margin:"0 0 10px", fontSize:10, fontWeight:700, color:P.textSoft,
@@ -8271,7 +8341,7 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
 }
 
 function App() {
-  const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"", mecanisme:"" });
+  const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"", mecanisme:"", lieu:"" });
   const sf = k => v => setPat(p => ({ ...p, [k]: v }));
 
   // Durées manuelles no-flow / low-flow (en minutes)
@@ -8925,7 +8995,7 @@ function App() {
     setAcrTime(""); setNoFlowMin(""); setLowFlowMin(""); setLowFlowStart("");
     setEvents([]); setAlert(null); setCycleOffset(0);
     setShowPdf(false); setShowLog(false);
-    setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"" });
+    setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"", lieu:"" });
     setIot({ cormack:"", sonde:"", repere:"", capno:"" });
     setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, rythmeDSA:"", gestesSecouristes:"", note:"", saved:false });
     setModalTrans(false);
@@ -8946,7 +9016,7 @@ function App() {
     setEtco2List([]);
     setCcfPausedTotal(0); setCcfPausedSince(null);
     setHemoList([]); setAmineList([]);
-    setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"" });
+    setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"", lieu:"" });
   };
 
   const cp = (sec - cycleOffset) % 120, pct = (cp/120)*100, rem = 120 - cp;
@@ -12494,6 +12564,23 @@ function App() {
                 })()}
               </div>
             )}
+            <div>
+              <Lbl>Lieu de l'intervention</Lbl>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+                {LIEUX_INTERVENTION.map(l => (
+                  <button key={l.id} onClick={() => sf("lieu")(pat.lieu === l.id ? "" : l.id)}
+                    style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 8px",
+                      borderRadius:9, border:`1.5px solid ${pat.lieu===l.id ? P.blue : P.border}`,
+                      background: pat.lieu===l.id ? P.blueSoft : P.surface,
+                      color: pat.lieu===l.id ? P.blueText : P.textMid,
+                      fontSize:12, fontWeight: pat.lieu===l.id ? 700 : 500,
+                      cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+                    <span style={{ fontSize:14, flexShrink:0 }}>{l.icon}</span>
+                    <span style={{ minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
             <div><Lbl>Température (°C)</Lbl>
               <TInput value={pat.temp} onChange={sf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
             <div><Lbl>Antécédents médicaux</Lbl>
