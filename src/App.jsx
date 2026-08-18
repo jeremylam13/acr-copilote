@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-31";
+const APP_VERSION = "2026.08.15-35";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1084,7 +1084,22 @@ function GuideApp({ onClose }) {
         { icon:"💾", title:"Sauvegarde automatique locale", desc:"Toutes les données sont enregistrées en continu sur l'appareil. Fermeture accidentelle, batterie déchargée, crash de l'app : rien n'est perdu, la session reprend exactement où elle s'est arrêtée." },
         { icon:"📦", title:"Export / import de sauvegarde", desc:"Depuis Réglages : exportez un fichier contenant toutes les archives et tous les réglages, à conserver ailleurs ou à transférer sur un nouveau téléphone. Utile avant un changement d'appareil, une mise à jour d'OS, ou simplement par précaution — les données restent sinon uniquement sur ce téléphone. Noms et prénoms sont automatiquement réduits à leurs initiales dans le fichier exporté (le fichier peut quitter l'appareil — minimisation des données médicales) ; ils restent en clair dans le détail d'un cas consulté directement sur le téléphone. À l'import, les archives sont fusionnées sans rien effacer ; les réglages, eux, sont remplacés par ceux du fichier importé (une confirmation est demandée avant)." },
         { icon:"✉️", title:"Contact / Retours", desc:"Depuis Réglages : trois boutons pour signaler un bug, suggérer une amélioration, ou simplement faire un retour positif — chacun ouvre l'app mail avec le sujet et la version de l'app déjà pré-remplis, pour ne rien avoir à taper à la main." },
-        { icon:"📊", title:"Dashboard & archives", desc:"Chaque réanimation clôturée est archivée localement avec sa durée, son issue et ses données clés — consultable ensuite depuis le tableau de bord pour un retour d'expérience ou des statistiques de service. Filtrable par type et période, avec export Excel (.xlsx, deux onglets : \"Résumé\" pré-agrégé prêt pour un graphique en 2 clics, et \"Cas archivés\" détaillé avec colonnes numériques natives) ou CSV, toujours limité aux cas actuellement filtrés." },
+        { icon:"📊", title:"Dashboard & statistiques", desc:"Chaque réanimation clôturée est archivée localement (durée, issue, données clés) et alimente automatiquement le tableau de bord — accessible depuis la page d'accueil. Filtrable par type (Adulte/Trauma/Pédiatrique) et par période (date de début/fin), tout le reste de l'écran se recalcule instantanément selon le filtre choisi.",
+          list: [
+            { label:"Taux de RACS global", detail:"avec durée moyenne de RCP" },
+            { label:"Délais moyens", detail:"1er choc, 1ère adrénaline" },
+            { label:"No-flow / Low-flow moyens", detail:"calculés sur les cas renseignés" },
+            { label:"Taux de récidive après RACS", detail:"sur les cas ayant obtenu un RACS" },
+            { label:"RACS selon le rythme initial", detail:"choquable vs non choquable" },
+            { label:"RACS selon la RCP par témoin", detail:"avec vs sans avant l'arrivée du SMUR" },
+            { label:"Répartition par type et par lieu", detail:"Adulte/Trauma/Pédiatrique, domicile/voie publique/etc." },
+            { label:"Derniers cas archivés", detail:"consultables en détail (compte-rendu complet rouvert)" },
+          ] },
+        { icon:"⬇️", title:"Export des statistiques vers Excel", desc:"Depuis le Dashboard, deux boutons permettent d'exporter (pas d'importer — l'app ne relit pas de fichier Excel) les cas actuellement filtrés :",
+          list: [
+            { label:"Excel (.xlsx)", detail:"deux onglets — \"Résumé\" pré-agrégé (prêt pour créer un graphique en 2 clics dans Excel : sélectionner un tableau → Insertion → Graphique recommandé) et \"Cas archivés\" détaillé avec colonnes numériques natives, triables/filtrables directement" },
+            { label:"CSV", detail:"format universel, une ligne par cas, compatible avec n'importe quel tableur" },
+          ] },
       ],
     },
     {
@@ -1649,33 +1664,65 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       const dots = [];
       events.forEach(e => {
         if (e.id === "start") return;
-        if (e.id === "choc" || e.id === "doublechoc") dots.push({ sec:e.sec, icon:"⚡", color:C.blue });
-        else if (e.id === "adr") dots.push({ sec:e.sec, icon:"💉", color:C.rose });
-        else if (e.id === "cord300" || e.id === "cord150") dots.push({ sec:e.sec, icon:"💊", color:C.amber });
-        else if (e.id === "iot") dots.push({ sec:e.sec, icon:"🫁", color:C.violet });
+        if (e.id === "choc" || e.id === "doublechoc") dots.push({ sec:e.sec, icon:"⚡", color:C.blue, time:e.time });
+        else if (e.id === "adr") dots.push({ sec:e.sec, icon:"💉", color:C.rose, time:e.time });
+        else if (e.id === "cord300" || e.id === "cord150") dots.push({ sec:e.sec, icon:"💊", color:C.amber, time:e.time });
+        else if (e.id === "iot") dots.push({ sec:e.sec, icon:"🫁", color:C.violet, time:e.time });
       });
       const finalEvt = rosc2 || deces2;
       if (dots.length === 0 && !finalEvt) return "";
 
-      let h = `<div style="position:relative;height:54px;margin:10px 4px 6px">`;
+      // Anti-chevauchement : deux gestes trop proches dans le temps sont empilés
+      // sur des rangées différentes plutôt que superposés au même endroit.
+      const minGapPct = 6;
+      const placed_rows = [];
+      const placedDots = [...dots].sort((a, b) => a.sec - b.sec).map(d => {
+        const p = pct(d.sec);
+        let row = 0;
+        while (placed_rows.some(o => o.row === row && Math.abs(o.p - p) < minGapPct)) row++;
+        placed_rows.push({ p, row });
+        return { ...d, p, row };
+      });
+      const maxRow = placed_rows.reduce((m, o) => Math.max(m, o.row), 0);
+
+      const dotsTop = 16, rowH = 22;
+      const dotsBottom = dotsTop + (maxRow + 1) * rowH;
+      const ticksY = dotsBottom + 10;
+      const containerH = ticksY + 22;
+
+      let h = `<div style="position:relative;height:${containerH}px;margin:10px 4px 6px">`;
       const lastPct = finalEvt ? pct(finalEvt.sec) : Math.max(...dots.map(d => pct(d.sec)));
       h += `<div style="position:absolute;top:24px;left:0;right:0;height:3px;background:${C.borderSoft};border-radius:2px"></div>`;
       h += `<div style="position:absolute;top:24px;left:0;width:${lastPct.toFixed(1)}%;height:3px;background:${finalEvt===rosc2?C.green:C.textMid};border-radius:2px"></div>`;
-      // Début
-      h += `<div style="position:absolute;left:0%;top:16px;width:19px;height:19px;border-radius:50%;background:${C.textMid};border:2px solid ${C.surface};box-shadow:0 1px 4px rgba(10,17,27,0.2);transform:translateX(-50%)"></div>`;
-      h += `<p style="position:absolute;left:0%;top:0;font-size:9px;font-weight:700;color:${C.textMid};transform:translateX(-50%);white-space:nowrap">Début</p>`;
-      // Gestes intermédiaires (pastilles simples)
-      dots.forEach(d => {
-        const p = pct(d.sec).toFixed(1);
-        h += `<div style="position:absolute;left:${p}%;top:16px;width:19px;height:19px;border-radius:50%;background:${d.color};border:2px solid ${C.surface};box-shadow:0 1px 4px rgba(10,17,27,0.2);transform:translateX(-50%);display:flex;align-items:center;justify-content:center;font-size:10px">${d.icon}</div>`;
-      });
-      // 1er choc — seul geste intermédiaire explicitement étiqueté (repère clé du pronostic)
-      const firstChoc = dots.find(d => d.icon === "⚡");
-      if (firstChoc) {
-        const p = pct(firstChoc.sec).toFixed(1);
-        const t = events.find(e => e.sec === firstChoc.sec)?.time || "";
-        h += `<p style="position:absolute;left:${p}%;top:45px;font-size:9px;font-weight:700;color:${C.blueText};transform:translateX(-50%);white-space:nowrap">${esc(t)}</p>`;
+
+      // Règle des minutes — 0 = heure de l'arrêt cardiaque (début de la RCP)
+      const totalMin = totalSec / 60;
+      const tickInterval = totalMin <= 8 ? 1 : totalMin <= 16 ? 2 : totalMin <= 40 ? 5 : 10;
+      for (let m = 0; m <= totalMin + 0.01; m += tickInterval) {
+        const p = Math.min(100, (m * 60 / totalSec) * 100);
+        h += `<div style="position:absolute;left:${p.toFixed(1)}%;top:${ticksY}px;width:1px;height:6px;background:${C.border};transform:translateX(-50%)"></div>`;
+        h += `<p style="position:absolute;left:${p.toFixed(1)}%;top:${ticksY+7}px;font-size:8px;color:${C.textSoft};transform:translateX(-50%);white-space:nowrap;font-family:'JetBrains Mono',monospace">${Math.round(m)}min</p>`;
       }
+
+      // Début (= 0 min = heure de l'arrêt cardiaque)
+      h += `<div style="position:absolute;left:0%;top:16px;width:19px;height:19px;border-radius:50%;background:${C.textMid};border:2px solid ${C.surface};box-shadow:0 1px 4px rgba(10,17,27,0.2);transform:translateX(-50%)"></div>`;
+      h += `<p style="position:absolute;left:0%;top:0;font-size:9px;font-weight:700;color:${C.textMid};transform:translateX(-50%);white-space:nowrap">Début (0 min)</p>`;
+
+      // Gestes intermédiaires, empilés verticalement si trop proches
+      placedDots.forEach(d => {
+        const top = dotsTop + d.row * rowH;
+        h += `<div style="position:absolute;left:${d.p.toFixed(1)}%;top:${top}px;width:19px;height:19px;border-radius:50%;background:${d.color};border:2px solid ${C.surface};box-shadow:0 1px 4px rgba(10,17,27,0.2);transform:translateX(-50%);display:flex;align-items:center;justify-content:center;font-size:10px">${d.icon}</div>`;
+      });
+      // 1er choc (repère clé du pronostic) + chaque geste empilé — sans heure visible,
+      // impossible de distinguer 2 gestes empilés au même endroit sur l'axe.
+      const firstChoc = placedDots.filter(d => d.icon === "⚡").sort((a,b) => a.sec - b.sec)[0];
+      placedDots.forEach(d => {
+        const isFirstChoc = d === firstChoc;
+        if (!isFirstChoc && d.row === 0) return; // sur la ligne principale, déjà lisible via la règle des minutes
+        const labelTop = dotsTop + d.row * rowH + 20;
+        const col = isFirstChoc ? C.blueText : d.color;
+        h += `<p style="position:absolute;left:${d.p.toFixed(1)}%;top:${labelTop}px;font-size:8.5px;font-weight:700;color:${col};transform:translateX(-50%);white-space:nowrap">${esc(d.time)}</p>`;
+      });
       // Issue finale
       if (finalEvt) {
         const p = pct(finalEvt.sec).toFixed(1);
@@ -1686,7 +1733,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         h += `<p style="position:absolute;left:${p}%;top:0;font-size:9.5px;font-weight:800;color:${col};transform:translateX(-50%);white-space:nowrap">${esc(lbl)}</p>`;
       }
       h += `</div>`;
-      h += `<p style="margin:4px 0 0;font-size:9.5px;color:${C.textSoft};text-align:center">Repères proportionnels au temps écoulé depuis le début de la RCP</p>`;
+      h += `<p style="margin:4px 0 0;font-size:9.5px;color:${C.textSoft};text-align:center">Minutes écoulées depuis l'arrêt cardiaque (0 min = début RCP)</p>`;
       return h;
     };
 
@@ -4763,6 +4810,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               setEvents(prev => prev.filter(e => e.id !== "rosc"));
               setAdrTimerStartPed(Date.now());
               setCycleOffset(sec);
+              prevCpPedRef.current = null; // évite un faux flash "analyse rythme" immédiat après le recalage
               setRunning(true);
               setModalRacsPed(false);
             }} style={{width:"100%",background:`linear-gradient(135deg,${P.rose},#9B1010)`,
@@ -5021,7 +5069,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           <span style={{fontSize:10,color:P.textSoft,fontFamily:mono}}>Cycle RCP · 2 min</span>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:10,fontWeight:500,color:warn?bar:P.textSoft,fontFamily:mono}}>{warn?`⚠ ${rem}s`:`${rem}s`}</span>
-            <button onClick={()=>{setCycleOffset(sec);addEvent("cycle","↺ Cycle remis à zéro","↺");}}
+            <button onClick={()=>{setCycleOffset(sec);prevCpPedRef.current=null;addEvent("cycle","↺ Cycle remis à zéro","↺");}}
               style={{background:P.surfaceAlt,border:`1px solid ${P.border}`,borderRadius:6,
                 padding:"2px 8px",fontSize:10,color:P.textMid,cursor:"pointer",
                 fontFamily:sans,lineHeight:1.4}}>
@@ -11601,6 +11649,7 @@ function App() {
                 // 3. Relancer timer adrénaline + cycle MCE + compressions
                 setAdrTimerStart(Date.now());
                 setCycleOffset(sec);
+                prevCpRef.current = null; // évite un faux flash "analyse rythme" immédiat après le recalage
                 setRunning(true);
                 setModalRacs(false);
               }}
@@ -11840,7 +11889,7 @@ function App() {
             <span style={{ fontSize:10, fontWeight:500, color: warn ? bar : P.textSoft, fontFamily:mono }}>
               {warn ? `⚠ ${rem}s` : `${rem}s`}
             </span>
-            <button onClick={() => { setCycleOffset(sec); addEvent("cycle","↺ Cycle remis à zéro","↺"); }}
+            <button onClick={() => { setCycleOffset(sec); prevCpRef.current = null; addEvent("cycle","↺ Cycle remis à zéro","↺"); }}
               style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:6,
                 padding:"2px 8px", fontSize:10, color:P.textMid, cursor:"pointer",
                 fontFamily:sans, lineHeight:1.4 }}>
