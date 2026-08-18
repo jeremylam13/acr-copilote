@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-29";
+const APP_VERSION = "2026.08.15-30";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1061,8 +1061,8 @@ function GuideApp({ onClose }) {
       title: "Repères de l'écran",
       color: "slate",
       items: [
-        { icon:"🪪", title:"Encart Patient", desc:"Nom, âge, sexe — toujours accessible en un tap en haut de l'écran, à compléter dès que l'identité est connue. Un sélecteur de lieu d'intervention (domicile, établissement de santé, voie publique...) est disponible dans les trois modules, repris dans le compte-rendu et le Dashboard. En mode Traumatique, un sélecteur de mécanisme lésionnel (AVP, chute, arme blanche/à feu, écrasement, blast...) y apparaît aussi — il préremplit automatiquement \"pénétrant\" et \"haute cinétique\" dans le calculateur BATT." },
-        { icon:"📻", title:"Transmission", desc:"Ce qui s'est passé avant l'arrivée du SMUR (témoin, massage par un tiers, sapeurs-pompiers). Les heures saisies s'ajoutent automatiquement à la chronologie. Important : le nombre de chocs DSA pompiers renseigné ici s'ajoute aux chocs SMUR pour déclencher le rappel Cordarone au bon moment (3ᵉ puis 5ᵉ choc cumulé). Régulation est juste à côté, sur la même rangée." },
+        { icon:"🪪", title:"Encart Patient", desc:"Nom, âge, sexe — toujours accessible en un tap en haut de l'écran, à compléter dès que l'identité est connue. En mode Traumatique, un sélecteur de mécanisme lésionnel (AVP, chute, arme blanche/à feu, écrasement, blast...) y apparaît aussi — il préremplit automatiquement \"pénétrant\" et \"haute cinétique\" dans le calculateur BATT." },
+        { icon:"📻", title:"Transmission", desc:"Ce qui s'est passé avant l'arrivée du SMUR : lieu de l'intervention, témoin, massage par un tiers, sapeurs-pompiers. Les heures saisies s'ajoutent automatiquement à la chronologie. Important : le nombre de chocs DSA pompiers renseigné ici s'ajoute aux chocs SMUR pour déclencher le rappel Cordarone au bon moment (3ᵉ puis 5ᵉ choc cumulé). Régulation est juste à côté, sur la même rangée." },
         { icon:"🔍", title:"Onglet Étiologie", desc:"ACR Adulte médical uniquement : liste des causes réversibles (5H/5T) à cocher au fur et à mesure qu'elles sont évoquées ou écartées — la réflexion diagnostique se retrouve ensuite dans la chronologie. En Traumatique, cet onglet est remplacé par la carte HOTT persistante (voir section Adulte & Traumatique)." },
         { icon:"💊", title:"Onglet Thérapeutiques", desc:"Regroupe amines, remplissage vasculaire et sédation — tout ce qui accompagne la réa sans être un geste d'urgence immédiat." },
         { icon:"⏱", title:"No-flow / Low-flow", desc:"Deux durées clés pour le pronostic : No-flow = temps sans massage avant la prise en charge ; Low-flow = temps de massage efficace depuis l'effondrement. À renseigner une fois — elles alimentent le compte-rendu et les critères d'arrêt." },
@@ -1747,7 +1747,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     // SBAR — résumé de transmission, remonté juste après la frise (avant le détail)
     const sbarRows = [
       { L:"S", title:"Situation", c:C.rose, soft:C.roseSoft, lines:[
-        `${patientDesc2||"Patient"} · ACR extra-hospitalier${LIEUX_INTERVENTION.find(l => l.id === patient?.lieu)?.label ? " · " + LIEUX_INTERVENTION.find(l => l.id === patient.lieu).label : ""}`,
+        `${patientDesc2||"Patient"} · ACR extra-hospitalier${LIEUX_INTERVENTION.find(l => l.id === trans?.lieu)?.label ? " · " + LIEUX_INTERVENTION.find(l => l.id === trans.lieu).label : ""}`,
         `Heure arrêt : ${acrTime||"inconnue"} · No-flow : ${noFlow||"?"}min · Low-flow : ${lowFlow||"—"}min · Durée : ${fmtSec(totalSec)}`,
       ]},
       { L:"B", title:"Contexte", c:C.blue, soft:C.blueSoft, lines:[
@@ -1793,16 +1793,24 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     <p style="text-align:center;font-size:10.5px;color:${C.textSoft};margin:0 0 16px;text-transform:uppercase;letter-spacing:0.08em;font-family:'JetBrains Mono',monospace">— Détail complet ci-dessous —</p>`;
 
     // Identité
-    if (patient?.nom || patient?.prenom || patient?.age || patient?.atcd || patient?.histoire || patient?.mecanisme || patient?.lieu) {
+    if (patient?.nom || patient?.prenom || patient?.age || patient?.atcd || patient?.histoire || patient?.mecanisme) {
       const mecLabel = MECANISMES_TRAUMA.find(m => m.id === patient.mecanisme)?.label;
-      const lieuLabel = LIEUX_INTERVENTION.find(l => l.id === patient.lieu)?.label;
       html += section("🪪 Identité patient", C.blue, C.blueSoft, `
         ${(patient.nom||patient.prenom) ? row("Nom", [patient.nom,patient.prenom].filter(Boolean).join(" ")) : ""}
         ${patient.age ? row("Âge", patient.age) : ""}
-        ${lieuLabel ? row("Lieu de l'intervention", lieuLabel) : ""}
         ${mecLabel ? row("Mécanisme lésionnel", mecLabel) : ""}
         ${patient.atcd ? row("ATCD", patient.atcd) : ""}
         ${patient.histoire ? row("Circonstances", patient.histoire) : ""}
+      `);
+    }
+
+    // Contexte de transmission (lieu, témoin) — affiché dès qu'une info est renseignée
+    const lieuLabel2 = LIEUX_INTERVENTION.find(l => l.id === trans?.lieu)?.label;
+    if (lieuLabel2 || trans?.temoin || trans?.mceTemoin) {
+      html += section("📻 Contexte de transmission", C.amber, C.amberSoft, `
+        ${lieuLabel2 ? row("Lieu de l'intervention", lieuLabel2) : ""}
+        ${trans.temoin ? row("Témoin de l'effondrement", trans.temoin) : ""}
+        ${trans.mceTemoin ? row("MCE par témoin", trans.mceTemoin) : ""}
       `);
     }
 
@@ -3175,7 +3183,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [ccfPausedTotalPed, setCcfPausedTotalPed] = useLocalState("acr_ped_ccfPaused", 0);
   const [ccfPausedSincePed, setCcfPausedSincePed] = useLocalState("acr_ped_ccfSince", null);
   const [transPed, setTransPed] = useLocalState("acr_ped_trans", {
-    hEffondrement:"", temoin:"", mceTemoin:"",
+    hEffondrement:"", temoin:"", mceTemoin:"", lieu:"",
     hArriveePompiers:"", hPoseDSA:"", h1erChoc:"",
     chocsPompiers:0, rythmeDSA:"",
     note:"", saved:false,
@@ -5623,23 +5631,6 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               </div>
               <div><Lbl>Poids</Lbl><TInput value={patPed.poids} onChange={spf("poids")} placeholder={`${localPoids} kg`} /></div>
             </div>
-            <div>
-              <Lbl>Lieu de l'intervention</Lbl>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
-                {LIEUX_INTERVENTION.map(l => (
-                  <button key={l.id} onClick={() => spf("lieu")(patPed.lieu === l.id ? "" : l.id)}
-                    style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 8px",
-                      borderRadius:9, border:`1.5px solid ${patPed.lieu===l.id ? P.blue : P.border}`,
-                      background: patPed.lieu===l.id ? P.blueSoft : P.surface,
-                      color: patPed.lieu===l.id ? P.blueText : P.textMid,
-                      fontSize:12, fontWeight: patPed.lieu===l.id ? 700 : 500,
-                      cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
-                    <span style={{ fontSize:14, flexShrink:0 }}>{l.icon}</span>
-                    <span style={{ minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
             <div><Lbl>Température (°C)</Lbl>
               <TInput value={patPed.temp} onChange={spf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
             <div><Lbl>Antécédents</Lbl>
@@ -5680,6 +5671,21 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           <div style={{background:P.surfaceAlt,borderRadius:10,padding:"10px 12px",marginBottom:12}}>
             <p style={{margin:"0 0 8px",fontSize:10,fontWeight:600,color:P.textSoft,
               textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Contexte</p>
+            <Lbl>Lieu de l'intervention</Lbl>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginBottom:8}}>
+              {LIEUX_INTERVENTION.map(l => (
+                <button key={l.id} onClick={()=>stp("lieu")(transPed.lieu===l.id?"":l.id)}
+                  style={{display:"flex",alignItems:"center",gap:5,padding:"7px 6px",
+                    borderRadius:8,border:`1.5px solid ${transPed.lieu===l.id?P.amber:P.border}`,
+                    background:transPed.lieu===l.id?P.amberSoft:P.surface,
+                    color:transPed.lieu===l.id?P.amberText:P.textMid,
+                    fontSize:11,fontWeight:transPed.lieu===l.id?700:500,
+                    cursor:"pointer",fontFamily:sans,textAlign:"left",minWidth:0}}>
+                  <span style={{fontSize:13,flexShrink:0}}>{l.icon}</span>
+                  <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.label}</span>
+                </button>
+              ))}
+            </div>
             <Lbl>Témoin de l'effondrement</Lbl>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:8}}>
               {["Oui","Non","Inconnu"].map(v => (
@@ -7836,7 +7842,7 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
       // Rétro-compatible : les archives antérieures à ce champ n'ont pas
       // `recidive` enregistré, mais l'info est déjà présente dans leur chronologie
       recidive:   a.recidive ?? evts.some(e => e.id === "re_arret"),
-      lieu:       LIEUX_INTERVENTION.find(l => l.id === a.props?.patient?.lieu)?.label || null,
+      lieu:       LIEUX_INTERVENTION.find(l => l.id === (a.props?.trans?.lieu || a.props?.patient?.lieu))?.label || null,
     };
   });
 
@@ -8428,7 +8434,7 @@ function App() {
   // Transmission équipes pré-SMUR
   const [modalTrans,  setModalTrans]  = useState(false);
   const [trans, setTrans] = useLocalState("acr_adulte_trans", {
-    hEffondrement:"", temoin:"", mceTemoin:"",
+    hEffondrement:"", temoin:"", mceTemoin:"", lieu:"",
     hArriveePompiers:"", hPoseDSA:"", h1erChoc:"",
     chocsPompiers:0, rythmeDSA:"", gestesSecouristes:"",
     note:"", saved:false,
@@ -10846,6 +10852,21 @@ function App() {
           <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px 12px", marginBottom:12 }}>
             <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:600, color:P.textSoft,
               textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Contexte</p>
+            <Lbl>Lieu de l'intervention</Lbl>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:5, marginBottom:8 }}>
+              {LIEUX_INTERVENTION.map(l => (
+                <button key={l.id} onClick={() => st("lieu")(trans.lieu === l.id ? "" : l.id)}
+                  style={{ display:"flex", alignItems:"center", gap:5, padding:"7px 6px",
+                    borderRadius:8, border:`1.5px solid ${trans.lieu===l.id ? P.amber : P.border}`,
+                    background: trans.lieu===l.id ? P.amberSoft : P.surface,
+                    color: trans.lieu===l.id ? P.amberText : P.textMid,
+                    fontSize:11, fontWeight: trans.lieu===l.id ? 700 : 500,
+                    cursor:"pointer", fontFamily:sans, textAlign:"left", minWidth:0 }}>
+                  <span style={{ fontSize:13, flexShrink:0 }}>{l.icon}</span>
+                  <span style={{ minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.label}</span>
+                </button>
+              ))}
+            </div>
             <Lbl>Témoin de l'effondrement</Lbl>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5, marginBottom:8 }}>
               {["Oui","Non","Inconnu"].map(v => (
@@ -12564,23 +12585,6 @@ function App() {
                 })()}
               </div>
             )}
-            <div>
-              <Lbl>Lieu de l'intervention</Lbl>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
-                {LIEUX_INTERVENTION.map(l => (
-                  <button key={l.id} onClick={() => sf("lieu")(pat.lieu === l.id ? "" : l.id)}
-                    style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 8px",
-                      borderRadius:9, border:`1.5px solid ${pat.lieu===l.id ? P.blue : P.border}`,
-                      background: pat.lieu===l.id ? P.blueSoft : P.surface,
-                      color: pat.lieu===l.id ? P.blueText : P.textMid,
-                      fontSize:12, fontWeight: pat.lieu===l.id ? 700 : 500,
-                      cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
-                    <span style={{ fontSize:14, flexShrink:0 }}>{l.icon}</span>
-                    <span style={{ minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
             <div><Lbl>Température (°C)</Lbl>
               <TInput value={pat.temp} onChange={sf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
             <div><Lbl>Antécédents médicaux</Lbl>
