@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-30";
+const APP_VERSION = "2026.08.15-31";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1062,7 +1062,7 @@ function GuideApp({ onClose }) {
       color: "slate",
       items: [
         { icon:"🪪", title:"Encart Patient", desc:"Nom, âge, sexe — toujours accessible en un tap en haut de l'écran, à compléter dès que l'identité est connue. En mode Traumatique, un sélecteur de mécanisme lésionnel (AVP, chute, arme blanche/à feu, écrasement, blast...) y apparaît aussi — il préremplit automatiquement \"pénétrant\" et \"haute cinétique\" dans le calculateur BATT." },
-        { icon:"📻", title:"Transmission", desc:"Ce qui s'est passé avant l'arrivée du SMUR : lieu de l'intervention, témoin, massage par un tiers, sapeurs-pompiers. Les heures saisies s'ajoutent automatiquement à la chronologie. Important : le nombre de chocs DSA pompiers renseigné ici s'ajoute aux chocs SMUR pour déclencher le rappel Cordarone au bon moment (3ᵉ puis 5ᵉ choc cumulé). Régulation est juste à côté, sur la même rangée." },
+        { icon:"📻", title:"Transmission", desc:"Ce qui s'est passé avant l'arrivée du SMUR : lieu de l'intervention, témoin, massage par un tiers, sapeurs-pompiers. Les heures saisies s'ajoutent automatiquement à la chronologie. Important : les chocs délivrés avant le SMUR sont comptés séparément (DSA pompiers / DSA public), mais les deux s'ajoutent aux chocs SMUR pour déclencher le rappel Cordarone au bon moment (3ᵉ puis 5ᵉ choc cumulé). Régulation est juste à côté, sur la même rangée." },
         { icon:"🔍", title:"Onglet Étiologie", desc:"ACR Adulte médical uniquement : liste des causes réversibles (5H/5T) à cocher au fur et à mesure qu'elles sont évoquées ou écartées — la réflexion diagnostique se retrouve ensuite dans la chronologie. En Traumatique, cet onglet est remplacé par la carte HOTT persistante (voir section Adulte & Traumatique)." },
         { icon:"💊", title:"Onglet Thérapeutiques", desc:"Regroupe amines, remplissage vasculaire et sédation — tout ce qui accompagne la réa sans être un geste d'urgence immédiat." },
         { icon:"⏱", title:"No-flow / Low-flow", desc:"Deux durées clés pour le pronostic : No-flow = temps sans massage avant la prise en charge ; Low-flow = temps de massage efficace depuis l'effondrement. À renseigner une fois — elles alimentent le compte-rendu et les critères d'arrêt." },
@@ -1414,7 +1414,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     // Phase pré-SMUR (transmission des équipes en place)
     const t = trans;
     const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
-      t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
+      t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || (parseInt(t.chocsPublic)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
     if (hasTrans) {
       const rythmeLabel = { choquable:"choquable", nonChoquable:"non choquable", nonAnalyse:"non analysé" };
       lines.push("── PHASE PRÉ-SMUR ──────────────────");
@@ -1426,6 +1426,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       if (t.rythmeDSA)        lines.push(`Rythme initial    : ${rythmeLabel[t.rythmeDSA] || t.rythmeDSA}`);
       if (t.h1erChoc)         lines.push(`1er choc          : ${t.h1erChoc}`);
       if ((parseInt(t.chocsPompiers)||0) > 0) lines.push(`Chocs DSA pompiers: ${t.chocsPompiers}`);
+      if ((parseInt(t.chocsPublic)||0) > 0)   lines.push(`Chocs DSA public  : ${t.chocsPublic}`);
       if (t.gestesSecouristes) lines.push(`Gestes secouristes: ${t.gestesSecouristes}`);
       if (t.note)             lines.push(`Note pré-SMUR     : ${t.note}`);
       lines.push("");
@@ -1494,11 +1495,12 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     if (patient?.histoire) lines.push(`Circonstances : ${patient.histoire}`);
     if (patient?.temp) lines.push(`Température : ${patient.temp} °C`);
     const tSBAR = trans;
-    if (tSBAR && (tSBAR.temoin || tSBAR.mceTemoin || tSBAR.chocsPompiers)) {
+    if (tSBAR && (tSBAR.temoin || tSBAR.mceTemoin || tSBAR.chocsPompiers || tSBAR.chocsPublic)) {
       const preSMUR = [
         tSBAR.temoin && `témoin : ${tSBAR.temoin}`,
         tSBAR.mceTemoin && `MCE témoin : ${tSBAR.mceTemoin}`,
         (parseInt(tSBAR.chocsPompiers)||0) > 0 && `${tSBAR.chocsPompiers} choc(s) DSA pompiers`,
+        (parseInt(tSBAR.chocsPublic)||0) > 0 && `${tSBAR.chocsPublic} choc(s) DSA public`,
         tSBAR.rythmeDSA && `rythme initial : ${tSBAR.rythmeDSA}`,
       ].filter(Boolean).join(" · ");
       lines.push(`Pré-SMUR : ${preSMUR}`);
@@ -1571,7 +1573,8 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     const preSMUR2 = tT && [
       tT.temoin && `Témoin : ${tT.temoin}`,
       tT.mceTemoin && `MCE témoin : ${tT.mceTemoin}`,
-      (parseInt(tT.chocsPompiers)||0)>0 && `${tT.chocsPompiers} choc(s) DSA`,
+      (parseInt(tT.chocsPompiers)||0)>0 && `${tT.chocsPompiers} choc(s) DSA pompiers`,
+      (parseInt(tT.chocsPublic)||0)>0 && `${tT.chocsPublic} choc(s) DSA public`,
       tT.rythmeDSA && `Rythme initial : ${tT.rythmeDSA}`,
     ].filter(Boolean).join(" · ");
 
@@ -2081,7 +2084,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         {(() => {
           const t = trans;
           const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
-            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
+            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || (parseInt(t.chocsPublic)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
           if (!hasTrans) return null;
           const rythmeLabel = { choquable:"Choquable", nonChoquable:"Non choquable", nonAnalyse:"Non analysé" };
           return (
@@ -2095,6 +2098,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
                 {t.rythmeDSA        && <Field label="Rythme initial"     value={rythmeLabel[t.rythmeDSA] || t.rythmeDSA} />}
                 {t.h1erChoc         && <Field label="1er choc"           value={t.h1erChoc} />}
                 {(parseInt(t.chocsPompiers)||0) > 0 && <Field label="Chocs DSA pompiers" value={String(t.chocsPompiers)} />}
+                {(parseInt(t.chocsPublic)||0) > 0 && <Field label="Chocs DSA public" value={String(t.chocsPublic)} />}
                 {t.note             && <Field label="Note pré-SMUR"      value={t.note} />}
               </div>
             </Section>
@@ -2282,7 +2286,8 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
             const preSMUR = t && [
               t.temoin && `Témoin : ${t.temoin}`,
               t.mceTemoin && `MCE témoin : ${t.mceTemoin}`,
-              (parseInt(t.chocsPompiers)||0)>0 && `${t.chocsPompiers} choc(s) DSA`,
+              (parseInt(t.chocsPompiers)||0)>0 && `${t.chocsPompiers} choc(s) DSA pompiers`,
+              (parseInt(t.chocsPublic)||0)>0 && `${t.chocsPublic} choc(s) DSA public`,
               t.rythmeDSA && `Rythme initial : ${t.rythmeDSA}`,
             ].filter(Boolean).join(" · ");
             const rows = [
@@ -2434,7 +2439,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         {(() => {
           const t = trans;
           const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
-            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
+            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || (parseInt(t.chocsPublic)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
           if (!hasTrans) return null;
           const rythmeLabel = { choquable:"Choquable", nonChoquable:"Non choquable", nonAnalyse:"Non analysé" };
           return (
@@ -2448,6 +2453,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
                 {t.rythmeDSA        && <Field label="Rythme initial"     value={rythmeLabel[t.rythmeDSA] || t.rythmeDSA} />}
                 {t.h1erChoc         && <Field label="1er choc"           value={t.h1erChoc} />}
                 {(parseInt(t.chocsPompiers)||0) > 0 && <Field label="Chocs DSA pompiers" value={String(t.chocsPompiers)} />}
+                {(parseInt(t.chocsPublic)||0) > 0 && <Field label="Chocs DSA public" value={String(t.chocsPublic)} />}
                 {t.note             && <Field label="Note pré-SMUR"      value={t.note} />}
               </div>
             </Section>
@@ -2587,7 +2593,8 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
             const preSMUR = t && [
               t.temoin && `Témoin : ${t.temoin}`,
               t.mceTemoin && `MCE témoin : ${t.mceTemoin}`,
-              (parseInt(t.chocsPompiers)||0)>0 && `${t.chocsPompiers} choc(s) DSA`,
+              (parseInt(t.chocsPompiers)||0)>0 && `${t.chocsPompiers} choc(s) DSA pompiers`,
+              (parseInt(t.chocsPublic)||0)>0 && `${t.chocsPublic} choc(s) DSA public`,
               t.rythmeDSA && `Rythme initial : ${t.rythmeDSA}`,
             ].filter(Boolean).join(" · ");
             const rows = [
@@ -3185,7 +3192,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [transPed, setTransPed] = useLocalState("acr_ped_trans", {
     hEffondrement:"", temoin:"", mceTemoin:"", lieu:"",
     hArriveePompiers:"", hPoseDSA:"", h1erChoc:"",
-    chocsPompiers:0, rythmeDSA:"",
+    chocsPompiers:0, chocsPublic:0, rythmeDSA:"",
     note:"", saved:false,
   });
   // Minuteur Adrénaline pédiatrique
@@ -4951,7 +4958,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         {/* Compteur chocs cumulés + rappel Amiodarone */}
         {(() => {
           const chocsSmur  = events.filter(e => e.id === "choc").length;
-          const chocsPomp  = parseInt(transPed.chocsPompiers) || 0;
+          const chocsPomp  = (parseInt(transPed.chocsPompiers) || 0) + (parseInt(transPed.chocsPublic) || 0);
           const chocsTotal = chocsSmur + chocsPomp;
           const adrCount   = events.filter(e => e.id === "adr").length;
           const amioCount  = events.filter(e => e.id === "cord" || e.id === "amio").length;
@@ -4971,7 +4978,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                   </span>
                   {chocsPomp > 0 && (
                     <span style={{fontSize:10,color:P.textSoft,fontFamily:mono}}>
-                      ({chocsPomp} pomp. + {chocsSmur} SMUR)
+                      ({chocsPomp} avant SMUR + {chocsSmur} SMUR)
                     </span>
                   )}
                 </div>
@@ -5746,22 +5753,43 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                     cursor:"pointer",fontFamily:sans}}>{label}</button>
               ))}
             </div>
-            <Lbl>Chocs délivrés par le DSA</Lbl>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:14,marginBottom:8}}>
-              <button onClick={()=>stp("chocsPompiers")(Math.max(0,(parseInt(transPed.chocsPompiers)||0)-1))}
-                style={{background:P.surface,border:`1.5px solid ${P.amber}`,borderRadius:"50%",
-                  width:40,height:40,fontSize:18,fontWeight:700,color:P.amberText,
-                  cursor:"pointer",fontFamily:sans}}>−</button>
-              <span style={{fontSize:32,fontWeight:700,color:P.amberText,fontFamily:mono,minWidth:42,textAlign:"center"}}>
-                {transPed.chocsPompiers || 0}
-              </span>
-              <button onClick={()=>stp("chocsPompiers")((parseInt(transPed.chocsPompiers)||0)+1)}
-                style={{background:P.amber,border:"none",borderRadius:"50%",
-                  width:40,height:40,fontSize:18,fontWeight:700,color:"#fff",
-                  cursor:"pointer",fontFamily:sans}}>+</button>
+            <Lbl>Chocs délivrés avant le SMUR</Lbl>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:8}}>
+              <div>
+                <p style={{margin:"0 0 4px",fontSize:9.5,color:P.textSoft,textAlign:"center"}}>Pompiers</p>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+                  <button onClick={()=>stp("chocsPompiers")(Math.max(0,(parseInt(transPed.chocsPompiers)||0)-1))}
+                    style={{background:P.surface,border:`1.5px solid ${P.amber}`,borderRadius:"50%",
+                      width:32,height:32,fontSize:15,fontWeight:700,color:P.amberText,
+                      cursor:"pointer",fontFamily:sans,flexShrink:0}}>−</button>
+                  <span style={{fontSize:24,fontWeight:700,color:P.amberText,fontFamily:mono,minWidth:30,textAlign:"center"}}>
+                    {transPed.chocsPompiers || 0}
+                  </span>
+                  <button onClick={()=>stp("chocsPompiers")((parseInt(transPed.chocsPompiers)||0)+1)}
+                    style={{background:P.amber,border:"none",borderRadius:"50%",
+                      width:32,height:32,fontSize:15,fontWeight:700,color:"#fff",
+                      cursor:"pointer",fontFamily:sans,flexShrink:0}}>+</button>
+                </div>
+              </div>
+              <div>
+                <p style={{margin:"0 0 4px",fontSize:9.5,color:P.textSoft,textAlign:"center"}}>DSA public</p>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+                  <button onClick={()=>stp("chocsPublic")(Math.max(0,(parseInt(transPed.chocsPublic)||0)-1))}
+                    style={{background:P.surface,border:`1.5px solid ${P.blue}`,borderRadius:"50%",
+                      width:32,height:32,fontSize:15,fontWeight:700,color:P.blueText,
+                      cursor:"pointer",fontFamily:sans,flexShrink:0}}>−</button>
+                  <span style={{fontSize:24,fontWeight:700,color:P.blueText,fontFamily:mono,minWidth:30,textAlign:"center"}}>
+                    {transPed.chocsPublic || 0}
+                  </span>
+                  <button onClick={()=>stp("chocsPublic")((parseInt(transPed.chocsPublic)||0)+1)}
+                    style={{background:P.blue,border:"none",borderRadius:"50%",
+                      width:32,height:32,fontSize:15,fontWeight:700,color:"#fff",
+                      cursor:"pointer",fontFamily:sans,flexShrink:0}}>+</button>
+                </div>
+              </div>
             </div>
             <p style={{margin:"0 0 8px",fontSize:9.5,color:P.textSoft,textAlign:"center",fontStyle:"italic"}}>
-              S'ajoute aux chocs SMUR pour le rappel Amiodarone
+              Les deux s'ajoutent aux chocs SMUR pour le rappel Amiodarone
             </p>
             <Lbl>Heure du 1er choc</Lbl>
             <input type="time" value={transPed.h1erChoc} onChange={e=>stp("h1erChoc")(e.target.value)}
@@ -5798,6 +5826,11 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             if (nbChocs > 0) {
               newEvents.push({ id:"chocs_pomp", time:transPed.h1erChoc || getNow(), sec:0,
                 label:`${nbChocs} choc(s) DSA délivré(s) par pompiers`, icon:"⚡" });
+            }
+            const nbChocsPublic = parseInt(transPed.chocsPublic) || 0;
+            if (nbChocsPublic > 0) {
+              newEvents.push({ id:"chocs_public", time:transPed.h1erChoc || getNow(), sec:0,
+                label:`${nbChocsPublic} choc(s) DSA délivré(s) par un DSA public`, icon:"⚡" });
             }
             if (transPed.note.trim())
               newEvents.push({ id:"trans_note", time:getNow(), sec:0,
@@ -8436,7 +8469,7 @@ function App() {
   const [trans, setTrans] = useLocalState("acr_adulte_trans", {
     hEffondrement:"", temoin:"", mceTemoin:"", lieu:"",
     hArriveePompiers:"", hPoseDSA:"", h1erChoc:"",
-    chocsPompiers:0, rythmeDSA:"", gestesSecouristes:"",
+    chocsPompiers:0, chocsPublic:0, rythmeDSA:"", gestesSecouristes:"",
     note:"", saved:false,
   });
   const st = k => v => setTrans(p => ({ ...p, [k]: v }));
@@ -8517,7 +8550,7 @@ function App() {
   };
 
   // Alarme sonore quand un rappel Cordarone apparaît (après 3ᵉ / 5ᵉ choc cumulé)
-  const _chocsTot   = events.filter(e => e.id === "choc").length + (parseInt(trans.chocsPompiers) || 0);
+  const _chocsTot   = events.filter(e => e.id === "choc").length + (parseInt(trans.chocsPompiers) || 0) + (parseInt(trans.chocsPublic) || 0);
   const _cordDone   = events.filter(e => e.id === "cord300" || e.id === "cord150").length;
   const cordReminderActive = started && !events.find(e => e.id === "rosc") &&
     ((_chocsTot >= 3 && _cordDone === 0) || (_chocsTot >= 5 && _cordDone === 1));
@@ -9003,7 +9036,7 @@ function App() {
     setShowPdf(false); setShowLog(false);
     setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"", lieu:"" });
     setIot({ cormack:"", sonde:"", repere:"", capno:"" });
-    setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, rythmeDSA:"", gestesSecouristes:"", note:"", saved:false });
+    setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", lieu:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, chocsPublic:0, rythmeDSA:"", gestesSecouristes:"", note:"", saved:false });
     setModalTrans(false);
     setAdrTimerStart(0);
     setMainTab("actions"); setSuspectedAd([]); setModalEcmo(false); setModalDdac(false); setHottManualExpand(false);
@@ -10922,22 +10955,43 @@ function App() {
                     cursor:"pointer", fontFamily:sans }}>{label}</button>
               ))}
             </div>
-            <Lbl>Chocs délivrés par le DSA</Lbl>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:14, marginBottom:8 }}>
-              <button onClick={() => st("chocsPompiers")(Math.max(0, (parseInt(trans.chocsPompiers)||0) - 1))}
-                style={{ background:P.surface, border:`1.5px solid ${P.amber}`, borderRadius:"50%",
-                  width:40, height:40, fontSize:18, fontWeight:700, color:P.amberText,
-                  cursor:"pointer", fontFamily:sans }}>−</button>
-              <span style={{ fontSize:32, fontWeight:700, color:P.amberText, fontFamily:mono, minWidth:42, textAlign:"center" }}>
-                {trans.chocsPompiers || 0}
-              </span>
-              <button onClick={() => st("chocsPompiers")((parseInt(trans.chocsPompiers)||0) + 1)}
-                style={{ background:P.amber, border:"none", borderRadius:"50%",
-                  width:40, height:40, fontSize:18, fontWeight:700, color:"#fff",
-                  cursor:"pointer", fontFamily:sans }}>+</button>
+            <Lbl>Chocs délivrés avant le SMUR</Lbl>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:8 }}>
+              <div>
+                <p style={{ margin:"0 0 4px", fontSize:9.5, color:P.textSoft, textAlign:"center" }}>Pompiers</p>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+                  <button onClick={() => st("chocsPompiers")(Math.max(0, (parseInt(trans.chocsPompiers)||0) - 1))}
+                    style={{ background:P.surface, border:`1.5px solid ${P.amber}`, borderRadius:"50%",
+                      width:32, height:32, fontSize:15, fontWeight:700, color:P.amberText,
+                      cursor:"pointer", fontFamily:sans, flexShrink:0 }}>−</button>
+                  <span style={{ fontSize:24, fontWeight:700, color:P.amberText, fontFamily:mono, minWidth:30, textAlign:"center" }}>
+                    {trans.chocsPompiers || 0}
+                  </span>
+                  <button onClick={() => st("chocsPompiers")((parseInt(trans.chocsPompiers)||0) + 1)}
+                    style={{ background:P.amber, border:"none", borderRadius:"50%",
+                      width:32, height:32, fontSize:15, fontWeight:700, color:"#fff",
+                      cursor:"pointer", fontFamily:sans, flexShrink:0 }}>+</button>
+                </div>
+              </div>
+              <div>
+                <p style={{ margin:"0 0 4px", fontSize:9.5, color:P.textSoft, textAlign:"center" }}>DSA public</p>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+                  <button onClick={() => st("chocsPublic")(Math.max(0, (parseInt(trans.chocsPublic)||0) - 1))}
+                    style={{ background:P.surface, border:`1.5px solid ${P.blue}`, borderRadius:"50%",
+                      width:32, height:32, fontSize:15, fontWeight:700, color:P.blueText,
+                      cursor:"pointer", fontFamily:sans, flexShrink:0 }}>−</button>
+                  <span style={{ fontSize:24, fontWeight:700, color:P.blueText, fontFamily:mono, minWidth:30, textAlign:"center" }}>
+                    {trans.chocsPublic || 0}
+                  </span>
+                  <button onClick={() => st("chocsPublic")((parseInt(trans.chocsPublic)||0) + 1)}
+                    style={{ background:P.blue, border:"none", borderRadius:"50%",
+                      width:32, height:32, fontSize:15, fontWeight:700, color:"#fff",
+                      cursor:"pointer", fontFamily:sans, flexShrink:0 }}>+</button>
+                </div>
+              </div>
             </div>
             <p style={{ margin:"0 0 8px", fontSize:9.5, color:P.textSoft, textAlign:"center", fontStyle:"italic" }}>
-              S'ajoute aux chocs SMUR pour le rappel Cordarone
+              Les deux s'ajoutent aux chocs SMUR pour le rappel Cordarone
             </p>
             <Lbl>Heure du 1er choc</Lbl>
             <input type="time" value={trans.h1erChoc} onChange={e => st("h1erChoc")(e.target.value)}
@@ -10984,6 +11038,11 @@ function App() {
             if (nbChocs > 0) {
               newEvents.push({ id:"chocs_pomp", time:trans.h1erChoc || getNow(), sec:0,
                 label:`${nbChocs} choc(s) DSA délivré(s) par pompiers`, icon:"⚡" });
+            }
+            const nbChocsPublic = parseInt(trans.chocsPublic) || 0;
+            if (nbChocsPublic > 0) {
+              newEvents.push({ id:"chocs_public", time:trans.h1erChoc || getNow(), sec:0,
+                label:`${nbChocsPublic} choc(s) DSA délivré(s) par un DSA public`, icon:"⚡" });
             }
             if (trans.note.trim())
               newEvents.push({ id:"trans_note", time:getNow(), sec:0,
@@ -11712,7 +11771,7 @@ function App() {
         {/* Compteur chocs cumulés + rappel Cordarone */}
         {(() => {
           const chocsSmur = events.filter(e => e.id === "choc").length;
-          const chocsPomp = parseInt(trans.chocsPompiers) || 0;
+          const chocsPomp = (parseInt(trans.chocsPompiers) || 0) + (parseInt(trans.chocsPublic) || 0);
           const chocsTotal = chocsSmur + chocsPomp;
           const adrCount = events.filter(e => e.id === "adr").length;
           const cordCount = events.filter(e => e.id === "cord300" || e.id === "cord150").length;
@@ -11732,7 +11791,7 @@ function App() {
                   </span>
                   {chocsPomp > 0 && (
                     <span style={{ fontSize:10, color:P.textSoft, fontFamily:mono }}>
-                      ({chocsPomp} pomp. + {chocsSmur} SMUR)
+                      ({chocsPomp} avant SMUR + {chocsSmur} SMUR)
                     </span>
                   )}
                 </div>
