@@ -4,15 +4,22 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-35";
+const APP_VERSION = "2026.08.15-37";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
 const supabaseAnonKey = "sb_publishable_hRxmJi9SIcrRtQUO4dwo0Q_rnXNmDJz";
 const supabaseTeam = createClient(supabaseUrl, supabaseAnonKey);
 
+// Alphabet sans caractères ambigus (pas de 0/O, 1/I/L) — facile à lire à voix haute
+// et à taper, tout en donnant ~700 millions de combinaisons possibles (vs 900 000
+// pour un code à 6 chiffres), pour rendre le devinage d'une session active
+// pratiquement impossible si l'app est diffusée à grande échelle.
+const SESSION_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 function genSessionCode() {
-  return String(Math.floor(100000 + Math.random() * 900000)); // 6 chiffres
+  let code = "";
+  for (let i = 0; i < 6; i++) code += SESSION_CODE_ALPHABET[Math.floor(Math.random() * SESSION_CODE_ALPHABET.length)];
+  return code;
 }
 function qrUrl(code) {
   return `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(code)}`;
@@ -1134,6 +1141,7 @@ function GuideApp({ onClose }) {
       title: "Reconnaissance vocale",
       color: "violet",
       items: [
+        { icon:"📍", title:"Emplacement du micro", desc:"Le bouton micro se trouve désormais dans l'en-tête, à côté du mode équipe et du réglage jour/nuit — un simple bouton compact à activer/désactiver, qui ne gêne plus jamais l'accès aux boutons d'action. Tant qu'il est actif, un bandeau fin reste affiché en haut de l'écran (fixe, toujours visible même en faisant défiler la page) : écoute en cours, transcription entendue, confirmation d'une commande reconnue, ou réponse à une question." },
         { icon:"🎤", title:"Mot-code vocal (personnalisable)", desc:"Toute commande ou question doit être précédée d'un mot-code — \"Alpha\" par défaut (ex : \"Alpha, adrénaline\"). Ce filtre évite que le brouhaha d'une réanimation ne déclenche une action par erreur — un flash vert du micro confirme que le mot-code a bien été entendu. Modifiable dans Réglages : choisissez un mot qui ne risque pas d'être prononcé par hasard pendant une prise en charge (évitez les mots médicaux courants comme \"urgence\" ou \"protocole\"), préférez un mot court, et si possible un mot qu'on ne prononcerait pas naturellement en deux temps avec une pause au milieu." },
         { icon:"💉", title:"Toutes les commandes d'action", desc:"Chaque commande logue un geste dans la chronologie après un bandeau de confirmation de 2,5s (annulable). Les doses affichées s'adaptent automatiquement en pédiatrique selon le poids.",
           list: [
@@ -1181,7 +1189,7 @@ function GuideApp({ onClose }) {
       items: [
         { icon:"👥", title:"Synchronisation en temps réel", desc:"Plusieurs téléphones de l'équipe peuvent partager la même chronologie, l'heure d'ACR et les constantes en direct — utile quand plusieurs personnes documentent en parallèle." },
         { icon:"📶", title:"Statut de synchronisation", desc:"Dans le modal équipe, un indicateur précise si les données sont bien à jour : \"Synchronisé à l'instant/Xs/X min\" (tout va bien), \"🟡 Synchronisation en cours\" (envoi en cours), ou \"⚠️ Échec de synchronisation\" (réseau instable — la tentative suivante se fera automatiquement au prochain geste enregistré). Le petit point coloré sur le bouton équipe (🟢/🟡/🔴) donne le même statut en un coup d'œil, sans ouvrir le modal." },
-        { icon:"📷", title:"Créer ou rejoindre une session", desc:"Un appareil crée une session (QR code + code à 6 chiffres) ; les autres la rejoignent en scannant le QR ou en saisissant le code." },
+        { icon:"📷", title:"Créer ou rejoindre une session", desc:"Un appareil crée une session (QR code + code à 6 caractères alphanumériques) ; les autres la rejoignent en scannant le QR ou en saisissant le code." },
         { icon:"🚀", title:"Préparer la connexion à l'avance", desc:"En pédiatrique, la session peut être créée dès l'écran de choix du poids — les téléphones sont déjà connectés quand la réanimation démarre réellement." },
         { icon:"🧹", title:"Anti-doublon automatique", desc:"Si deux membres de l'équipe loguent la même adrénaline ou cordarone à quelques secondes d'écart, un seul enregistrement est conservé — la chronologie reste fiable." },
       ],
@@ -3334,20 +3342,6 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [voiceToastPed,      setVoiceToastPed]      = useState(null); // { label, icon, confirm, cancel }
   const [voiceAnswerPed,     setVoiceAnswerPed]     = useState(null); // { label, icon, speak, key }
   const [voiceWakeFlashPed,  setVoiceWakeFlashPed]  = useState(false);
-  // Position du bouton micro selon le sens du défilement (voir module adulte pour le détail)
-  const [voiceBtnRaisedPed, setVoiceBtnRaisedPed] = useState(false);
-  useEffect(() => {
-    let lastY = window.scrollY;
-    const onScroll = () => {
-      const y = window.scrollY;
-      if (Math.abs(y - lastY) > 6) {
-        setVoiceBtnRaisedPed(y > lastY && y > 40);
-        lastY = y;
-      }
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
   const voiceRecRefPed = useRef(null);
   const voiceToastRefPed = useRef(null);
   const voiceAnswerRefPed = useRef(null);
@@ -3681,18 +3675,19 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             + Créer une session d'équipe
           </button>
           <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
-          <Lbl>Rejoindre avec un code (6 chiffres)</Lbl>
+          <Lbl>Rejoindre avec un code (6 caractères)</Lbl>
           <div style={{ display:"flex", gap:8 }}>
-            <input inputMode="numeric" maxLength={6} value={teamJoinCodePed}
-              onChange={e => { setTeamJoinCodePed(e.target.value.replace(/\D/g,"")); setTeamJoinErrorPed(""); }}
-              placeholder="123456"
+            <input value={teamJoinCodePed}
+              onChange={e => { setTeamJoinCodePed(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,6)); setTeamJoinErrorPed(""); }}
+              placeholder="X7K4M2"
               style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
                 borderRadius:10, padding:"12px", fontSize:20, color:P.text, fontFamily:mono,
-                textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none" }}
+                textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none",
+                textTransform:"uppercase" }}
               onFocus={e => e.target.style.borderColor = P.blue}
               onBlur={e  => e.target.style.borderColor = P.border} />
             <button onClick={async () => {
-              if (teamJoinCodePed.length !== 6) { setTeamJoinErrorPed("Code à 6 chiffres"); return; }
+              if (teamJoinCodePed.length !== 6) { setTeamJoinErrorPed("Code à 6 caractères"); return; }
               const r = await teamPed.joinSession(teamJoinCodePed);
               if (!r.ok) setTeamJoinErrorPed(r.error); else setModalTeamPed(false);
             }} style={{ background:P.blue, border:"none", borderRadius:10, color:"#fff",
@@ -4839,9 +4834,62 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         </div>
       )}
 
+      {/* ── Bandeau vocal fin, fixe — toujours visible tant que le micro est actif, même en défilant ── */}
+      {SpeechRecognitionAPI && voiceActivePed && (() => {
+        const bannerTop = alert ? 56 : 0;
+        if (voiceToastPed) return (
+          <div style={{ position:"fixed", top:bannerTop, left:0, right:0, zIndex:49,
+            background:`linear-gradient(135deg, ${P.green}, #2A7D57)`, padding:"7px 14px",
+            boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:16, flexShrink:0 }}>{voiceToastPed.icon}</span>
+              <p style={{ margin:0, fontSize:12.5, fontWeight:800, color:"#fff", flex:1 }}>{voiceToastPed.label}</p>
+              <span style={{ fontSize:10, color:"rgba(255,255,255,0.85)", flexShrink:0 }}>2s…</span>
+              <button onClick={voiceToastPed.cancel}
+                style={{ background:"rgba(255,255,255,0.25)", border:"none", borderRadius:7,
+                  color:"#fff", fontSize:11, fontWeight:700, padding:"4px 8px", cursor:"pointer", flexShrink:0 }}>
+                Annuler
+              </button>
+            </div>
+          </div>
+        );
+        if (voiceAnswerPed) return (
+          <div style={{ position:"fixed", top:bannerTop, left:0, right:0, zIndex:49,
+            background:`linear-gradient(135deg, ${P.blue}, #0B43A0)`, padding:"7px 14px",
+            boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:16, flexShrink:0 }}>{voiceAnswerPed.icon}</span>
+              <p style={{ margin:0, fontSize:12.5, fontWeight:700, color:"#fff", flex:1 }}>{voiceAnswerPed.speak}</p>
+              <button onClick={() => setVoiceAnswerPed(null)}
+                style={{ background:"transparent", border:"none", color:"rgba(255,255,255,0.8)",
+                  fontSize:16, cursor:"pointer", flexShrink:0, padding:0 }}>✕</button>
+            </div>
+          </div>
+        );
+        if (voiceTranscriptPed) return (
+          <div style={{ position:"fixed", top:bannerTop, left:0, right:0, zIndex:49,
+            background:"rgba(10,17,27,0.85)", padding:"7px 14px" }}>
+            <p style={{ margin:0, fontSize:12, color:"rgba(255,255,255,0.85)", fontFamily:mono }}>
+              🎙️ "{voiceTranscriptPed}"
+            </p>
+          </div>
+        );
+        return (
+          <div style={{ position:"fixed", top:bannerTop, left:0, right:0, zIndex:49,
+            background: voiceWakeFlashPed ? `linear-gradient(135deg, ${P.green}, #2A7D57)` : `linear-gradient(135deg, ${P.rose}, #9B2C2C)`,
+            padding:"6px 14px", display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ width:7, height:7, borderRadius:"50%", background:"#fff", flexShrink:0,
+              boxShadow:"0 0 0 3px rgba(255,255,255,0.3)" }} />
+            <p style={{ margin:0, fontSize:11, fontWeight:700, color:"#fff", flex:1 }}>
+              🎙️ À l'écoute — dites « {voiceWakeWord || "Alpha"} » avant une commande
+            </p>
+          </div>
+        );
+      })()}
+
       {/* Header */}
       <div style={{background:P.surface,borderBottom:`1px solid ${P.border}`,
-        padding:`${alert?"56px":"14px"} 16px 14px`,boxShadow:"0 2px 10px rgba(0,0,0,0.04)"}}>
+        padding:`${alert ? 56 + (voiceActivePed?34:0) : voiceActivePed ? 34+14 : 14}px 16px 14px`,boxShadow:"0 2px 10px rgba(0,0,0,0.04)"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <button onClick={onBack}
@@ -4861,6 +4909,28 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
+            {SpeechRecognitionAPI && (
+              <button
+                onClick={() => {
+                  if (!voiceActivePed) {
+                    if (!navigator.onLine) {
+                      setVoiceTranscriptPed("🚫 Pas de connexion internet — la reconnaissance vocale ne fonctionne pas hors ligne");
+                      setTimeout(() => setVoiceTranscriptPed(""), 5000);
+                      return;
+                    }
+                    try { new (window.AudioContext||window.webkitAudioContext)().resume(); } catch(e){}
+                  }
+                  setVoiceActivePed(v => !v);
+                }}
+                style={{ background: voiceWakeFlashPed ? `linear-gradient(135deg, ${P.green}, #2A7D57)`
+                    : voiceActivePed ? `linear-gradient(135deg, ${P.rose}, #9B2C2C)` : P.surfaceAlt,
+                  border: voiceActivePed ? "none" : `1px solid ${P.border}`, borderRadius:10,
+                  padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
+                  alignItems:"center", flexShrink:0,
+                  boxShadow: voiceActivePed ? `0 2px 8px color-mix(in srgb, ${P.rose} 35%, transparent)` : "none" }}>
+                <span style={{ fontSize:14 }}>🎙️</span>
+              </button>
+            )}
             <button onClick={() => setModalTeamPed(true)}
               style={{ background: teamPed.teamConnected ? P.greenSoft : P.surfaceAlt,
                 border:`1px solid ${teamPed.teamConnected ? P.green : P.border}`, borderRadius:10,
@@ -6245,108 +6315,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         </div>
       )}
 
-      {/* ── Reconnaissance vocale pédiatrique ── */}
-      {SpeechRecognitionAPI && (
-        <div style={{ position:"fixed", bottom: voiceBtnRaisedPed ? 280 : 80, right:16, zIndex:50, display:"flex",
-          flexDirection:"column", alignItems:"flex-end", gap:10,
-          transition:"bottom 0.35s ease" }}>
-
-          {/* Réponse à une question vocale — informative, ne modifie rien */}
-          {voiceAnswerPed && !voiceToastPed && (
-            <div style={{ background:P.surface, border:`1.5px solid ${P.blue}`,
-              borderRadius:16, padding:"12px 14px", maxWidth:260,
-              boxShadow:"0 8px 28px rgba(0,0,0,0.2)",
-              display:"flex", alignItems:"center", gap:10 }}>
-              <span style={{ fontSize:22 }}>{voiceAnswerPed.icon}</span>
-              <div style={{ flex:1 }}>
-                <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.blueText,
-                  fontFamily:mono, letterSpacing:"0.06em" }}>{voiceAnswerPed.label}</p>
-                <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>
-                  {voiceAnswerPed.speak}
-                </p>
-              </div>
-              <button onClick={() => setVoiceAnswerPed(null)}
-                style={{ background:"transparent", border:"none", color:P.textSoft,
-                  fontSize:18, cursor:"pointer", flexShrink:0, padding:0 }}>✕</button>
-            </div>
-          )}
-
-          {/* Toast commande reconnue */}
-          {voiceToastPed && (
-            <div style={{ background:P.surface, border:`1.5px solid ${P.green}`,
-              borderRadius:16, padding:"12px 14px", maxWidth:260,
-              boxShadow:"0 8px 28px rgba(0,0,0,0.2)",
-              display:"flex", alignItems:"center", gap:10 }}>
-              <span style={{ fontSize:22 }}>{voiceToastPed.icon}</span>
-              <div style={{ flex:1 }}>
-                <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.greenText,
-                  fontFamily:mono, letterSpacing:"0.06em" }}>COMMANDE RECONNUE</p>
-                <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.text }}>
-                  {voiceToastPed.label}
-                </p>
-                <p style={{ margin:"2px 0 0", fontSize:10, color:P.textSoft }}>
-                  Confirmation dans 2s…
-                </p>
-              </div>
-              <button onClick={voiceToastPed.cancel}
-                style={{ background:"transparent", border:"none", color:P.roseText,
-                  fontSize:18, cursor:"pointer", flexShrink:0, padding:0 }}>✕</button>
-            </div>
-          )}
-
-          {/* Transcript en cours */}
-          {voiceTranscriptPed && !voiceToastPed && (
-            <div style={{ background:"rgba(0,0,0,0.75)", borderRadius:12,
-              padding:"8px 12px", maxWidth:260 }}>
-              <p style={{ margin:0, fontSize:12, color:"rgba(255,255,255,0.8)",
-                fontFamily:mono }}>"{voiceTranscriptPed}"</p>
-            </div>
-          )}
-
-          {/* Rappel du mot-code, affiché tant que l'écoute est active */}
-          {voiceActivePed && !voiceToastPed && !voiceTranscriptPed && (
-            <div style={{ background:"rgba(0,0,0,0.65)", borderRadius:10,
-              padding:"5px 10px", maxWidth:220 }}>
-              <p style={{ margin:0, fontSize:10.5, color:"rgba(255,255,255,0.85)", fontFamily:mono }}>
-                Dites <b>« {voiceWakeWord || "Alpha"} »</b> avant l'action
-              </p>
-            </div>
-          )}
-
-          {/* Bouton micro */}
-          <button
-            onClick={() => {
-              if (!voiceActivePed) {
-                if (!navigator.onLine) {
-                  setVoiceTranscriptPed("🚫 Pas de connexion internet — la reconnaissance vocale ne fonctionne pas hors ligne");
-                  setTimeout(() => setVoiceTranscriptPed(""), 5000);
-                  return;
-                }
-                try { new (window.AudioContext||window.webkitAudioContext)().resume(); } catch(e){}
-              }
-              setVoiceActivePed(v => !v);
-            }}
-            style={{ width:56, height:56, borderRadius:"50%",
-              cursor:"pointer", fontSize:26,
-              background: voiceWakeFlashPed
-                ? `linear-gradient(135deg, ${P.green}, #2A7D57)`
-                : voiceActivePed
-                ? `linear-gradient(135deg, ${P.rose}, #9B2C2C)`
-                : P.surface,
-              boxShadow: voiceWakeFlashPed
-                ? `0 0 0 6px ${P.greenSoft}, 0 8px 24px rgba(62,168,118,0.5)`
-                : voiceActivePed
-                ? `0 0 0 4px ${P.roseSoft}, 0 8px 24px rgba(222,16,25,0.4)`
-                : "0 4px 16px rgba(0,0,0,0.15)",
-              border: voiceActivePed ? "none" : `1.5px solid ${P.border}`,
-              display:"flex", alignItems:"center", justifyContent:"center",
-              transition: voiceWakeFlashPed ? "none" : "background 0.25s, box-shadow 0.25s",
-              animation: voiceActivePed ? "rythmPulse 1.5s ease-in-out infinite" : "none",
-              color: voiceActivePed ? "#fff" : P.textMid }}>
-            🎤
-          </button>
-        </div>
-      )}
+      {/* Le bouton micro et son retour visuel vivent maintenant dans le header (compact) et
+          le bandeau fixe en haut de l'écran — voir plus haut, avant "Header". */}
 
       {/* Bandeau fixe compte-rendu */}
       <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:30,
@@ -6499,18 +6469,19 @@ function ModulePediatrique({ onBack, theme, setTheme }) {
                 + Créer une session d'équipe
               </button>
               <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
-              <Lbl>Rejoindre avec un code (6 chiffres)</Lbl>
+              <Lbl>Rejoindre avec un code (6 caractères)</Lbl>
               <div style={{ display:"flex", gap:8 }}>
-                <input inputMode="numeric" maxLength={6} value={teamJoinCodePrep}
-                  onChange={e => { setTeamJoinCodePrep(e.target.value.replace(/\D/g,"")); setTeamJoinErrorPrep(""); }}
-                  placeholder="123456"
+                <input value={teamJoinCodePrep}
+                  onChange={e => { setTeamJoinCodePrep(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,6)); setTeamJoinErrorPrep(""); }}
+                  placeholder="X7K4M2"
                   style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
                     borderRadius:10, padding:"12px", fontSize:20, color:P.text, fontFamily:mono,
-                    textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none" }}
+                    textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none",
+                    textTransform:"uppercase" }}
                   onFocus={e => e.target.style.borderColor = P.blue}
                   onBlur={e  => e.target.style.borderColor = P.border} />
                 <button onClick={async () => {
-                  if (teamJoinCodePrep.length !== 6) { setTeamJoinErrorPrep("Code à 6 chiffres"); return; }
+                  if (teamJoinCodePrep.length !== 6) { setTeamJoinErrorPrep("Code à 6 caractères"); return; }
                   const r = await teamPrep.joinSession(teamJoinCodePrep);
                   if (!r.ok) setTeamJoinErrorPrep(r.error); else setModalTeamPrep(false);
                 }} style={{ background:P.blue, border:"none", borderRadius:10, color:"#fff",
@@ -8610,22 +8581,6 @@ function App() {
   const [voiceToast,     setVoiceToast]     = useState(null); // { label, icon, confirm, cancel }
   const [voiceAnswer,    setVoiceAnswer]    = useState(null); // { label, icon, speak, key }
   const [voiceWakeFlash, setVoiceWakeFlash] = useState(false);
-  // Position du bouton micro selon le sens du défilement : remonte quand on
-  // descend dans l'écran (pour ne pas cacher des commandes plus bas), redescend
-  // quand on remonte
-  const [voiceBtnRaised, setVoiceBtnRaised] = useState(false);
-  useEffect(() => {
-    let lastY = window.scrollY;
-    const onScroll = () => {
-      const y = window.scrollY;
-      if (Math.abs(y - lastY) > 6) { // ignore les micro-mouvements
-        setVoiceBtnRaised(y > lastY && y > 40);
-        lastY = y;
-      }
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
   const voiceRecRef = useRef(null);
   const voiceToastRef = useRef(null);
   const voiceAnswerRef = useRef(null);
@@ -9837,18 +9792,19 @@ function App() {
             + Créer une session d'équipe
           </button>
           <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
-          <Lbl>Rejoindre avec un code (6 chiffres)</Lbl>
+          <Lbl>Rejoindre avec un code (6 caractères)</Lbl>
           <div style={{ display:"flex", gap:8 }}>
-            <input inputMode="numeric" maxLength={6} value={teamJoinCode}
-              onChange={e => { setTeamJoinCode(e.target.value.replace(/\D/g,"")); setTeamJoinError(""); }}
-              placeholder="123456"
+            <input value={teamJoinCode}
+              onChange={e => { setTeamJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,6)); setTeamJoinError(""); }}
+              placeholder="X7K4M2"
               style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
                 borderRadius:10, padding:"12px", fontSize:20, color:P.text, fontFamily:mono,
-                textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none" }}
+                textAlign:"center", fontWeight:700, letterSpacing:"0.1em", outline:"none",
+                textTransform:"uppercase" }}
               onFocus={e => e.target.style.borderColor = P.blue}
               onBlur={e  => e.target.style.borderColor = P.border} />
             <button onClick={async () => {
-              if (teamJoinCode.length !== 6) { setTeamJoinError("Code à 6 chiffres"); return; }
+              if (teamJoinCode.length !== 6) { setTeamJoinError("Code à 6 caractères"); return; }
               const r = await team.joinSession(teamJoinCode);
               if (!r.ok) setTeamJoinError(r.error); else setModalTeam(false);
             }} style={{ background:P.blue, border:"none", borderRadius:10, color:"#fff",
@@ -11698,9 +11654,62 @@ function App() {
         </div>
       )}
 
+      {/* ── Bandeau vocal fin, fixe — toujours visible tant que le micro est actif, même en défilant ── */}
+      {SpeechRecognitionAPI && voiceActive && (() => {
+        const bannerTop = alert ? 56 : 0;
+        if (voiceToast) return (
+          <div style={{ position:"fixed", top:bannerTop, left:0, right:0, zIndex:49,
+            background:`linear-gradient(135deg, ${P.green}, #2A7D57)`, padding:"7px 14px",
+            boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:16, flexShrink:0 }}>{voiceToast.icon}</span>
+              <p style={{ margin:0, fontSize:12.5, fontWeight:800, color:"#fff", flex:1 }}>{voiceToast.label}</p>
+              <span style={{ fontSize:10, color:"rgba(255,255,255,0.85)", flexShrink:0 }}>2s…</span>
+              <button onClick={voiceToast.cancel}
+                style={{ background:"rgba(255,255,255,0.25)", border:"none", borderRadius:7,
+                  color:"#fff", fontSize:11, fontWeight:700, padding:"4px 8px", cursor:"pointer", flexShrink:0 }}>
+                Annuler
+              </button>
+            </div>
+          </div>
+        );
+        if (voiceAnswer) return (
+          <div style={{ position:"fixed", top:bannerTop, left:0, right:0, zIndex:49,
+            background:`linear-gradient(135deg, ${P.blue}, #0B43A0)`, padding:"7px 14px",
+            boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:16, flexShrink:0 }}>{voiceAnswer.icon}</span>
+              <p style={{ margin:0, fontSize:12.5, fontWeight:700, color:"#fff", flex:1 }}>{voiceAnswer.speak}</p>
+              <button onClick={() => setVoiceAnswer(null)}
+                style={{ background:"transparent", border:"none", color:"rgba(255,255,255,0.8)",
+                  fontSize:16, cursor:"pointer", flexShrink:0, padding:0 }}>✕</button>
+            </div>
+          </div>
+        );
+        if (voiceTranscript) return (
+          <div style={{ position:"fixed", top:bannerTop, left:0, right:0, zIndex:49,
+            background:"rgba(10,17,27,0.85)", padding:"7px 14px" }}>
+            <p style={{ margin:0, fontSize:12, color:"rgba(255,255,255,0.85)", fontFamily:mono }}>
+              🎙️ "{voiceTranscript}"
+            </p>
+          </div>
+        );
+        return (
+          <div style={{ position:"fixed", top:bannerTop, left:0, right:0, zIndex:49,
+            background: voiceWakeFlash ? `linear-gradient(135deg, ${P.green}, #2A7D57)` : `linear-gradient(135deg, ${P.rose}, #9B2C2C)`,
+            padding:"6px 14px", display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ width:7, height:7, borderRadius:"50%", background:"#fff", flexShrink:0,
+              boxShadow:"0 0 0 3px rgba(255,255,255,0.3)" }} />
+            <p style={{ margin:0, fontSize:11, fontWeight:700, color:"#fff", flex:1 }}>
+              🎙️ À l'écoute — dites « {voiceWakeWord || "Alpha"} » avant une commande
+            </p>
+          </div>
+        );
+      })()}
+
       {/* Header + Timer */}
       <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`,
-        padding:`${alert ? "56px" : "14px"} 16px 14px`,
+        padding:`${alert ? 56 + (voiceActive?34:0) : voiceActive ? 34+14 : 14}px 16px 14px`,
         boxShadow:"0 2px 10px rgba(0,0,0,0.04)" }}>
 
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
@@ -11723,6 +11732,28 @@ function App() {
             </div>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            {SpeechRecognitionAPI && (
+              <button
+                onClick={() => {
+                  if (!voiceActive) {
+                    if (!navigator.onLine) {
+                      setVoiceTranscript("🚫 Pas de connexion internet — la reconnaissance vocale ne fonctionne pas hors ligne");
+                      setTimeout(() => setVoiceTranscript(""), 5000);
+                      return;
+                    }
+                    try { new (window.AudioContext||window.webkitAudioContext)().resume(); } catch(e){}
+                  }
+                  setVoiceActive(v => !v);
+                }}
+                style={{ background: voiceWakeFlash ? `linear-gradient(135deg, ${P.green}, #2A7D57)`
+                    : voiceActive ? `linear-gradient(135deg, ${P.rose}, #9B2C2C)` : P.surfaceAlt,
+                  border: voiceActive ? "none" : `1px solid ${P.border}`, borderRadius:10,
+                  padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
+                  alignItems:"center", flexShrink:0,
+                  boxShadow: voiceActive ? `0 2px 8px color-mix(in srgb, ${P.rose} 35%, transparent)` : "none" }}>
+                <span style={{ fontSize:14 }}>🎙️</span>
+              </button>
+            )}
             <button onClick={() => setModalTeam(true)}
               style={{ background: team.teamConnected ? P.greenSoft : P.surfaceAlt,
                 border:`1px solid ${team.teamConnected ? P.green : P.border}`, borderRadius:10,
@@ -12548,109 +12579,8 @@ function App() {
           </button>
         </div>
 
-        {/* Bouton vocal + toast */}
-        {SpeechRecognitionAPI && (
-          <div style={{ position:"fixed", bottom: voiceBtnRaised ? 280 : 80, right:16, zIndex:50, display:"flex",
-            flexDirection:"column", alignItems:"flex-end", gap:10,
-            transition:"bottom 0.35s ease" }}>
-
-            {/* Réponse à une question vocale — informative, ne modifie rien */}
-            {voiceAnswer && !voiceToast && (
-              <div style={{ background:P.surface, border:`1.5px solid ${P.blue}`,
-                borderRadius:16, padding:"12px 14px", maxWidth:260,
-                boxShadow:"0 8px 28px rgba(0,0,0,0.2)",
-                display:"flex", alignItems:"center", gap:10 }}>
-                <span style={{ fontSize:22 }}>{voiceAnswer.icon}</span>
-                <div style={{ flex:1 }}>
-                  <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.blueText,
-                    fontFamily:mono, letterSpacing:"0.06em" }}>{voiceAnswer.label}</p>
-                  <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>
-                    {voiceAnswer.speak}
-                  </p>
-                </div>
-                <button onClick={() => setVoiceAnswer(null)}
-                  style={{ background:"transparent", border:"none", color:P.textSoft,
-                    fontSize:18, cursor:"pointer", flexShrink:0, padding:0 }}>✕</button>
-              </div>
-            )}
-
-            {/* Toast commande reconnue */}
-            {voiceToast && (
-              <div style={{ background:P.surface, border:`1.5px solid ${P.green}`,
-                borderRadius:16, padding:"12px 14px", maxWidth:260,
-                boxShadow:"0 8px 28px rgba(0,0,0,0.2)",
-                display:"flex", alignItems:"center", gap:10 }}>
-                <span style={{ fontSize:22 }}>{voiceToast.icon}</span>
-                <div style={{ flex:1 }}>
-                  <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.greenText,
-                    fontFamily:mono, letterSpacing:"0.06em" }}>COMMANDE RECONNUE</p>
-                  <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.text }}>
-                    {voiceToast.label}
-                  </p>
-                  <p style={{ margin:"2px 0 0", fontSize:10, color:P.textSoft }}>
-                    Confirmation dans 2s…
-                  </p>
-                </div>
-                <button onClick={voiceToast.cancel}
-                  style={{ background:"transparent", border:"none", color:P.roseText,
-                    fontSize:18, cursor:"pointer", flexShrink:0, padding:0 }}>✕</button>
-              </div>
-            )}
-
-            {/* Transcript en cours */}
-            {voiceTranscript && !voiceToast && (
-              <div style={{ background:"rgba(0,0,0,0.75)", borderRadius:12,
-                padding:"8px 12px", maxWidth:260 }}>
-                <p style={{ margin:0, fontSize:12, color:"rgba(255,255,255,0.8)",
-                  fontFamily:mono }}>"{voiceTranscript}"</p>
-              </div>
-            )}
-
-            {/* Rappel du mot-code, affiché tant que l'écoute est active */}
-            {voiceActive && !voiceToast && !voiceTranscript && (
-              <div style={{ background:"rgba(0,0,0,0.65)", borderRadius:10,
-                padding:"5px 10px", maxWidth:220 }}>
-                <p style={{ margin:0, fontSize:10.5, color:"rgba(255,255,255,0.85)", fontFamily:mono }}>
-                  Dites <b>« {voiceWakeWord || "Alpha"} »</b> avant l'action
-                </p>
-              </div>
-            )}
-
-            {/* Bouton micro */}
-            <button
-              onClick={() => {
-                if (!voiceActive) {
-                  if (!navigator.onLine) {
-                    setVoiceTranscript("🚫 Pas de connexion internet — la reconnaissance vocale ne fonctionne pas hors ligne");
-                    setTimeout(() => setVoiceTranscript(""), 5000);
-                    return;
-                  }
-                  // Déverrouiller l'audio sur iOS
-                  try { new (window.AudioContext||window.webkitAudioContext)().resume(); } catch(e){}
-                }
-                setVoiceActive(v => !v);
-              }}
-              style={{ width:56, height:56, borderRadius:"50%",
-                cursor:"pointer", fontSize:26,
-                background: voiceWakeFlash
-                  ? `linear-gradient(135deg, ${P.green}, #2A7D57)`
-                  : voiceActive
-                  ? `linear-gradient(135deg, ${P.rose}, #9B2C2C)`
-                  : P.surface,
-                boxShadow: voiceWakeFlash
-                  ? `0 0 0 6px ${P.greenSoft}, 0 8px 24px rgba(62,168,118,0.5)`
-                  : voiceActive
-                  ? `0 0 0 4px ${P.roseSoft}, 0 8px 24px rgba(222,16,25,0.4)`
-                  : "0 4px 16px rgba(0,0,0,0.15)",
-                border: voiceActive ? "none" : `1.5px solid ${P.border}`,
-                display:"flex", alignItems:"center", justifyContent:"center",
-                transition: voiceWakeFlash ? "none" : "background 0.25s, box-shadow 0.25s",
-                animation: voiceActive ? "rythmPulse 1.5s ease-in-out infinite" : "none",
-                color: voiceActive ? "#fff" : P.textMid }}>
-              🎤
-            </button>
-          </div>
-        )}
+        {/* Le bouton micro et son retour visuel vivent maintenant dans le header (compact) et
+            le bandeau fixe en haut de l'écran — voir plus haut, avant "Header + Timer". */}
       </div>
 
       {/* ── Modal Dossier patient ── */}
