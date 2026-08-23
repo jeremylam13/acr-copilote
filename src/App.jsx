@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-37";
+const APP_VERSION = "2026.08.15-38";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -9457,44 +9457,6 @@ function App() {
             <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
           </button>
 
-          <div style={{ display:"flex", alignItems:"flex-start", gap:12,
-            background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
-            <div style={{ flex:1, minWidth:0 }}>
-              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Suivi CCF</p>
-              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
-                Affiche un bouton « pause / reprise des compressions » et calcule la
-                <b> fraction de compression thoracique</b> (objectif &gt; 60–80 %).
-              </p>
-            </div>
-            <button onClick={() => setCcfEnabled(v => !v)}
-              style={{ flexShrink:0, width:50, height:30, borderRadius:15, border:"none", cursor:"pointer",
-                background: ccfEnabled ? P.green : P.border, position:"relative", transition:"background 0.15s",
-                padding:0 }}>
-              <span style={{ position:"absolute", top:3, left: ccfEnabled ? 23 : 3, width:24, height:24,
-                borderRadius:"50%", background:"#fff", transition:"left 0.15s",
-                boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
-            </button>
-          </div>
-
-          <div style={{ display:"flex", alignItems:"flex-start", gap:12,
-            background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
-            <div style={{ flex:1, minWidth:0 }}>
-              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Débrief post-arrêt</p>
-              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
-                À la clôture, affiche un <b>écran de débrief</b> avec toutes les métriques de la réanimation
-                (timing, thérapeutiques, qualité MCE, EtCO₂) avant d'effacer les données.
-              </p>
-            </div>
-            <button onClick={() => setDebriefEnabled(v => !v)}
-              style={{ flexShrink:0, width:50, height:30, borderRadius:15, border:"none", cursor:"pointer",
-                background: debriefEnabled ? P.violet : P.border, position:"relative", transition:"background 0.15s",
-                padding:0 }}>
-              <span style={{ position:"absolute", top:3, left: debriefEnabled ? 23 : 3, width:24, height:24,
-                borderRadius:"50%", background:"#fff", transition:"left 0.15s",
-                boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
-            </button>
-          </div>
-
           {/* Intervalle adrénaline */}
           <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
             <p style={{ margin:"0 0 8px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>
@@ -9518,33 +9480,22 @@ function App() {
             </div>
           </div>
 
-          {/* Mot-code vocal */}
-          <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
-            <p style={{ margin:"0 0 8px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>
-              Mot-code vocal
-            </p>
-            <p style={{ margin:"0 0 10px", fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
-              Mot à prononcer avant chaque commande ou question vocale (ex : « {voiceWakeWord || "Alpha"}, adrénaline »).
-              Il filtre le bruit ambiant d'une réanimation pour que l'app ne réagisse pas à une simple conversation.
-            </p>
-            <input value={voiceWakeWord} onChange={e => setVoiceWakeWord(e.target.value)}
-              placeholder="Alpha"
-              style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
-                borderRadius:10, padding:"11px 12px", fontSize:15, fontWeight:700,
-                color:P.text, fontFamily:sans, outline:"none", boxSizing:"border-box", marginBottom:10 }}
-              onFocus={e => e.target.style.borderColor = P.rose}
-              onBlur={e  => e.target.style.borderColor = P.border} />
-            <div style={{ background:`color-mix(in srgb, ${P.amber} 12%, ${P.surface})`,
-              border:`1px solid color-mix(in srgb, ${P.amber} 35%, transparent)`,
-              borderRadius:10, padding:"9px 11px", display:"flex", gap:8, alignItems:"flex-start" }}>
-              <span style={{ fontSize:14, flexShrink:0 }}>💡</span>
-              <p style={{ margin:0, fontSize:11, color:P.amberText, lineHeight:1.5 }}>
-                Choisissez un mot qui ne risque pas d'être prononcé par hasard pendant une prise en charge :
-                évitez les mots médicaux courants (comme « urgence » ou « protocole »), préférez un mot court,
-                et si possible un mot qu'on ne prononcerait pas naturellement en deux temps avec une pause au milieu
-                (ex : « Co-pilote » peut se couper en « Co… pilote »).
+          {/* ── Métronome MCE (100/min) ── */}
+          <div style={{ display:"flex", alignItems:"flex-start", gap:12,
+            background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Métronome MCE (100/min)</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+                Tick sonore à <b>100/min</b> pendant les compressions. Un bouton sourdine est disponible
+                en réanimation pour le couper sans le désactiver.
               </p>
             </div>
+            <button onClick={() => setMetronomeEnabled(v => !v)}
+              style={{ flexShrink:0, width:50, height:30, borderRadius:15, border:"none", cursor:"pointer",
+                background: metronomeEnabled ? P.blue : P.border, position:"relative", transition:"background 0.15s", padding:0 }}>
+              <span style={{ position:"absolute", top:3, left: metronomeEnabled ? 23 : 3, width:24, height:24,
+                borderRadius:"50%", background:"#fff", transition:"left 0.15s", boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
+            </button>
           </div>
 
           {/* Protocoles de dilution pédiatrique */}
@@ -9616,21 +9567,72 @@ function App() {
             )}
           </div>
 
-          {/* ── Métronome MCE (100/min) ── */}
+          {/* Mot-code vocal */}
+          <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <p style={{ margin:"0 0 8px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>
+              Mot-code vocal
+            </p>
+            <p style={{ margin:"0 0 10px", fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+              Mot à prononcer avant chaque commande ou question vocale (ex : « {voiceWakeWord || "Alpha"}, adrénaline »).
+              Il filtre le bruit ambiant d'une réanimation pour que l'app ne réagisse pas à une simple conversation.
+            </p>
+            <input value={voiceWakeWord} onChange={e => setVoiceWakeWord(e.target.value)}
+              placeholder="Alpha"
+              style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.border}`,
+                borderRadius:10, padding:"11px 12px", fontSize:15, fontWeight:700,
+                color:P.text, fontFamily:sans, outline:"none", boxSizing:"border-box", marginBottom:10 }}
+              onFocus={e => e.target.style.borderColor = P.rose}
+              onBlur={e  => e.target.style.borderColor = P.border} />
+            <div style={{ background:`color-mix(in srgb, ${P.amber} 12%, ${P.surface})`,
+              border:`1px solid color-mix(in srgb, ${P.amber} 35%, transparent)`,
+              borderRadius:10, padding:"9px 11px", display:"flex", gap:8, alignItems:"flex-start" }}>
+              <span style={{ fontSize:14, flexShrink:0 }}>💡</span>
+              <p style={{ margin:0, fontSize:11, color:P.amberText, lineHeight:1.5 }}>
+                Choisissez un mot qui ne risque pas d'être prononcé par hasard pendant une prise en charge :
+                évitez les mots médicaux courants (comme « urgence » ou « protocole »), préférez un mot court,
+                et si possible un mot qu'on ne prononcerait pas naturellement en deux temps avec une pause au milieu
+                (ex : « Co-pilote » peut se couper en « Co… pilote »).
+              </p>
+            </div>
+          </div>
+
+          {/* Débrief post-arrêt */}
           <div style={{ display:"flex", alignItems:"flex-start", gap:12,
             background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
             <div style={{ flex:1, minWidth:0 }}>
-              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Métronome MCE (100/min)</p>
+              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Débrief post-arrêt</p>
               <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
-                Tick sonore à <b>100/min</b> pendant les compressions. Un bouton sourdine est disponible
-                en réanimation pour le couper sans le désactiver.
+                À la clôture, affiche un <b>écran de débrief</b> avec toutes les métriques de la réanimation
+                (timing, thérapeutiques, qualité MCE, EtCO₂) avant d'effacer les données.
               </p>
             </div>
-            <button onClick={() => setMetronomeEnabled(v => !v)}
+            <button onClick={() => setDebriefEnabled(v => !v)}
               style={{ flexShrink:0, width:50, height:30, borderRadius:15, border:"none", cursor:"pointer",
-                background: metronomeEnabled ? P.blue : P.border, position:"relative", transition:"background 0.15s", padding:0 }}>
-              <span style={{ position:"absolute", top:3, left: metronomeEnabled ? 23 : 3, width:24, height:24,
-                borderRadius:"50%", background:"#fff", transition:"left 0.15s", boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
+                background: debriefEnabled ? P.violet : P.border, position:"relative", transition:"background 0.15s",
+                padding:0 }}>
+              <span style={{ position:"absolute", top:3, left: debriefEnabled ? 23 : 3, width:24, height:24,
+                borderRadius:"50%", background:"#fff", transition:"left 0.15s",
+                boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
+            </button>
+          </div>
+
+          {/* Suivi CCF */}
+          <div style={{ display:"flex", alignItems:"flex-start", gap:12,
+            background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 3px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Suivi CCF</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.5 }}>
+                Affiche un bouton « pause / reprise des compressions » et calcule la
+                <b> fraction de compression thoracique</b> (objectif &gt; 60–80 %).
+              </p>
+            </div>
+            <button onClick={() => setCcfEnabled(v => !v)}
+              style={{ flexShrink:0, width:50, height:30, borderRadius:15, border:"none", cursor:"pointer",
+                background: ccfEnabled ? P.green : P.border, position:"relative", transition:"background 0.15s",
+                padding:0 }}>
+              <span style={{ position:"absolute", top:3, left: ccfEnabled ? 23 : 3, width:24, height:24,
+                borderRadius:"50%", background:"#fff", transition:"left 0.15s",
+                boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
             </button>
           </div>
 
