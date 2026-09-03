@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-47";
+const APP_VERSION = "2026.08.15-48";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -9916,7 +9916,7 @@ function App() {
   if (module === "pediatrique") return <ModulePediatrique onBack={() => setModule(null)} theme={theme} setTheme={setTheme} />;
 
   // Modules non encore développés (intra-hospitalier uniquement)
-  if (module && module !== "adulte_extra" && module !== "traumatique") return (
+  if (module && module !== "adulte_extra" && module !== "traumatique" && module !== "vli") return (
     <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans,
       display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
       padding:"0 24px" }}>
