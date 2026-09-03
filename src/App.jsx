@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-45";
+const APP_VERSION = "2026.08.15-46";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1192,6 +1192,7 @@ function GuideApp({ onClose }) {
       title: "ACR VLI (protocole ISP)",
       color: "amber",
       items: [
+        { icon:"🚧", title:"Module en développement", desc:"Contrairement aux modules Adulte, Traumatique et Pédiatrique, ce module n'a pas encore été validé sur le terrain. Le contenu clinique (gestes autorisés, doses, protocole) doit être vérifié par rapport au référentiel local avant toute utilisation réelle sur un vrai patient." },
         { icon:"🚒", title:"Un module à part, en attente du médecin", desc:"Accessible depuis l'accueil (bouton \"ACR VLI\"), avec accent orange distinctif partout à l'écran. La grille d'actions est volontairement restreinte aux gestes autorisés par le protocole VLI local (Pompiers/ISP) : analyse de rythme, voie d'abord, adrénaline, défibrillation, cordarone, sécurisation des VAS, planche à masser, certificat de décès. Fast-écho, ECMO, BATT et les thérapeutiques réservées au médecin restent inaccessibles tant que le VLM n'est pas arrivé." },
         { icon:"🫁", title:"Sécurisation des VAS", desc:"Choix explicite entre dispositif supra-glottique (geste infirmier) et intubation orotrachéale (réservée à l'IADE) — la chronologie garde une trace précise de ce qui a réellement été posé." },
         { icon:"🎯", title:"Onglet Situations particulières", desc:"Remplace Étiologie/Thérapeutiques en VLI. Chaque situation du protocole ISP est accessible en un tap, avec le détail du protocole visible directement sur la carte.",
@@ -9482,12 +9483,17 @@ function App() {
 
         {/* ACR VLI */}
         <button onClick={() => setModule("vli")} style={{
-          background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
+          position:"relative", background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
           padding:"16px 12px", cursor:"pointer", fontFamily:sans, textAlign:"center",
           display:"flex", flexDirection:"column", alignItems:"center", gap:8,
           boxShadow:"0 2px 10px rgba(0,0,0,0.05)", transition:"all 0.12s" }}
           onPointerEnter={e => { e.currentTarget.style.borderColor = "#EA6A12"; e.currentTarget.style.boxShadow = "0 4px 18px rgba(234,106,18,0.2)"; }}
           onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.05)"; }}>
+          <span style={{ position:"absolute", top:-8, right:-6, background:"#EA6A12", color:"#fff",
+            fontSize:8, fontWeight:800, padding:"3px 7px", borderRadius:20, fontFamily:mono,
+            textTransform:"uppercase", letterSpacing:"0.05em", boxShadow:"0 2px 6px rgba(234,106,18,0.4)" }}>
+            En développement
+          </span>
           <div style={{ width:46, height:46, borderRadius:13, background:"rgba(234,106,18,0.14)",
             display:"flex", alignItems:"center", justifyContent:"center", fontSize:22 }}>🚒</div>
           <div>
@@ -12122,7 +12128,9 @@ function App() {
           <div style={{ background:"rgba(234,106,18,0.12)", border:"1px solid #EA6A12", borderRadius:9,
             padding:"6px 10px", display:"flex", alignItems:"center", gap:6, marginBottom:12 }}>
             <span style={{ fontSize:12 }}>ℹ️</span>
-            <span style={{ fontSize:10.5, fontWeight:700, color:"#B24E0A" }}>Actes limités au protocole VLI en vigueur</span>
+            <span style={{ fontSize:10.5, fontWeight:700, color:"#B24E0A" }}>
+              Actes limités au protocole VLI en vigueur · Module en développement, à vérifier avant usage réel
+            </span>
           </div>
         )}
 
