@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-38";
+const APP_VERSION = "2026.08.15-45";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1073,6 +1073,7 @@ function GuideApp({ onClose }) {
         { icon:"🔍", title:"Onglet Étiologie", desc:"ACR Adulte médical uniquement : liste des causes réversibles (5H/5T) à cocher au fur et à mesure qu'elles sont évoquées ou écartées — la réflexion diagnostique se retrouve ensuite dans la chronologie. En Traumatique, cet onglet est remplacé par la carte HOTT persistante (voir section Adulte & Traumatique)." },
         { icon:"💊", title:"Onglet Thérapeutiques", desc:"Regroupe amines, remplissage vasculaire et sédation — tout ce qui accompagne la réa sans être un geste d'urgence immédiat." },
         { icon:"⏱", title:"No-flow / Low-flow", desc:"Deux durées clés pour le pronostic : No-flow = temps sans massage avant la prise en charge ; Low-flow = temps de massage efficace depuis l'effondrement. À renseigner une fois — elles alimentent le compte-rendu et les critères d'arrêt." },
+        { icon:"🔍", title:"Examen pupillaire initial", desc:"Une carte apparaît en tête de la grille d'actions dès le début de la réanimation (Adulte, Traumatique, Pédiatrique, VLI) pour noter l'état initial des pupilles en un tap — Normales / Anormales / Non fait. Disparaît automatiquement une fois répondue ; l'information s'ajoute à la chronologie." },
       ],
     },
     {
@@ -1087,6 +1088,8 @@ function GuideApp({ onClose }) {
         { icon:"📞", title:"Appel régulation", desc:"Bandeau toujours accessible pour horodater un appel à la régulation, avec un champ libre pour noter ce qui a été dit et la destination du patient." },
         { icon:"📝", title:"Note libre", desc:"Un encart de texte libre, entre les Soins post-RACS et la chronologie, pour consigner une information qui ne rentre dans aucune case." },
         { icon:"📄", title:"Compte-rendu automatique", desc:"Un rapport structuré façon SBAR est généré en continu à partir de la chronologie — prêt à copier, imprimer ou partager en fin de réanimation, sans ressaisie." },
+        { icon:"🕐", title:"Frise chronologique visuelle", desc:"Graduation en minutes (0 min = début de la RCP), avec chaque geste positionné proportionnellement au temps écoulé. Si plusieurs gestes ont lieu à quelques secondes d'écart (ex : chocs rapprochés), ils s'empilent automatiquement sur des rangées distinctes avec leur heure affichée — jamais superposés ni illisibles." },
+        { icon:"📑", title:"Export PDF sans coupure", desc:"Le PDF ne coupe jamais un encart entre deux pages — l'algorithme détecte quand un bloc (identité, bandeau, frise, section détaillée) déborderait sur la page suivante et bascule la coupure juste avant, pour que chaque encart reste toujours entier et lisible." },
         { icon:"🌗", title:"Thème jour / nuit", desc:"Bascule en un tap, en haut de l'écran. Le thème jour est pensé pour la lisibilité en plein soleil, le thème nuit pour ne pas éblouir en intervention de nuit." },
         { icon:"💾", title:"Sauvegarde automatique locale", desc:"Toutes les données sont enregistrées en continu sur l'appareil. Fermeture accidentelle, batterie déchargée, crash de l'app : rien n'est perdu, la session reprend exactement où elle s'est arrêtée." },
         { icon:"📦", title:"Export / import de sauvegarde", desc:"Depuis Réglages : exportez un fichier contenant toutes les archives et tous les réglages, à conserver ailleurs ou à transférer sur un nouveau téléphone. Utile avant un changement d'appareil, une mise à jour d'OS, ou simplement par précaution — les données restent sinon uniquement sur ce téléphone. Noms et prénoms sont automatiquement réduits à leurs initiales dans le fichier exporté (le fichier peut quitter l'appareil — minimisation des données médicales) ; ils restent en clair dans le détail d'un cas consulté directement sur le téléphone. À l'import, les archives sont fusionnées sans rien effacer ; les réglages, eux, sont remplacés par ceux du fichier importé (une confirmation est demandée avant)." },
@@ -1117,8 +1120,9 @@ function GuideApp({ onClose }) {
         { icon:"⚡", title:"Analyse de rythme guidée", desc:"Toutes les 2 minutes, un flash rappelle d'analyser le rythme avec 4 choix en un tap (FV/TV, AESP, asystolie, RACS) — rien à chercher dans un menu pendant le no-flow." },
         { icon:"💊", title:"Cordarone — rappel automatique", desc:"Un rappel apparaît automatiquement au 3ᵉ choc (300 mg) puis au 5ᵉ choc (150 mg), conformément aux recommandations ERC 2021." },
         { icon:"🫁", title:"Ratio compressions/ventilation", desc:"L'affichage bascule automatiquement de 30:2 à un rythme continu dès que l'intubation est enregistrée." },
+        { icon:"⚠️", title:"Intubation difficile", desc:"Un toggle en tête du modal Intubation (Adulte, Traumatique, Pédiatrique) permet de signaler une intubation difficile et de préciser la ou les techniques utilisées : mandrin d'Eschmann, vidéolaryngoscope, masque laryngé standard, Fastrach, dispositif supra-glottique de secours, cricothyroïdotomie — ainsi que le nombre de tentatives. Une case \"Inhalation objectivée\" est aussi disponible pour tracer une régurgitation. Tout s'ajoute automatiquement au compte-rendu." },
         { icon:"📈", title:"EtCO₂ & alertes intelligentes", desc:"Saisie rapide de l'EtCO₂ avec alertes si la valeur est insuffisante (MCE inefficace) ou si une remontée brutale évoque un RACS." },
-        { icon:"💚", title:"Soins post-RACS — détail", desc:"Écran dédié en 3 onglets : Ventilation (FR, Vt, PEP, SpO₂, FiO₂, EtCO₂ — avec graphique live et alerte couleur si SpO₂ ou EtCO₂ sort de la cible), Sédation (Hypnovel, Sufentanyl, curare — le débit en mL/h saisi convertit automatiquement la dose en mg/h ou μg/h), Hémo. (TA avec PAM calculée automatiquement, FC, graphique live TA/FC, température, glycémie, remplissage total, amines). Un badge ↑/↓ compare chaque nouvelle mesure (TA, FC, EtCO₂) à la dernière valeur enregistrée. Chaque valeur saisie s'ajoute au compte-rendu." },
+        { icon:"💚", title:"Soins post-RACS — détail", desc:"Écran dédié en 3 onglets : Ventilation (FR, Vt, PEP, SpO₂, FiO₂, EtCO₂ — avec graphique live et alerte couleur si SpO₂ ou EtCO₂ sort de la cible), Sédation (Hypnovel, Sufentanyl, curare — le débit en mL/h saisi convertit automatiquement la dose en mg/h ou μg/h), Hémo. (TA avec PAM calculée automatiquement, FC, graphique live TA/FC, température, glycémie, pupilles — Normales/Anisocorie/Mydriase bilatérale, remplissage total, amines). Un badge ↑/↓ compare chaque nouvelle mesure (TA, FC, EtCO₂) à la dernière valeur enregistrée. Chaque valeur saisie s'ajoute au compte-rendu." },
         { icon:"🩸", title:"OctaplasLG & score BATT", desc:"Calculateur de score BATT avec préremplissage automatique depuis les dernières constantes saisies. En mode Traumatique, les cases \"pénétrant\" et \"haute cinétique\" se cochent aussi automatiquement selon le mécanisme lésionnel renseigné sur la fiche patient." },
         { icon:"🔍", title:"FAST écho (traumatique)", desc:"Sélecteurs rapides par espace anatomique (Morrison, Köhler, Douglas, plèvres, péricarde) pour tracer l'échographie ciblée. En mode Traumatique, Fast-écho remonte dans la grille principale (à la place de Cordarone, moins pertinent en arrêt traumatique) — Cordarone reste accessible derrière le bouton \"+ Plus d'actions\"." },
         { icon:"↩", title:"Récidive d'arrêt après RACS", desc:"Si le patient refait un arrêt après un RACS, un bouton dédié relance immédiatement le mode réanimation active (métronome, minuteur adrénaline, cycle de compressions) sans perdre l'historique." },
@@ -1134,6 +1138,7 @@ function GuideApp({ onClose }) {
         { icon:"🧰", title:"Matériel adapté", desc:"Taille de sonde, repère à la commissure, matériel recommandé : tout est affiché selon le poids sélectionné (table pédiatrique standardisée)." },
         { icon:"🔁", title:"Mêmes automatismes que l'adulte", desc:"Flash d'analyse de rythme, minuteur adrénaline, suivi post-RACS, mode équipe et reconnaissance vocale existent aussi en pédiatrique, avec les doses et le vocabulaire adaptés." },
         { icon:"⏱", title:"Critères d'arrêt de réanimation (40 min)", desc:"Passé 40 minutes sans RACS (délai plus long qu'en adulte, la réanimation pédiatrique se poursuivant généralement davantage), un rappel propose une check-list dédiée : causes réversibles pédiatriques (hypoglycémie, intoxication, obstruction des voies aériennes, noyade, sepsis, mort inexpliquée du nourrisson), hypothermie, décision collégiale et accompagnement de la famille." },
+        { icon:"💉", title:"Dilution adrénaline (Protocole 1 ou 2)", desc:"Deux protocoles de dilution disponibles, activables dans Réglages — dilution universelle par défaut (Protocole 2, la même préparation quel que soit le poids : 0,1 mg/mL, injecter 0,01 mg/kg) ou dilution adaptée au poids (Protocole 1, avec une double dilution spécifique en-dessous de 10 kg pour rester précis sur de petits volumes). Le guide de préparation est affiché à deux moments : dès la sélection du poids (avant de démarrer), et pendant la réanimation active — jamais besoin de revenir en arrière pour le retrouver." },
         { icon:"🕊️", title:"Mort inattendue du nourrisson (MIN)", desc:"Pour un enfant < 2 ans sans signe de violence évident, le constat de décès propose un parcours dédié conforme au protocole national (HAS/DGOS) : transport du corps avec les parents vers le Centre de Référence MIN (CRMIN) le plus proche, pas de constat classique sur place. Rappel des éléments à préserver pour l'enquête (position de découverte, literie, contexte) avec champs dédiés pour les documenter." },
       ],
     },
@@ -1181,6 +1186,25 @@ function GuideApp({ onClose }) {
           ] },
         { icon:"✅", title:"Confirmation avant action", desc:"Chaque commande d'action affiche un bandeau annulable pendant 2,5 secondes avant d'être vraiment enregistrée — de quoi rattraper un mot mal compris." },
         { icon:"📡", title:"Nécessite une connexion internet", desc:"La reconnaissance vocale envoie l'audio à un service en ligne pour l'analyser — elle ne fonctionne pas hors connexion (zone blanche, sous-sol...), même micro activé. L'app le signale clairement (message à l'écran) si vous essayez d'activer le micro sans réseau, ou si la connexion se coupe pendant l'écoute. Le reste de l'application (chronologie, calculs, compte-rendu) continue de fonctionner normalement sans connexion." },
+      ],
+    },
+    {
+      title: "ACR VLI (protocole ISP)",
+      color: "amber",
+      items: [
+        { icon:"🚒", title:"Un module à part, en attente du médecin", desc:"Accessible depuis l'accueil (bouton \"ACR VLI\"), avec accent orange distinctif partout à l'écran. La grille d'actions est volontairement restreinte aux gestes autorisés par le protocole VLI local (Pompiers/ISP) : analyse de rythme, voie d'abord, adrénaline, défibrillation, cordarone, sécurisation des VAS, planche à masser, certificat de décès. Fast-écho, ECMO, BATT et les thérapeutiques réservées au médecin restent inaccessibles tant que le VLM n'est pas arrivé." },
+        { icon:"🫁", title:"Sécurisation des VAS", desc:"Choix explicite entre dispositif supra-glottique (geste infirmier) et intubation orotrachéale (réservée à l'IADE) — la chronologie garde une trace précise de ce qui a réellement été posé." },
+        { icon:"🎯", title:"Onglet Situations particulières", desc:"Remplace Étiologie/Thérapeutiques en VLI. Chaque situation du protocole ISP est accessible en un tap, avec le détail du protocole visible directement sur la carte.",
+          list: [
+            { label:"Hémorragie", detail:"Isofundine 500 mL/10 min, jusqu'à 2 VVP" },
+            { label:"Obstruction VAS", detail:"Exposition douce au laryngoscope + Pince Magill" },
+            { label:"Intoxication aux fumées", detail:"Cyanokit 5g/15min sur voie dédiée, renouvelable une fois" },
+            { label:"Hypothermie", detail:"Pas d'adrénaline ni de cordarone si T<30°C, 3 CEE max" },
+            { label:"Femme enceinte", detail:"Inclinaison utérine gauche continue" },
+          ] },
+        { icon:"🕊️", title:"Certificat de décès en VLI", desc:"Les infirmiers ne peuvent pas constater un obstacle médico-légal (OML). Le formulaire propose uniquement \"sans OML\", plus un bouton dédié \"Suspicion d'OML\" qui alerte le médecin régulateur sans rien constater." },
+        { icon:"🫀", title:"RACS — surveillance uniquement", desc:"Pas d'administration d'amine ni de sédation en VLI (hors du cadre autorisé). L'écran affiche les objectifs du protocole ISP (SpO₂ 94-98%, EtCO₂ 35-45 mmHg, PAS>90/PAM>65 mmHg, glycémie>0,7 g/L) et permet de saisir les constantes de surveillance (FC, TA, SpO₂, FR, T°, EtCO₂, glycémie, Glasgow, pupilles). Les courbes EtCO₂ et Hémodynamique (PAS/PAD/PAM/FC) restent disponibles et se mettent à jour en direct, comme dans le module médicalisé — utile pour suivre une tendance en attendant le VLM." },
+        { icon:"🚨", title:"Transition VLM — irréversible", desc:"Le bouton \"VLM arrivée\", toujours visible en haut de l'écran, débloque d'un tap (avec confirmation) la prise en charge médicale complète — grille entière, onglets Étiologie/Thérapeutiques. Rien n'est perdu : patient, transmission, chocs, adrénaline et toute la chronologie déjà saisie restent intacts, le médecin reprend exactement là où l'infirmier s'est arrêté. Pas de retour possible au mode restreint ensuite." },
       ],
     },
     {
@@ -3297,11 +3321,15 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [iotSonde,     setIotSonde]     = useState(mat?.sondeAvecBallonnet || "");
   const [iotRepere,    setIotRepere]    = useState(localMat?.repereLab ? String(localMat.repereLab) : "");
   const [iotCapno,     setIotCapno]     = useState("");
+  const [iotDifficilePed, setIotDifficilePed] = useState(false);
+  const [iotTechDifficilePed, setIotTechDifficilePed] = useState([]);
+  const [iotNbTentativesPed, setIotNbTentativesPed] = useState("");
+  const [iotInhalationPed, setIotInhalationPed] = useState(false);
   const [racsTabPed,   setRacsTabPed]   = useState("ventil");
   const [showDopee,    setShowDopee]    = useState(false);
   const [racsPed, setRacsPed] = useState({
     fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"",
-    tas:"", tad:"", fc:"", tempRacs:"", glycemie:"", noradrV:"",
+    tas:"", tad:"", fc:"", tempRacs:"", glycemie:"", pupilles:"", noradrV:"",
     midazolamV:"", sufentaV:"", autresHemo:"",
     remplissagesPed:[]
   });
@@ -4102,6 +4130,56 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
       {modalIotPed && (
         <Modal title="Intubation oro-trachéale" icon={<div style={{width:24,height:24,color:P.violet}}>{ICONS.iot}</div>}
           soft={P.violetSoft} onClose={() => setModalIotPed(false)}>
+
+          {/* ── Intubation difficile — dépliable, techniques utilisées ── */}
+          <div style={{ background: iotDifficilePed ? P.roseSoft : P.surfaceAlt,
+            border:`1.5px solid ${iotDifficilePed ? P.rose : P.border}`, borderRadius:12,
+            padding:"12px 14px", marginBottom:14 }}>
+            <button onClick={() => setIotDifficilePed(v => !v)}
+              style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+                background:"transparent", border:"none", cursor:"pointer", padding:0, textAlign:"left" }}>
+              <span style={{ fontSize:18, flexShrink:0 }}>{iotDifficilePed ? "⚠️" : "🫁"}</span>
+              <span style={{ flex:1, fontSize:13.5, fontWeight:800,
+                color: iotDifficilePed ? P.roseText : P.text }}>Intubation difficile</span>
+              <span style={{ width:44, height:26, borderRadius:13, flexShrink:0,
+                background: iotDifficilePed ? P.rose : P.border, position:"relative", transition:"background 0.15s" }}>
+                <span style={{ position:"absolute", top:2, left: iotDifficilePed ? 20 : 2, width:22, height:22,
+                  borderRadius:"50%", background:"#fff", transition:"left 0.15s", boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
+              </span>
+            </button>
+            {iotDifficilePed && (
+              <div style={{ marginTop:12 }}>
+                <Lbl>Technique(s) utilisée(s)</Lbl>
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {["Mandrin d'Eschmann (bougie)","Vidéolaryngoscope","Masque laryngé standard","Fastrach (ML intubation)","Dispositif supra-glottique (secours)","Cricothyroïdotomie"].map(t => {
+                    const active = iotTechDifficilePed.includes(t);
+                    return (
+                      <button key={t} onClick={() => setIotTechDifficilePed(
+                          active ? iotTechDifficilePed.filter(x => x !== t) : [...iotTechDifficilePed, t]
+                        )}
+                        style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 11px",
+                          borderRadius:9, border:`1.5px solid ${active ? P.rose : P.border}`,
+                          background: active ? P.rose : P.surface, color: active ? "#fff" : P.textMid,
+                          fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+                        <span style={{ width:16, height:16, borderRadius:4, flexShrink:0,
+                          border:`1.5px solid ${active ? "#fff" : P.border}`,
+                          background: active ? "rgba(255,255,255,0.25)" : "transparent",
+                          display:"flex", alignItems:"center", justifyContent:"center", fontSize:10 }}>
+                          {active && "✓"}
+                        </span>
+                        {t}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop:12 }}>
+                  <Lbl>Nombre de tentatives</Lbl>
+                  <ChipGroup options={["1","2","3","4+"]} value={iotNbTentativesPed} onChange={setIotNbTentativesPed} />
+                </div>
+              </div>
+            )}
+          </div>
+
           <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,borderRadius:10,padding:"10px 14px",marginBottom:14}}>
             <p style={{margin:"0 0 4px",fontSize:11,fontWeight:600,color:P.amberText}}>Tailles recommandées</p>
             <p style={{margin:0,fontSize:12,color:P.amberText}}>
@@ -4160,12 +4238,37 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             </div>
           </div>
 
+          <button onClick={() => setIotInhalationPed(v => !v)}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+              background: iotInhalationPed ? P.amberSoft : P.surfaceAlt,
+              border:`1.5px solid ${iotInhalationPed ? P.amber : P.border}`, borderRadius:11,
+              padding:"11px 13px", marginBottom:16, cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+            <span style={{ fontSize:16, flexShrink:0 }}>{iotInhalationPed ? "🟠" : "💧"}</span>
+            <span style={{ flex:1, fontSize:12.5, fontWeight:700, color: iotInhalationPed ? P.amberText : P.textMid }}>
+              Inhalation objectivée (régurgitation/liquide gastrique)
+            </span>
+            <span style={{ width:20, height:20, borderRadius:6, flexShrink:0,
+              border:`1.5px solid ${iotInhalationPed ? P.amber : P.border}`,
+              background: iotInhalationPed ? P.amber : "transparent",
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:"#fff" }}>
+              {iotInhalationPed && "✓"}
+            </span>
+          </button>
+
           <button onClick={()=>{
-            const detail = [iotSonde&&`sonde ${iotSonde}mm`, iotRepere&&`repère ${iotRepere}cm`, iotCapno&&`ETCO2 ${iotCapno}mmHg`].filter(Boolean).join(", ");
+            const parts = [iotSonde&&`sonde ${iotSonde}mm`, iotRepere&&`repère ${iotRepere}cm`, iotCapno&&`ETCO2 ${iotCapno}mmHg`].filter(Boolean);
+            if (iotDifficilePed) {
+              const techPart = iotTechDifficilePed.length ? " (" + iotTechDifficilePed.join(", ") + ")" : "";
+              const tentPart = iotNbTentativesPed ? ` — ${iotNbTentativesPed} tentative${parseInt(iotNbTentativesPed) > 1 ? "s" : ""}` : "";
+              parts.push(`intubation difficile${techPart}${tentPart}`);
+            }
+            if (iotInhalationPed) parts.push("inhalation objectivée");
+            const detail = parts.join(", ");
             addEvent("iot",`Intubation${detail?` (${detail})`:""}`, "🫁");
             if (iotCapno) {
               setEtco2ListPed(prev => [...prev, { val: iotCapno, sec, time: getNow() }]);
             }
+            setIotDifficilePed(false); setIotTechDifficilePed([]); setIotNbTentativesPed(""); setIotInhalationPed(false);
             setModalIotPed(false);
           }} style={{width:"100%",background:`linear-gradient(135deg,${P.violet},#5A4E8A)`,
             border:"none",borderRadius:12,color:"#fff",fontSize:14,fontWeight:600,
@@ -4707,6 +4810,22 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                     );
                   })()}
 
+                  {/* Pupilles — examen neurologique rapide */}
+                  <div style={{ marginBottom:10 }}>
+                    <Lbl>Pupilles</Lbl>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                      {["Normales","Anisocorie","Mydriase bilatérale"].map(v => (
+                        <button key={v} onClick={() => srp("pupilles")(racsPed.pupilles === v ? "" : v)}
+                          style={{ padding:"8px 4px", borderRadius:9, fontSize:10.5, fontWeight:600,
+                            border:`1.5px solid ${racsPed.pupilles===v ? P.violet : P.border}`,
+                            background: racsPed.pupilles===v ? P.violetSoft : P.surface,
+                            color: racsPed.pupilles===v ? P.violetText : P.textMid, cursor:"pointer", fontFamily:sans }}>
+                          {v}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   {/* ADRÉNALINE IVSE — paliers cliquables + vitesse éditable */}
                   {localMat && (
                     <div style={{background:P.roseSoft,border:`1px solid color-mix(in srgb, ${P.rose} 27%, transparent)`,borderRadius:10,padding:"10px 12px",marginBottom:10}}>
@@ -4773,6 +4892,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               if(racsPed.tas && racsPed.tad) p.push(`TA ${racsPed.tas}/${racsPed.tad}mmHg`);
               if(racsPed.fc)  p.push(`FC ${racsPed.fc}/min`);
               if(racsPed.tempRacs) p.push(`T° ${racsPed.tempRacs} °C`);
+              if(racsPed.pupilles) p.push(`Pupilles ${racsPed.pupilles}`);
               // Amines — seulement si vitesse saisie
               if(adrVitesse)  p.push(`Adrénaline IVSE ${adrVitesse}mL/h`);
               // Remplissage pédiatrique
@@ -5324,6 +5444,25 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           const lastRhythmPed = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
           return (
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:10}}>
+
+          {/* Examen pupillaire initial — disparaît une fois répondu */}
+          {!events.some(e => e.id === "pupilles_initial") && (
+            <div style={{ gridColumn:"1 / -1", background:P.violetSoft, border:`1.5px solid ${P.violet}`, borderRadius:13, padding:"11px 13px" }}>
+              <p style={{ margin:"0 0 8px", fontSize:12, fontWeight:800, color:P.violetText, fontFamily:disp }}>
+                🔍 Examen pupillaire initial
+              </p>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                {["Normales","Anormales","Non fait"].map(v => (
+                  <button key={v} onClick={() => addEvent("pupilles_initial", `Examen pupillaire initial : ${v}`, "🔍")}
+                    style={{ padding:"9px 4px", borderRadius:9, fontSize:11, fontWeight:700,
+                      border:`1.5px solid ${P.violet}`, background:P.surface, color:P.violetText,
+                      cursor:"pointer", fontFamily:sans }}>
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* ── Dilution adrénaline — identique à l'écran de préparation, mais visible ici pendant la réa ── */}
           {pedDiluEnabled && (() => {
@@ -8409,7 +8548,7 @@ function App() {
   const [lowFlowStart, setLowFlowStart] = useLocalState("acr_adulte_lowFlowStart", "");
 
   // IOT data
-  const [iot, setIot] = useLocalState("acr_adulte_iot", { cormack:"", sonde:"", repere:"", capno:"" });
+  const [iot, setIot] = useLocalState("acr_adulte_iot", { cormack:"", sonde:"", repere:"", capno:"", difficile:false, techniquesDifficiles:[], nbTentatives:"", inhalation:false });
   const [etco2List, setEtco2List] = useLocalState("acr_adulte_etco2", []);
   const [modalEtco2, setModalEtco2] = useState(false);
   const [etco2Val, setEtco2Val] = useState("");
@@ -8532,7 +8671,7 @@ function App() {
   const [racs, setRacs] = useState({
     fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"",
     hypnovelV:"", sufentaV:"", curare:"", autresDrogues:"",
-    tas:"", tad:"", fc:"", tempRacs:"", glycemie:"", noradrV:"", dobut:"", autresHemo:"",
+    tas:"", tad:"", fc:"", tempRacs:"", glycemie:"", glasgow:"", pupilles:"", noradrV:"", dobut:"", autresHemo:"",
     remplissages:[]
   });
   const sr = k => v => setRacs(p => ({ ...p, [k]: v }));
@@ -8993,6 +9132,12 @@ function App() {
       iot.repere  && `repère ${iot.repere} cm`,
       iot.capno   && `ETCO2 ${iot.capno} mmHg`,
     ].filter(Boolean);
+    if (iot.difficile) {
+      const techPart = iot.techniquesDifficiles.length ? " (" + iot.techniquesDifficiles.join(", ") + ")" : "";
+      const tentPart = iot.nbTentatives ? ` — ${iot.nbTentatives} tentative${parseInt(iot.nbTentatives) > 1 ? "s" : ""}` : "";
+      parts.push(`intubation difficile${techPart}${tentPart}`);
+    }
+    if (iot.inhalation) parts.push("inhalation objectivée");
     const detail = parts.length ? ` (${parts.join(", ")})` : "";
     addEvent("iot", `Intubation${detail}`, "🫁");
     if (iot.capno) {
@@ -9018,7 +9163,7 @@ function App() {
       const snapshot = {
         key: Date.now(),
         archivedAt: new Date().toISOString(),
-        type: isTrauma ? "Traumatique" : "Adulte",
+        type: isTrauma ? "Traumatique" : isVLI ? (vliUnlocked ? "VLI → Médicalisé" : "VLI") : "Adulte",
         label: pat.nom ? `${pat.nom} ${pat.prenom}`.trim() : "Sans nom",
         durationSec: sec,
         outcome,
@@ -9038,7 +9183,7 @@ function App() {
     setEvents([]); setAlert(null); setCycleOffset(0);
     setShowPdf(false); setShowLog(false);
     setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"", lieu:"" });
-    setIot({ cormack:"", sonde:"", repere:"", capno:"" });
+    setIot({ cormack:"", sonde:"", repere:"", capno:"", difficile:false, techniquesDifficiles:[], nbTentatives:"", inhalation:false });
     setTrans({ hEffondrement:"", temoin:"", mceTemoin:"", lieu:"", hArriveePompiers:"", hPoseDSA:"", h1erChoc:"", chocsPompiers:0, chocsPublic:0, rythmeDSA:"", gestesSecouristes:"", note:"", saved:false });
     setModalTrans(false);
     setAdrTimerStart(0);
@@ -9047,6 +9192,7 @@ function App() {
       morrisonMode:"", kohlerMode:"", douglasMode:"", pleureDMode:"", pleureGMode:"", pericardeMode:"" });
     setModalThoraco(null); setModalHemocue(false); setHemocueVal(""); setModalTransfu(false); setTransfu({ cgr:"", pfc:"", plaq:"" });
     setModalExacyl(false); setModalHemoExt(false); setGarrotSite(""); setGarrotHeure(""); setHemocueHist([]); setModalPat(false);
+    setVliUnlocked(false); setModalVliTransition(false);
     clearSession("acr_adulte_");
     setModalCord(false); setModalDeces(false); setModalIot(false); setModalFast(false);
     setModalRythme(false); setModalVvp(false); setModalElectrodes(false); setModalRacs(false); setModalChoc(false); setModalEcg(false); setModalRegul(false);
@@ -9054,7 +9200,7 @@ function App() {
     setRacs({ fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"", hypnovelV:"", sufentaV:"", curare:"", autresDrogues:"", tas:"", tad:"", fc:"", tempRacs:"", noradrV:"", dobut:"", autresHemo:"", remplissages:[] });
     setActiveTab("actions");
     setFastResult("");
-    setIot({ cormack:"", sonde:"", repere:"", capno:"" });
+    setIot({ cormack:"", sonde:"", repere:"", capno:"", difficile:false, techniquesDifficiles:[], nbTentatives:"", inhalation:false });
     setEtco2List([]);
     setCcfPausedTotal(0); setCcfPausedSince(null);
     setHemoList([]); setAmineList([]);
@@ -9071,12 +9217,20 @@ function App() {
   const [showOnboarding, setShowOnboarding] = useLocalState("acr_onboarding_done", false);
   const [showDashboard, setShowDashboard] = useState(false);
   const isTrauma = module === "traumatique";
-  // mainTab est partagé entre Adulte/Trauma (même composant) — si un onglet "etio"
-  // persistait d'une session adulte précédente, on le redirige en trauma puisque
-  // cet onglet n'existe plus (remplacé par la carte HOTT persistante).
+  const isVLI = module === "vli";
+  // Déverrouillage VLI → passation au VLM : une fois débloqué, la grille complète
+  // reste accessible pour le reste de la session (pas de retour arrière possible).
+  const [vliUnlocked, setVliUnlocked] = useLocalState("acr_vli_unlocked", false);
+  const [modalVliTransition, setModalVliTransition] = useState(false);
+  const [modalVasVLI, setModalVasVLI] = useState(false);
+  const [modalDecesVLI, setModalDecesVLI] = useState(false);
+  // mainTab est partagé entre Adulte/Trauma/VLI (même composant) — si un onglet "etio"
+  // persistait d'une session adulte précédente, on le redirige en trauma/VLI restreint puisque
+  // cet onglet n'existe plus (remplacé par la carte HOTT ou l'onglet Situations particulières).
   useEffect(() => {
-    if (isTrauma && mainTab === "etio") setMainTab("actions");
-  }, [isTrauma, mainTab]);
+    if ((isTrauma || (isVLI && !vliUnlocked)) && mainTab === "etio") setMainTab("actions");
+    if (!(isVLI && !vliUnlocked) && mainTab === "vli_sit") setMainTab("actions");
+  }, [isTrauma, isVLI, vliUnlocked, mainTab]);
 
   // Thème jour/nuit — choisi par le médecin, persisté
   const [theme, setTheme] = useLocalState("acr_theme", "day");
@@ -9272,85 +9426,85 @@ function App() {
         </div>
       )}
 
-      {/* 4 boutons modules */}
-      <div style={{ width:"100%", maxWidth:380, display:"flex", flexDirection:"column", gap:12 }}>
+      {/* 4 modules — grille 2x2 compacte pour tout voir sans défiler */}
+      <div style={{ width:"100%", maxWidth:380, display:"grid", gridTemplateColumns:"1fr 1fr", gap:11 }}>
 
-        {/* ACR Adulte Extra-hospitalier */}
+        {/* ACR Adulte */}
         <button onClick={() => setModule("adulte_extra")} style={{
           background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
-          padding:"18px 20px", cursor:"pointer", fontFamily:sans, textAlign:"left",
-          display:"flex", alignItems:"center", gap:16,
-          boxShadow:"0 2px 10px rgba(0,0,0,0.05)",
-          transition:"all 0.12s" }}
+          padding:"16px 12px", cursor:"pointer", fontFamily:sans, textAlign:"center",
+          display:"flex", flexDirection:"column", alignItems:"center", gap:8,
+          boxShadow:"0 2px 10px rgba(0,0,0,0.05)", transition:"all 0.12s" }}
           onPointerEnter={e => { e.currentTarget.style.borderColor = P.rose; e.currentTarget.style.boxShadow = `0 4px 18px color-mix(in srgb, ${P.rose} 13%, transparent)`; }}
           onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.05)"; }}>
-          <div style={{ width:50, height:50, borderRadius:14, background:P.roseSoft,
-            display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🚑</div>
-          <div style={{ flex:1, minWidth:0 }}>
-            <p style={{ margin:"0 0 2px", fontSize:9.5, fontWeight:700, color:P.rose,
-              textTransform:"uppercase", letterSpacing:"0.13em", fontFamily:mono }}>Extra-hospitalier</p>
-            <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Adulte</p>
+          <div style={{ width:46, height:46, borderRadius:13, background:P.roseSoft,
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:22 }}>🚑</div>
+          <div>
+            <p style={{ margin:"0 0 2px", fontSize:8.5, fontWeight:700, color:P.rose,
+              textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Extra-hospitalier</p>
+            <p style={{ margin:0, fontSize:14.5, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Adulte</p>
           </div>
-          <span style={{ marginLeft:"auto", color:P.rose, fontSize:20, fontWeight:700 }}>›</span>
-        </button>
-
-        {/* ACR Adulte Intra-hospitalier */}
-        <button onClick={() => setModule("adulte_intra")} style={{
-          background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
-          padding:"18px 20px", cursor:"pointer", fontFamily:sans, textAlign:"left",
-          display:"flex", alignItems:"center", gap:16,
-          boxShadow:"0 2px 10px rgba(0,0,0,0.05)", opacity:0.7 }}
-          onPointerEnter={e => { e.currentTarget.style.borderColor = P.blue; e.currentTarget.style.opacity = "1"; }}
-          onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.opacity = "0.7"; }}>
-          <div style={{ width:50, height:50, borderRadius:14, background:P.blueSoft,
-            display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🏥</div>
-          <div style={{ flex:1, minWidth:0 }}>
-            <p style={{ margin:"0 0 2px", fontSize:9.5, fontWeight:700, color:P.blue,
-              textTransform:"uppercase", letterSpacing:"0.13em", fontFamily:mono }}>Intra-hospitalier</p>
-            <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Adulte</p>
-          </div>
-          <span style={{ marginLeft:"auto", fontSize:9.5, background:P.surfaceAlt, fontWeight:700,
-            color:P.textSoft, padding:"3px 10px", borderRadius:20, whiteSpace:"nowrap", fontFamily:mono,
-            textTransform:"uppercase", letterSpacing:"0.06em" }}>Bientôt</span>
-        </button>
-
-        {/* ACR Pédiatrique */}
-        <button onClick={() => setModule("pediatrique")} style={{
-          background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
-          padding:"18px 20px", cursor:"pointer", fontFamily:sans, textAlign:"left",
-          display:"flex", alignItems:"center", gap:16,
-          boxShadow:"0 2px 10px rgba(0,0,0,0.05)", transition:"all 0.12s" }}
-          onPointerEnter={e => { e.currentTarget.style.borderColor = P.amber; e.currentTarget.style.boxShadow = `0 4px 18px color-mix(in srgb, ${P.amber} 13%, transparent)`; }}
-          onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.05)"; }}>
-          <div style={{ width:50, height:50, borderRadius:14, background:P.amberSoft,
-            display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>👶</div>
-          <div style={{ flex:1, minWidth:0 }}>
-            <p style={{ margin:"0 0 2px", fontSize:9.5, fontWeight:700, color:P.amber,
-              textTransform:"uppercase", letterSpacing:"0.13em", fontFamily:mono }}>Nourrisson · Enfant</p>
-            <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Pédiatrique</p>
-          </div>
-          <span style={{ marginLeft:"auto", color:P.amber, fontSize:20, fontWeight:700 }}>›</span>
         </button>
 
         {/* ACR Traumatique */}
         <button onClick={() => setModule("traumatique")} style={{
           background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
-          padding:"18px 20px", cursor:"pointer", fontFamily:sans, textAlign:"left",
-          display:"flex", alignItems:"center", gap:16,
+          padding:"16px 12px", cursor:"pointer", fontFamily:sans, textAlign:"center",
+          display:"flex", flexDirection:"column", alignItems:"center", gap:8,
           boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}
           onPointerEnter={e => { e.currentTarget.style.borderColor = P.slate; }}
           onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; }}>
-          <div style={{ width:50, height:50, borderRadius:14, background:P.slateSoft,
-            display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🩻</div>
-          <div style={{ flex:1, minWidth:0 }}>
-            <p style={{ margin:"0 0 2px", fontSize:9.5, fontWeight:700, color:P.slateText,
-              textTransform:"uppercase", letterSpacing:"0.13em", fontFamily:mono }}>Polytraumatisé · HOTT</p>
-            <p style={{ margin:0, fontSize:17, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Traumatique</p>
+          <div style={{ width:46, height:46, borderRadius:13, background:P.slateSoft,
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:22 }}>🩻</div>
+          <div>
+            <p style={{ margin:"0 0 2px", fontSize:8.5, fontWeight:700, color:P.slateText,
+              textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Polytraumatisé</p>
+            <p style={{ margin:0, fontSize:14.5, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Traumatique</p>
           </div>
-          <span style={{ marginLeft:"auto", fontSize:20, color:P.slateText, fontWeight:700 }}>›</span>
+        </button>
+
+        {/* ACR Pédiatrique */}
+        <button onClick={() => setModule("pediatrique")} style={{
+          background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
+          padding:"16px 12px", cursor:"pointer", fontFamily:sans, textAlign:"center",
+          display:"flex", flexDirection:"column", alignItems:"center", gap:8,
+          boxShadow:"0 2px 10px rgba(0,0,0,0.05)", transition:"all 0.12s" }}
+          onPointerEnter={e => { e.currentTarget.style.borderColor = P.amber; e.currentTarget.style.boxShadow = `0 4px 18px color-mix(in srgb, ${P.amber} 13%, transparent)`; }}
+          onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.05)"; }}>
+          <div style={{ width:46, height:46, borderRadius:13, background:P.amberSoft,
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:22 }}>👶</div>
+          <div>
+            <p style={{ margin:"0 0 2px", fontSize:8.5, fontWeight:700, color:P.amber,
+              textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Nourrisson · Enfant</p>
+            <p style={{ margin:0, fontSize:14.5, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR Pédiatrique</p>
+          </div>
+        </button>
+
+        {/* ACR VLI */}
+        <button onClick={() => setModule("vli")} style={{
+          background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
+          padding:"16px 12px", cursor:"pointer", fontFamily:sans, textAlign:"center",
+          display:"flex", flexDirection:"column", alignItems:"center", gap:8,
+          boxShadow:"0 2px 10px rgba(0,0,0,0.05)", transition:"all 0.12s" }}
+          onPointerEnter={e => { e.currentTarget.style.borderColor = "#EA6A12"; e.currentTarget.style.boxShadow = "0 4px 18px rgba(234,106,18,0.2)"; }}
+          onPointerLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.05)"; }}>
+          <div style={{ width:46, height:46, borderRadius:13, background:"rgba(234,106,18,0.14)",
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:22 }}>🚒</div>
+          <div>
+            <p style={{ margin:"0 0 2px", fontSize:8.5, fontWeight:700, color:"#B24E0A",
+              textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>Protocole ISP</p>
+            <p style={{ margin:0, fontSize:14.5, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>ACR VLI</p>
+          </div>
         </button>
 
       </div>
+
+      {/* Intra-hospitalier — pas encore disponible, discret pour ne pas encombrer la grille des 4 modules actifs */}
+      <button onClick={() => setModule("adulte_intra")}
+        style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:11,
+          cursor:"pointer", fontFamily:sans, padding:"10px 4px", textAlign:"center", width:"100%" }}>
+        🏥 ACR Adulte Intra-hospitalier — bientôt disponible
+      </button>
 
       {/* ── Arrêts archivés ── */}
       {/* Dashboard Analytics */}
@@ -10503,6 +10657,55 @@ function App() {
       {modalIot && (
         <Modal title="Intubation oro-trachéale" icon={<div style={{width:24,height:24,color:P.violet}}>{ICONS.iot}</div>} soft={P.violetSoft} onClose={() => setModalIot(false)}>
 
+          {/* ── Intubation difficile — dépliable, techniques utilisées ── */}
+          <div style={{ background: iot.difficile ? P.roseSoft : P.surfaceAlt,
+            border:`1.5px solid ${iot.difficile ? P.rose : P.border}`, borderRadius:12,
+            padding:"12px 14px", marginBottom:18 }}>
+            <button onClick={() => si("difficile")(!iot.difficile)}
+              style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+                background:"transparent", border:"none", cursor:"pointer", padding:0, textAlign:"left" }}>
+              <span style={{ fontSize:18, flexShrink:0 }}>{iot.difficile ? "⚠️" : "🫁"}</span>
+              <span style={{ flex:1, fontSize:13.5, fontWeight:800,
+                color: iot.difficile ? P.roseText : P.text }}>Intubation difficile</span>
+              <span style={{ width:44, height:26, borderRadius:13, flexShrink:0,
+                background: iot.difficile ? P.rose : P.border, position:"relative", transition:"background 0.15s" }}>
+                <span style={{ position:"absolute", top:2, left: iot.difficile ? 20 : 2, width:22, height:22,
+                  borderRadius:"50%", background:"#fff", transition:"left 0.15s", boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }} />
+              </span>
+            </button>
+            {iot.difficile && (
+              <div style={{ marginTop:12 }}>
+                <Lbl>Technique(s) utilisée(s)</Lbl>
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {["Mandrin d'Eschmann (bougie)","Vidéolaryngoscope","Masque laryngé standard","Fastrach (ML intubation)","Dispositif supra-glottique (secours)","Cricothyroïdotomie"].map(t => {
+                    const active = iot.techniquesDifficiles.includes(t);
+                    return (
+                      <button key={t} onClick={() => si("techniquesDifficiles")(
+                          active ? iot.techniquesDifficiles.filter(x => x !== t) : [...iot.techniquesDifficiles, t]
+                        )}
+                        style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 11px",
+                          borderRadius:9, border:`1.5px solid ${active ? P.rose : P.border}`,
+                          background: active ? P.rose : P.surface, color: active ? "#fff" : P.textMid,
+                          fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+                        <span style={{ width:16, height:16, borderRadius:4, flexShrink:0,
+                          border:`1.5px solid ${active ? "#fff" : P.border}`,
+                          background: active ? "rgba(255,255,255,0.25)" : "transparent",
+                          display:"flex", alignItems:"center", justifyContent:"center", fontSize:10 }}>
+                          {active && "✓"}
+                        </span>
+                        {t}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop:12 }}>
+                  <Lbl>Nombre de tentatives</Lbl>
+                  <ChipGroup options={["1","2","3","4+"]} value={iot.nbTentatives} onChange={si("nbTentatives")} />
+                </div>
+              </div>
+            )}
+          </div>
+
           <div style={{ marginBottom:18 }}>
             <Lbl>Cormack</Lbl>
             <ChipGroup options={["1","2","3","4"]} value={iot.cormack} onChange={si("cormack")} />
@@ -10533,6 +10736,23 @@ function App() {
               <span style={{ fontSize:13, color:P.textSoft, fontFamily:mono }}>mmHg</span>
             </div>
           </div>
+
+          <button onClick={() => si("inhalation")(!iot.inhalation)}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+              background: iot.inhalation ? P.amberSoft : P.surfaceAlt,
+              border:`1.5px solid ${iot.inhalation ? P.amber : P.border}`, borderRadius:11,
+              padding:"11px 13px", marginBottom:18, cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+            <span style={{ fontSize:16, flexShrink:0 }}>{iot.inhalation ? "🟠" : "💧"}</span>
+            <span style={{ flex:1, fontSize:12.5, fontWeight:700, color: iot.inhalation ? P.amberText : P.textMid }}>
+              Inhalation objectivée (régurgitation/liquide gastrique)
+            </span>
+            <span style={{ width:20, height:20, borderRadius:6, flexShrink:0,
+              border:`1.5px solid ${iot.inhalation ? P.amber : P.border}`,
+              background: iot.inhalation ? P.amber : "transparent",
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:"#fff" }}>
+              {iot.inhalation && "✓"}
+            </span>
+          </button>
 
           <button onClick={confirmIot} style={{
             width:"100%", background:"linear-gradient(135deg,#7B6FB0,#5A4E8A)",
@@ -11096,7 +11316,117 @@ function App() {
       )}
 
       {/* ── Modal Soins post-RACS ── */}
-      {modalRacs && (() => {
+      {/* ── Soins post-RACS — VLI restreint : surveillance seule, sans amines/sédation ── */}
+      {modalRacs && isVLI && !vliUnlocked && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(28,43,58,0.6)", zIndex:80,
+          display:"flex", flexDirection:"column", justifyContent:"flex-end", backdropFilter:"blur(2px)" }}
+          onClick={() => setModalRacs(false)}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:P.surface, width:"100%", borderRadius:"20px 20px 0 0",
+              padding:"20px 16px 36px", boxShadow:"0 -12px 40px rgba(0,0,0,0.18)",
+              fontFamily:sans, maxHeight:"90vh", overflowY:"auto" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:11, marginBottom:16 }}>
+              <div style={{ width:42, height:42, borderRadius:13,
+                background:"linear-gradient(135deg, #EA6A12, #B24E0A)",
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:22,
+                boxShadow:"0 5px 16px rgba(234,106,18,0.32)" }}>🫀</div>
+              <div>
+                <p style={{ margin:"0 0 1px", fontSize:9.5, fontWeight:700, color:"#B24E0A",
+                  textTransform:"uppercase", letterSpacing:"0.14em", fontFamily:mono }}>RACS · Protocole ISP</p>
+                <p style={{ margin:0, fontSize:18, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em" }}>Surveillance</p>
+              </div>
+              <button onClick={() => setModalRacs(false)}
+                style={{ marginLeft:"auto", background:"transparent", border:"none",
+                  color:P.textSoft, fontSize:20, cursor:"pointer" }}>×</button>
+            </div>
+
+            <div style={{ background:"rgba(234,106,18,0.1)", border:"1px solid #EA6A12", borderRadius:10,
+              padding:"10px 12px", marginBottom:14 }}>
+              <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:700, color:"#B24E0A",
+                textTransform:"uppercase", letterSpacing:"0.06em", fontFamily:mono }}>Objectifs</p>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"3px 12px" }}>
+                {[["SpO₂","94–98 %"],["EtCO₂","35–45 mmHg"],["PAS / PAM",">90 / >65 mmHg"],
+                  ["Glycémie","> 0,7 g/L"],["Hyperthermie","à prévenir"]].map(([l,v]) => (
+                  <div key={l} style={{ display:"flex", justifyContent:"space-between" }}>
+                    <span style={{ fontSize:10.5, color:"#B24E0A" }}>{l}</span>
+                    <span style={{ fontSize:10.5, fontWeight:700, color:"#B24E0A", fontFamily:mono }}>{v}</span>
+                  </div>
+                ))}
+              </div>
+              <p style={{ margin:"6px 0 0", fontSize:9.5, color:"#B24E0A", fontStyle:"italic" }}>
+                Surveillance uniquement — pas d'administration d'amine ou de sédation (protocole VLI)
+              </p>
+            </div>
+
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:9 }}>
+              {[["fc","FC","/min"],["tas","PAS","mmHg"],["sat","SpO₂","%"],["fr","FR","/min"],
+                ["tempRacs","T°","°C"],["capno","EtCO₂","mmHg"],["glycemie","Glycémie","g/L"],["glasgow","Glasgow","/15"]].map(([k,l,u]) => (
+                <div key={k}>
+                  <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                    textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>{l}</p>
+                  <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                    <input type="number" inputMode="decimal" value={racs[k]} onChange={e => sr(k)(e.target.value)}
+                      style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                        borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text, fontFamily:mono,
+                        outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
+                      onFocus={e => e.target.style.borderColor = "#EA6A12"}
+                      onBlur={e  => e.target.style.borderColor = P.border} />
+                    <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>{u}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ marginBottom:14 }}>
+              <Lbl>Pupilles</Lbl>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                {["Normales","Anisocorie","Mydriase bilatérale"].map(v => (
+                  <button key={v} onClick={() => sr("pupilles")(racs.pupilles === v ? "" : v)}
+                    style={{ padding:"8px 4px", borderRadius:9, fontSize:10.5, fontWeight:600,
+                      border:`1.5px solid ${racs.pupilles===v ? "#EA6A12" : P.border}`,
+                      background: racs.pupilles===v ? "rgba(234,106,18,0.12)" : P.surface,
+                      color: racs.pupilles===v ? "#B24E0A" : P.textMid, cursor:"pointer", fontFamily:sans }}>
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <p style={{ margin:"0 0 14px", fontSize:11, color:P.textSoft, fontStyle:"italic" }}>
+              📋 Penser à réaliser l'ECG 12 dérivations dès que possible.
+            </p>
+
+            <button onClick={() => {
+              const parts = [];
+              if (racs.fc) parts.push(`FC ${racs.fc}/min`);
+              if (racs.tas) parts.push(`PAS ${racs.tas} mmHg`);
+              if (racs.sat) parts.push(`SpO₂ ${racs.sat}%`);
+              if (racs.fr) parts.push(`FR ${racs.fr}/min`);
+              if (racs.tempRacs) parts.push(`T° ${racs.tempRacs}°C`);
+              if (racs.capno) parts.push(`EtCO₂ ${racs.capno} mmHg`);
+              if (racs.glycemie) parts.push(`Glycémie ${racs.glycemie} g/L`);
+              if (racs.glasgow) parts.push(`Glasgow ${racs.glasgow}/15`);
+              if (racs.pupilles) parts.push(`Pupilles ${racs.pupilles}`);
+              addEvent("racs_surveillance_vli", parts.length ? `Surveillance post-RACS : ${parts.join(" · ")}` : "Surveillance post-RACS", "🫀");
+              // Alimente les mêmes courbes que les boutons "+ Mesure" / "+ Valeur" —
+              // la tendance reste visible quel que soit l'endroit où la constante a été saisie.
+              if (racs.tas || racs.fc) {
+                setHemoList(prev => [...prev, { sec, time: getNow(), pas:racs.tas, pad:racs.tad, fc:racs.fc }]);
+              }
+              if (racs.capno) {
+                setEtco2List(prev => [...prev, { val: racs.capno, sec, time: getNow() }]);
+              }
+              setModalRacs(false);
+            }} style={{ width:"100%", background:"linear-gradient(135deg,#EA6A12,#B24E0A)",
+              border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:700,
+              padding:"14px", cursor:"pointer", fontFamily:sans }}>
+              ✓ Enregistrer les constantes
+            </button>
+          </div>
+        </div>
+      )}
+
+      {modalRacs && !(isVLI && !vliUnlocked) && (() => {
         // Calculs de dilution
         // Calculs de dilution
         const hypnovelDose  = racs.hypnovelV ? (parseFloat(racs.hypnovelV) * 1).toFixed(1)    : null;
@@ -11123,6 +11453,7 @@ function App() {
           }
           if (racs.fc)            p.push(`FC ${racs.fc}/min`);
           if (racs.tempRacs)      p.push(`T° ${racs.tempRacs} °C`);
+          if (racs.pupilles)      p.push(`Pupilles ${racs.pupilles}`);
           if (racs.noradrV)       p.push(`Noradrénaline ${racs.noradrV} mL/h → ${noradrDose} mg/h (8mg/40cc)`);
           if (racs.dobut)         p.push(`Dobutamine ${racs.dobut} μg/kg/min`);
           if (racs.autresHemo)    p.push(racs.autresHemo);
@@ -11537,6 +11868,22 @@ function App() {
                       );
                     })()}
 
+                    {/* Pupilles — examen neurologique rapide */}
+                    <div style={{ marginBottom:10 }}>
+                      <Lbl>Pupilles</Lbl>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                        {["Normales","Anisocorie","Mydriase bilatérale"].map(v => (
+                          <button key={v} onClick={() => sr("pupilles")(racs.pupilles === v ? "" : v)}
+                            style={{ padding:"8px 4px", borderRadius:9, fontSize:10.5, fontWeight:600,
+                              border:`1.5px solid ${racs.pupilles===v ? P.violet : P.border}`,
+                              background: racs.pupilles===v ? P.violetSoft : P.surface,
+                              color: racs.pupilles===v ? P.violetText : P.textMid, cursor:"pointer", fontFamily:sans }}>
+                            {v}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     {/* Noradrénaline */}
                     <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px", marginBottom:10 }}>
                       <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:500, color:P.textSoft,
@@ -11716,9 +12063,9 @@ function App() {
 
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <span style={{ fontSize:20 }}>{isTrauma ? "🩻" : "❤️‍🩹"}</span>
+            <span style={{ fontSize:20 }}>{isVLI ? "🚒" : isTrauma ? "🩻" : "❤️‍🩹"}</span>
             <div>
-              <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>{pat.nom ? `${pat.nom} ${pat.prenom}` : (isTrauma ? "ACR Traumatique" : "Copilote ACR")}</p>
+              <p style={{ margin:0, fontSize:13, fontWeight:600, color:P.text }}>{pat.nom ? `${pat.nom} ${pat.prenom}` : (isVLI ? (vliUnlocked ? "ACR VLI → Médicalisé" : "ACR VLI") : isTrauma ? "ACR Traumatique" : "Copilote ACR")}</p>
               <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:2 }}>
                 {pat.age && <span style={{ fontSize:11, color:P.textSoft }}>{pat.age} ans{pat.sexe ? ` · ${pat.sexe}` : ""}</span>}
                 {pat.age && noFlowMin !== undefined && <span style={{ fontSize:11, color:P.textSoft }}>·</span>}
@@ -11770,12 +12117,21 @@ function App() {
           </div>
         </div>
 
+        {/* Bandeau d'information VLI — rappel du cadre du protocole, tant que non déverrouillé */}
+        {isVLI && !vliUnlocked && (
+          <div style={{ background:"rgba(234,106,18,0.12)", border:"1px solid #EA6A12", borderRadius:9,
+            padding:"6px 10px", display:"flex", alignItems:"center", gap:6, marginBottom:12 }}>
+            <span style={{ fontSize:12 }}>ℹ️</span>
+            <span style={{ fontSize:10.5, fontWeight:700, color:"#B24E0A" }}>Actes limités au protocole VLI en vigueur</span>
+          </div>
+        )}
+
         {/* Grand timer — style moniteur */}
         <div style={{ textAlign:"center", marginBottom:14 }}>
           <p style={{ margin:"0 0 2px", fontSize:9.5, color:P.textSoft, letterSpacing:"0.14em",
             textTransform:"uppercase", fontFamily:mono, fontWeight:700,
             display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-            {running && <span style={{ width:7, height:7, borderRadius:"50%", background:P.rose,
+            {running && <span style={{ width:7, height:7, borderRadius:"50%", background: isVLI && !vliUnlocked ? "#EA6A12" : P.rose,
               display:"inline-block", animation:"pulse 1.4s infinite" }} />}
             Début RCP médicalisé
           </p>
@@ -11947,6 +12303,21 @@ function App() {
 
       <div style={{ padding:"10px 12px 0" }}>
 
+        {/* ── Bouton transition VLM (VLI uniquement, tant que non déverrouillé) ── */}
+        {isVLI && !vliUnlocked && (
+          <button onClick={() => setModalVliTransition(true)}
+            style={{ width:"100%", background:"linear-gradient(135deg,#EA6A12,#B24E0A)", border:"none",
+              borderRadius:13, padding:"12px 14px", marginBottom:12, display:"flex", alignItems:"center",
+              gap:10, cursor:"pointer", boxShadow:"0 4px 14px rgba(234,106,18,0.4)" }}>
+            <span style={{ fontSize:20 }}>🚒</span>
+            <div style={{ textAlign:"left", flex:1 }}>
+              <p style={{ margin:0, fontSize:12.5, fontWeight:800, color:"#fff" }}>VLM arrivée</p>
+              <p style={{ margin:0, fontSize:10, color:"rgba(255,255,255,0.85)" }}>Débloquer la prise en charge médicale complète</p>
+            </div>
+            <span style={{ color:"#fff", fontSize:16 }}>›</span>
+          </button>
+        )}
+
         {/* ── Onglet unique : Actions ── */}
         {true && <>
 
@@ -12091,10 +12462,13 @@ function App() {
             </div>
           )}
 
-          {/* ── Tab bar Actions / (Étiologie) / Thérapeutiques ── */}
-          <div style={{ display:"grid", gridTemplateColumns: isTrauma ? "1fr 1fr" : "1fr 1fr 1fr", gap:5,
+          {/* ── Tab bar Actions / (Étiologie) / Thérapeutiques / (Situations particulières VLI) ── */}
+          <div style={{ display:"grid", gridTemplateColumns: (isTrauma || (isVLI && !vliUnlocked)) ? "1fr 1fr" : "1fr 1fr 1fr", gap:5,
             background:P.surfaceAlt, borderRadius:12, padding:4, marginBottom:10 }}>
-            {(isTrauma ? [
+            {(isVLI && !vliUnlocked ? [
+              { id:"actions", label:"Actions",       icon:"⚡" },
+              { id:"vli_sit", label:"Situations",    icon:"🎯" },
+            ] : isTrauma ? [
               { id:"actions", label:"Actions",       icon:"⚡" },
               { id:"ther",    label:"Thérapeutiques", icon:"💊" },
             ] : [
@@ -12114,9 +12488,168 @@ function App() {
             ))}
           </div>
 
-          {/* ── Contenu Actions (grille existante) ── */}
-          {mainTab === "actions" && (
+          {/* ── Contenu Actions — VLI restreint (protocole ISP, avant transition VLM) ── */}
+          {mainTab === "actions" && isVLI && !vliUnlocked && (() => {
+            const adrAlarmActive = adrTimerStart > 0 && started && !events.find(e => e.id === "rosc")
+              && ((Date.now() - adrTimerStart) / 1000 >= adrIntervalGlobal * 60);
+            const lastRhythm = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
+            return (
+              <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
+                {/* Examen pupillaire initial — disparaît une fois répondu */}
+                {!events.some(e => e.id === "pupilles_initial") && (
+                  <div style={{ background:"rgba(234,106,18,0.1)", border:"1.5px solid #EA6A12", borderRadius:13, padding:"11px 13px" }}>
+                    <p style={{ margin:"0 0 8px", fontSize:12, fontWeight:800, color:"#B24E0A", fontFamily:disp }}>
+                      🔍 Examen pupillaire initial
+                    </p>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                      {["Normales","Anormales","Non fait"].map(v => (
+                        <button key={v} onClick={() => addEvent("pupilles_initial", `Examen pupillaire initial : ${v}`, "🔍")}
+                          style={{ padding:"9px 4px", borderRadius:9, fontSize:11, fontWeight:700,
+                            border:"1.5px solid #EA6A12", background:P.surface, color:"#B24E0A",
+                            cursor:"pointer", fontFamily:sans }}>
+                          {v}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+                  <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
+                    onClick={() => setModalRythme(true)} />
+                  <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+                    onClick={() => setModalVvp(true)} />
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+                  <ActionBtn action={{ label:"Adrénaline", dose:"1 mg IV/IO", vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText,
+                      hapticType:"long", badge: adrAlarmActive ? { text:"!", color:P.rose, pulse:true } : null }}
+                    onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
+                  <ActionBtn action={{ label:"Défibrillation", dose:"selon DSA", vital:true, svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText,
+                      hapticType:"double", badge: lastRhythm?.id === "rv_fvtv" ? { text:"FV", color:P.blue, pulse:false } : null }}
+                    onClick={() => setModalChoc(true)} />
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+                  <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
+                    onClick={() => setModalCord(true)} />
+                  <ActionBtn action={{ label:"Sécurisation VAS", svg:ICONS.iot, accent:"#EA6A12", soft:"rgba(234,106,18,0.12)", textC:"#B24E0A",
+                      badge: (events.some(e => e.id === "iot") || events.some(e => e.id === "vas_supraglottique")) ? { text:"✓", color:P.green, pulse:false } : null }}
+                    onClick={() => setModalVasVLI(true)} />
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+                  <ActionBtn action={{ label:"Planche à masser", svg:ICONS.planche, accent:P.teal, soft:P.tealSoft, textC:P.tealText }}
+                    onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
+                  <ActionBtn action={{ label:"Certificat de décès", svg:ICONS.deces, accent:P.slate, soft:P.slateSoft, textC:P.slateText }}
+                    onClick={() => setModalDecesVLI(true)} />
+                </div>
+
+                {/* Carte EtCO₂ — courbe en direct, identique au mode complet */}
+                <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:13,
+                  padding:"9px 12px", boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: etco2Open ? 5 : 0 }}>
+                    <button onClick={() => setEtco2Open(v => !v)}
+                      style={{ display:"flex", alignItems:"center", gap:7, background:"transparent", border:"none",
+                        cursor:"pointer", padding:0, flex:1, minWidth:0, textAlign:"left" }}>
+                      <span style={{ width:24, height:24, borderRadius:8,
+                        background:`color-mix(in srgb, ${P.teal} 16%, transparent)`,
+                        display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:P.teal }}>📈</span>
+                      <p style={{ margin:0, fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>EtCO₂ <span style={{ fontSize:8, fontWeight:600, color:P.textSoft, fontFamily:mono }}>mmHg</span></p>
+                      <span style={{ fontSize:10, color:P.textSoft, marginLeft:4 }}>{etco2Open ? "▾" : "▸"}</span>
+                    </button>
+                    <div style={{ display:"flex", alignItems:"center", gap:9 }}>
+                      {etco2List.length > 0 && (
+                        <span style={{ fontSize:20, fontWeight:800, color:P.tealText, fontFamily:mono, fontVariantNumeric:"tabular-nums", lineHeight:1 }}>{etco2List[etco2List.length-1].val}</span>
+                      )}
+                      <button onClick={() => { setEtco2Val(""); setModalEtco2(true); }}
+                        style={{ background:`color-mix(in srgb, ${P.teal} 14%, transparent)`, color:P.tealText,
+                          border:`1px solid ${P.teal}`, borderRadius:9, padding:"6px 11px", fontSize:11,
+                          fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>+ Valeur</button>
+                    </div>
+                  </div>
+                  {etco2Open && <Etco2Curve data={etco2List} P={P} mono={mono} />}
+                </div>
+
+                {/* Carte Hémodynamique post-RACS — surveillance seule, pas de bouton Amine */}
+                {events.find(e => e.id === "rosc") && (
+                  <div style={{ background:P.surface, border:`1px solid ${P.green}`, borderRadius:13,
+                    padding:"9px 12px", boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 14%, transparent)` }}>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: hemoOpen ? 6 : 0 }}>
+                      <button onClick={() => setHemoOpen(v => !v)}
+                        style={{ display:"flex", alignItems:"center", gap:7, background:"transparent", border:"none",
+                          cursor:"pointer", padding:0, flex:1, minWidth:0, textAlign:"left" }}>
+                        <span style={{ width:24, height:24, borderRadius:8, background:P.greenSoft,
+                          display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>💓</span>
+                        <p style={{ margin:0, fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>Hémodynamique <span style={{ fontSize:8, fontWeight:600, color:P.textSoft, fontFamily:mono }}>post-RACS</span></p>
+                        <span style={{ fontSize:10, color:P.textSoft, marginLeft:4 }}>{hemoOpen ? "▾" : "▸"}</span>
+                      </button>
+                      <button onClick={() => { setHemoForm({ pas:"", pad:"", fc:"" }); setModalHemo(true); }}
+                        style={{ background:`color-mix(in srgb, ${P.green} 14%, transparent)`, color:P.greenText,
+                          border:`1px solid ${P.green}`, borderRadius:9, padding:"5px 9px", fontSize:10.5,
+                          fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>+ Mesure</button>
+                    </div>
+                    {hemoOpen && hemoList.length > 0 && (
+                      <div style={{ display:"flex", gap:12, marginBottom:5 }}>
+                        {[{c:P.rose,l:"PAS"},{c:P.blue,l:"PAD"},{c:P.amber,l:"PAM",dash:true},{c:P.violet,l:"FC",dot:true}].map(({c,l,dash,dot})=>(
+                          <div key={l} style={{ display:"flex", alignItems:"center", gap:3 }}>
+                            <svg width="18" height="8" viewBox="0 0 18 8">
+                              <line x1="0" y1="4" x2="18" y2="4" stroke={c} strokeWidth="2"
+                                strokeDasharray={dash?"5 3":dot?"2 3":undefined} />
+                            </svg>
+                            <span style={{ fontSize:9, fontWeight:700, color:c, fontFamily:mono }}>{l}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {hemoOpen && <HemoCurve hemoList={hemoList} amineList={amineList} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />}
+                  </div>
+                )}
+
+                {/* Soins post-RACS — sort automatiquement dès qu'un RACS est logué (version VLI = surveillance) */}
+                {events.some(e => e.id === "rosc") && (
+                  <button onClick={() => setModalRacs(true)}
+                    style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+                      background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
+                      border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
+                      cursor:"pointer", fontFamily:sans, textAlign:"left",
+                      boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
+                    <span style={{ width:36, height:36, borderRadius:10,
+                      background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
+                      display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
+                        RACS — Surveillance
+                      </p>
+                      <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
+                        Constantes à renseigner en attendant le VLM
+                      </p>
+                    </div>
+                    <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── Contenu Actions (grille complète — médicalisé, tous modules sauf VLI restreint) ── */}
+          {mainTab === "actions" && !(isVLI && !vliUnlocked) && (
           <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
+
+            {/* ── Examen pupillaire initial — disparaît une fois répondu ── */}
+            {!events.some(e => e.id === "pupilles_initial") && (
+              <div style={{ background:P.violetSoft, border:`1.5px solid ${P.violet}`, borderRadius:13, padding:"11px 13px" }}>
+                <p style={{ margin:"0 0 8px", fontSize:12, fontWeight:800, color:P.violetText, fontFamily:disp }}>
+                  🔍 Examen pupillaire initial
+                </p>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                  {["Normales","Anormales","Non fait"].map(v => (
+                    <button key={v} onClick={() => addEvent("pupilles_initial", `Examen pupillaire initial : ${v}`, "🔍")}
+                      style={{ padding:"9px 4px", borderRadius:9, fontSize:11, fontWeight:700,
+                        border:`1.5px solid ${P.violet}`, background:P.surface, color:P.violetText,
+                        cursor:"pointer", fontFamily:sans }}>
+                      {v}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* ── Carte HOTT persistante (trauma uniquement) — remplace l'ancien onglet Étiologie ── */}
             {isTrauma && (() => {
@@ -12296,6 +12829,131 @@ function App() {
             </>)}
           </div>
           )}
+
+          {/* ── Contenu "Situations particulières" — VLI restreint ── */}
+          {mainTab === "vli_sit" && isVLI && !vliUnlocked && (() => {
+            const hemorragieCount = events.filter(e => e.id === "vli_hemorragie").length;
+            const cyanokitCount = events.filter(e => e.id === "vli_cyanokit").length;
+            const hypothermieDone = events.some(e => e.id === "vli_hypothermie");
+            const vasDone = events.some(e => e.id === "vli_vas");
+            const enceinteDone = events.some(e => e.id === "vli_enceinte");
+            return (
+              <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
+
+                {/* Hémorragie — Isofundine 500mL/10min, jusqu'à 2 VVP */}
+                <div style={{ background: hemorragieCount>0 ? P.roseSoft : P.surface,
+                  border:`1.5px solid ${P.rose}`, borderRadius:13, padding:"12px 14px" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: hemorragieCount>0 ? 8 : 0 }}>
+                    <span style={{ fontSize:20, flexShrink:0 }}>🩸</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <p style={{ margin:0, fontSize:12.5, fontWeight:800, color:P.roseText }}>Hémorragie</p>
+                      <p style={{ margin:0, fontSize:10, color:P.roseText, opacity:0.85 }}>
+                        Arrêt du saignement + Isofundine 500 mL sur 10 min
+                      </p>
+                    </div>
+                  </div>
+                  {hemorragieCount === 0 && (
+                    <button onClick={() => addEvent("vli_hemorragie", "Hémorragie — Isofundine 500 mL sur 10 min (1ère VVP)", "🩸")}
+                      style={{ width:"100%", marginTop:8, background:P.rose, border:"none", borderRadius:10,
+                        color:"#fff", padding:"10px", fontSize:12.5, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                      Démarrer Isofundine 500 mL / 10 min
+                    </button>
+                  )}
+                  {hemorragieCount === 1 && (
+                    <button onClick={() => addEvent("vli_hemorragie", "2ème VVP + Isofundine 500 mL sur 10 min", "🩸")}
+                      style={{ width:"100%", marginTop:8, background:P.surface, border:`1.5px solid ${P.rose}`, borderRadius:10,
+                        color:P.roseText, padding:"10px", fontSize:12.5, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                      + 2ème VVP + Isofundine 500 mL / 10 min
+                    </button>
+                  )}
+                  {hemorragieCount >= 2 && (
+                    <p style={{ margin:"8px 0 0", fontSize:11, color:P.roseText, fontWeight:700 }}>
+                      ✓ {hemorragieCount} × 500 mL Isofundine — {hemorragieCount * 500} mL au total
+                    </p>
+                  )}
+                </div>
+
+                {/* Ventilation — Obstruction VAS */}
+                <button onClick={() => { if (!vasDone) addEvent("vli_vas", "Désobstruction VAS — Exposition douce au laryngoscope + Pince Magill", "🫁"); }}
+                  style={{ display:"flex", alignItems:"center", gap:10, background: vasDone ? P.greenSoft : P.surface,
+                    border:`1.5px solid ${vasDone ? P.green : P.border}`, borderRadius:13, padding:"12px 14px",
+                    cursor: vasDone ? "default" : "pointer", textAlign:"left", fontFamily:sans }}>
+                  <span style={{ fontSize:20, flexShrink:0 }}>{vasDone ? "✅" : "🫁"}</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ margin:0, fontSize:12.5, fontWeight:800, color: vasDone ? P.greenText : P.text }}>Obstruction VAS</p>
+                    <p style={{ margin:0, fontSize:10, color: vasDone ? P.greenText : P.textSoft }}>
+                      Exposition douce au laryngoscope + Pince Magill
+                    </p>
+                  </div>
+                  {!vasDone && <span style={{ fontSize:14, color:P.textSoft }}>›</span>}
+                </button>
+
+                {/* Intoxication aux fumées — Cyanokit */}
+                <div style={{ background: cyanokitCount>0 ? "rgba(84,101,124,0.08)" : P.surface,
+                  border:`1.5px solid ${P.slateText}`, borderRadius:13, padding:"12px 14px" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: 8 }}>
+                    <span style={{ fontSize:20, flexShrink:0 }}>💨</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <p style={{ margin:0, fontSize:12.5, fontWeight:800, color:P.text }}>Intoxication aux fumées</p>
+                      <p style={{ margin:0, fontSize:10, color:P.textSoft }}>
+                        Hydroxocobalamine (Cyanokit) 5 g/15 min · dilution 5g/200mL = 25 mg/mL IVL · voie dédiée
+                      </p>
+                    </div>
+                  </div>
+                  {cyanokitCount === 0 && (
+                    <button onClick={() => addEvent("vli_cyanokit", "Cyanokit 5 g sur 15 min (voie dédiée) — 1ère dose", "💨")}
+                      style={{ width:"100%", background:P.slateText, border:"none", borderRadius:10,
+                        color:"#fff", padding:"10px", fontSize:12.5, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                      Démarrer Cyanokit 5 g / 15 min
+                    </button>
+                  )}
+                  {cyanokitCount === 1 && (
+                    <button onClick={() => addEvent("vli_cyanokit", "Cyanokit 5 g sur 15 min — 2ème dose (renouvelée 1 fois)", "💨")}
+                      style={{ width:"100%", background:P.surface, border:`1.5px solid ${P.slateText}`, borderRadius:10,
+                        color:P.slateText, padding:"10px", fontSize:12.5, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                      + Renouveler Cyanokit 5 g / 15 min
+                    </button>
+                  )}
+                  {cyanokitCount >= 2 && (
+                    <p style={{ margin:0, fontSize:11, color:P.slateText, fontWeight:700 }}>
+                      ✓ 2 doses administrées — dose maximale du protocole atteinte
+                    </p>
+                  )}
+                </div>
+
+                {/* Hypothermie */}
+                <button onClick={() => { if (!hypothermieDone) addEvent("vli_hypothermie", "ACR et hypothermie — pas d'adrénaline ni de cordarone si T<30°C, 3 CEE max, réchauffement +++", "🥶"); }}
+                  style={{ display:"flex", alignItems:"center", gap:10, background: hypothermieDone ? P.blueSoft : P.surface,
+                    border:`1.5px solid ${hypothermieDone ? P.blue : P.border}`, borderRadius:13, padding:"12px 14px",
+                    cursor: hypothermieDone ? "default" : "pointer", textAlign:"left", fontFamily:sans }}>
+                  <span style={{ fontSize:20, flexShrink:0 }}>🥶</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ margin:0, fontSize:12.5, fontWeight:800, color: hypothermieDone ? P.blueText : P.text }}>Hypothermie</p>
+                    <p style={{ margin:0, fontSize:10, color: hypothermieDone ? P.blueText : P.textSoft }}>
+                      ⚠️ Pas d'adrénaline ni de cordarone si T&lt;30°C · 3 CEE max · réchauffer +++
+                    </p>
+                  </div>
+                  {!hypothermieDone && <span style={{ fontSize:14, color:P.textSoft }}>›</span>}
+                </button>
+
+                {/* Femme enceinte */}
+                <button onClick={() => { if (!enceinteDone) addEvent("vli_enceinte", "ACR chez femme enceinte — décubitus dorsal, inclinaison utérine gauche continue (libérer veine cave inf.)", "🤰"); }}
+                  style={{ display:"flex", alignItems:"center", gap:10, background: enceinteDone ? P.violetSoft : P.surface,
+                    border:`1.5px solid ${enceinteDone ? P.violet : P.border}`, borderRadius:13, padding:"12px 14px",
+                    cursor: enceinteDone ? "default" : "pointer", textAlign:"left", fontFamily:sans }}>
+                  <span style={{ fontSize:20, flexShrink:0 }}>🤰</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ margin:0, fontSize:12.5, fontWeight:800, color: enceinteDone ? P.violetText : P.text }}>Femme enceinte</p>
+                    <p style={{ margin:0, fontSize:10, color: enceinteDone ? P.violetText : P.textSoft }}>
+                      Inclinaison utérine gauche continue — objectif : libérer la veine cave inf.
+                    </p>
+                  </div>
+                  {!enceinteDone && <span style={{ fontSize:14, color:P.textSoft }}>›</span>}
+                </button>
+
+              </div>
+            );
+          })()}
 
           {/* ── Contenu Étiologie ── */}
           {mainTab === "etio" && (
@@ -12584,6 +13242,75 @@ function App() {
         {/* Le bouton micro et son retour visuel vivent maintenant dans le header (compact) et
             le bandeau fixe en haut de l'écran — voir plus haut, avant "Header + Timer". */}
       </div>
+
+      {/* ── Modal Sécurisation VAS — VLI (choix supra-glottique / IOT) ── */}
+      {modalVasVLI && (
+        <Modal title="Sécurisation des voies aériennes" icon="🫁" soft={P.violetSoft} onClose={() => setModalVasVLI(false)}>
+          <ChoiceBtn label="Dispositif supra-glottique" sub="Geste infirmier — protocole VLI"
+            accent="#EA6A12" soft="rgba(234,106,18,0.12)" textC="#B24E0A"
+            onClick={() => { addEvent("vas_supraglottique", "Dispositif supra-glottique posé", "🫁"); setModalVasVLI(false); }} />
+          <ChoiceBtn label="Intubation orotrachéale (IOT)" sub="Réservée à l'IADE"
+            accent={P.violet} soft={P.violetSoft} textC={P.violetText}
+            onClick={() => { addEvent("iot", "Intubation orotrachéale (IADE)", "🫁"); setModalVasVLI(false); }} />
+        </Modal>
+      )}
+
+      {/* ── Modal Certificat de décès — VLI (sans OML uniquement + alerte suspicion) ── */}
+      {modalDecesVLI && (
+        <Modal title="Certificat de décès" icon="🕊️" soft={P.slateSoft} onClose={() => setModalDecesVLI(false)}>
+          <div style={{ background:"rgba(234,106,18,0.1)", border:"1px solid #EA6A12", borderRadius:10,
+            padding:"10px 12px", marginBottom:14 }}>
+            <p style={{ margin:0, fontSize:11.5, color:"#B24E0A", lineHeight:1.5 }}>
+              ℹ️ Les infirmiers n'ont pas le droit de constater un obstacle médico-légal (OML).
+              En cas de suspicion, alertez immédiatement le médecin régulateur — n'utilisez pas
+              le bouton ci-dessous.
+            </p>
+          </div>
+          <ChoiceBtn label="⚠️ Suspicion d'obstacle médico-légal" sub="Alerter le médecin régulateur — ne pas constater"
+            accent={P.rose} soft={P.roseSoft} textC={P.roseText}
+            onClick={() => { addEvent("oml_suspicion", "⚠️ Suspicion d'OML signalée — médecin régulateur alerté", "📞"); setModalDecesVLI(false); }} />
+          <ChoiceBtn label="Constat de décès (sans OML)" sub="Absence de signe évoquant un obstacle médico-légal"
+            accent={P.slate} soft={P.slateSoft} textC={P.slateText}
+            onClick={() => { addEvent("deces", "Constat de décès (sans OML)", "🕊️"); setModalDecesVLI(false); }} />
+        </Modal>
+      )}
+
+      {/* ── Modal confirmation transition VLM (VLI uniquement) ── */}
+      {modalVliTransition && (
+        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.55)",
+          display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={e => { if (e.target === e.currentTarget) setModalVliTransition(false); }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:P.surface, borderRadius:18, padding:"22px 20px", maxWidth:340,
+              boxShadow:"0 12px 40px rgba(0,0,0,0.3)" }}>
+            <p style={{ margin:"0 0 10px", fontSize:16, fontWeight:800, color:P.text, fontFamily:disp }}>
+              🚒 Confirmer l'arrivée du VLM
+            </p>
+            <p style={{ margin:"0 0 18px", fontSize:12.5, color:P.textMid, lineHeight:1.6 }}>
+              Ceci débloque la <b>prise en charge médicale complète</b> (gestes et thérapeutiques
+              hors du cadre du protocole VLI). Tout ce qui a déjà été saisi (patient, transmission,
+              chocs, adrénaline...) reste intact — le médecin reprend exactement là où vous en êtes.
+              <br /><br />
+              <b>Action irréversible</b> — pas de retour au mode restreint ensuite.
+            </p>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <button onClick={() => setModalVliTransition(false)}
+                style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:11,
+                  color:P.textMid, padding:"11px 0", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                Annuler
+              </button>
+              <button onClick={() => {
+                addEvent("vli_transition", "🚒 VLM arrivée — passation de la prise en charge médicale", "🚒");
+                setVliUnlocked(true);
+                setModalVliTransition(false);
+              }} style={{ background:"linear-gradient(135deg,#EA6A12,#B24E0A)", border:"none", borderRadius:11,
+                color:"#fff", padding:"11px 0", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:sans }}>
+                ✓ Confirmer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Modal Dossier patient ── */}
       {modalPat && (
