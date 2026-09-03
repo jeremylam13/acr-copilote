@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-46";
+const APP_VERSION = "2026.08.15-47";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -9230,6 +9230,7 @@ function App() {
   // cet onglet n'existe plus (remplacé par la carte HOTT ou l'onglet Situations particulières).
   useEffect(() => {
     if ((isTrauma || (isVLI && !vliUnlocked)) && mainTab === "etio") setMainTab("actions");
+    if (isVLI && !vliUnlocked && mainTab === "ther") setMainTab("actions");
     if (!(isVLI && !vliUnlocked) && mainTab === "vli_sit") setMainTab("actions");
   }, [isTrauma, isVLI, vliUnlocked, mainTab]);
 
