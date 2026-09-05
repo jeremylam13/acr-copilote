@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-56";
+const APP_VERSION = "2026.08.15-59";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1125,7 +1125,7 @@ function GuideApp({ onClose }) {
         { icon:"💚", title:"Soins post-RACS — détail", desc:"Écran dédié en 3 onglets : Ventilation (FR, Vt, PEP, SpO₂, FiO₂, EtCO₂ — avec graphique live et alerte couleur si SpO₂ ou EtCO₂ sort de la cible), Sédation (Hypnovel, Sufentanyl, curare — le débit en mL/h saisi convertit automatiquement la dose en mg/h ou μg/h), Hémo. (TA avec PAM calculée automatiquement, FC, graphique live TA/FC, température, glycémie, pupilles — Normales/Anisocorie/Mydriase bilatérale, remplissage total, amines). Un badge ↑/↓ compare chaque nouvelle mesure (TA, FC, EtCO₂) à la dernière valeur enregistrée. Chaque valeur saisie s'ajoute au compte-rendu." },
         { icon:"🩸", title:"OctaplasLG & score BATT", desc:"Calculateur de score BATT avec préremplissage automatique depuis les dernières constantes saisies. En mode Traumatique, les cases \"pénétrant\" et \"haute cinétique\" se cochent aussi automatiquement selon le mécanisme lésionnel renseigné sur la fiche patient." },
         { icon:"🔍", title:"FAST écho (traumatique)", desc:"Sélecteurs rapides par espace anatomique (Morrison, Köhler, Douglas, plèvres, péricarde) pour tracer l'échographie ciblée. En mode Traumatique, Fast-écho remonte dans la grille principale (à la place de Cordarone, moins pertinent en arrêt traumatique) — Cordarone reste accessible derrière le bouton \"+ Plus d'actions\"." },
-        { icon:"↩", title:"Récidive d'arrêt après RACS", desc:"Si le patient refait un arrêt après un RACS, un bouton dédié relance immédiatement le mode réanimation active (métronome, minuteur adrénaline, cycle de compressions) sans perdre l'historique." },
+        { icon:"↩", title:"Récidive d'arrêt après RACS", desc:"Dès qu'un RACS est obtenu, un bandeau rouge \"Récidive d'arrêt\" apparaît en tête de la grille d'actions (au-dessus d'Adrénaline/Défibrillation, juste avant \"Soins post-RACS\") — plus besoin d'ouvrir un modal pour le trouver. Un tap relance immédiatement le mode réanimation active (métronome, minuteur adrénaline, cycle de compressions) sans perdre l'historique." },
         { icon:"⏱", title:"Critères d'arrêt de réanimation", desc:"Passé 20 minutes sans RACS, un rappel propose d'ouvrir la check-list des critères d'arrêt — à titre indicatif, la décision reste médicale. En Traumatique, la check-list est spécifique (HOTT, thoracostomies, contrôle hémorragique, pronostic selon mécanisme fermé/pénétrant) plutôt que les critères médicaux génériques." },
         { icon:"🕊️", title:"Constat de décès", desc:"Formulaire dédié avec champ libre pour préciser le destinataire du constat (\"sans OML\")." },
       ],
@@ -3579,16 +3579,21 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         confirm:()=> addEvent("rosc","RACS","💚") },
       { kw:["cordarone","amiodarone","amio"], label:`Amiodarone ${localMat?.amio||""}mg IV/IO`, icon:"💊",
         confirm:()=> addEvent("cord",`Amiodarone ${localMat?.amio||""}mg IV/IO (5mg/kg)`,"💊") },
-      { kw:["intubation","intuber","sonde"], label:"Intubation", icon:"🫁",
-        confirm:()=> setModalIotPed(true) },
+      { kw:["intubation","intuber","sonde"], label: (isVLI && !vliUnlockedPed) ? "Sécurisation VAS" : "Intubation", icon:"🫁",
+        confirm:()=> (isVLI && !vliUnlockedPed) ? setModalVasVLIPed(true) : setModalIotPed(true) },
       { kw:["pause","stoppe","stop compressions"], label:"Pause compressions", icon:"⏸",
         confirm:()=> setRunning(false) },
       { kw:["reprendre","continuer","resume","relancer"], label:"Reprendre compressions", icon:"▶",
         confirm:()=> setRunning(true) },
       { kw:["annule","annuler","supprime","efface"], label:"Annuler le dernier geste", icon:"↩️",
         confirm:()=> undoLastPed() },
-      { kw:["deces","constat","mort","decede"], label:"Constat de décès", icon:"🕊️",
-        confirm:()=> setModalDecesPed(true) },
+      // "Constat de décès" — jamais disponible en VLI restreint : un IDE n'a pas
+      // l'autorité de constater un décès, avec ou sans OML (cohérent avec le retrait
+      // du bouton visuel équivalent). Le filtre ci-dessous exclut cette commande.
+      ...((!(isVLI && !vliUnlockedPed)) ? [
+        { kw:["deces","constat","mort","decede"], label:"Constat de décès", icon:"🕊️",
+          confirm:()=> setModalDecesPed(true) },
+      ] : []),
       { kw:["analyse","rythme","check","verification"], label:"Analyse de rythme", icon:"⚡",
         confirm:()=> setShowRythmFlashPed(true) },
     ];
@@ -3597,7 +3602,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
     }
     return null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sec, events, localMat]);
+  }, [sec, events, localMat, isVLI, vliUnlockedPed]);
 
   // La fonction de matching change à chaque seconde (elle dépend de `sec`) — on la
   // range dans une ref à jour en continu, SANS jamais redéclencher le useEffect
@@ -3751,13 +3756,21 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             Synchronise la chronologie, l'heure d'ACR, le no-flow/low-flow et la transmission
             entre plusieurs appareils de l'équipe en temps réel.
           </p>
-          <button onClick={async () => { await teamPed.startSession(); }}
+          <button onClick={async () => {
+              if (!navigator.onLine) { setTeamJoinErrorPed("🚫 Pas de connexion internet — le mode équipe nécessite un réseau"); return; }
+              setTeamJoinErrorPed("");
+              try { await teamPed.startSession(); }
+              catch { setTeamJoinErrorPed("Impossible de créer la session — vérifiez la connexion"); }
+            }}
             style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
               border:"none", borderRadius:13, color:"#fff", fontSize:14, fontWeight:700,
               padding:"14px", cursor:"pointer", fontFamily:sans, marginBottom:16,
               boxShadow:`0 5px 16px color-mix(in srgb, ${P.blue} 30%, transparent)` }}>
             + Créer une session d'équipe
           </button>
+          {teamJoinErrorPed && (
+            <p style={{ margin:"-10px 0 16px", fontSize:11.5, color:P.roseText, textAlign:"center" }}>{teamJoinErrorPed}</p>
+          )}
           <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
           <Lbl>Rejoindre avec un code (6 caractères)</Lbl>
           <div style={{ display:"flex", gap:8 }}>
@@ -5122,24 +5135,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               ✓ Enregistrer
             </button>
 
-            {/* ── Récidive d'arrêt pédiatrique ── */}
-            <button onClick={() => {
-              const roscTime = events.find(e => e.id === "rosc")?.time || "?";
-              addEvent("re_arret", `↩ Récidive d'arrêt — RACS précédent à ${roscTime}`, "🔴");
-              setEvents(prev => prev.filter(e => e.id !== "rosc"));
-              setAdrTimerStartPed(Date.now());
-              setCycleOffset(sec);
-              prevCpPedRef.current = null; // évite un faux flash "analyse rythme" immédiat après le recalage
-              setRunning(true);
-              setModalRacsPed(false);
-            }} style={{width:"100%",background:`linear-gradient(135deg,${P.rose},#9B1010)`,
-              border:"none",borderRadius:14,color:"#fff",fontSize:14,fontWeight:700,
-              padding:"14px",cursor:"pointer",fontFamily:sans,marginTop:8,flexShrink:0,
-              display:"flex",alignItems:"center",justifyContent:"center",gap:8,
-              boxShadow:`0 6px 18px color-mix(in srgb,${P.rose} 35%,transparent)`}}>
-              <span style={{fontSize:18}}>↩</span>
-              Récidive d'arrêt — Reprendre la réanimation
-            </button>
+            {/* Le bouton "Récidive d'arrêt" a été déplacé en tête de la grille d'actions,
+                bien plus visible qu'enfoui ici en bas du modal. */}
           </div>
         </div>
       )}
@@ -5678,6 +5675,52 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           const lastRhythm = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
           return (
             <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
+              {/* ── Récidive d'arrêt + RACS Surveillance — en tête dès que RACS est obtenu ── */}
+              {events.some(e => e.id === "rosc") && (
+                <>
+                  <button onClick={() => {
+                    const roscTime = events.find(e => e.id === "rosc")?.time || "?";
+                    addEvent("re_arret", `↩ Récidive d'arrêt — RACS précédent à ${roscTime}`, "🔴");
+                    setEvents(prev => prev.filter(e => e.id !== "rosc"));
+                    setAdrTimerStartPed(Date.now());
+                    setCycleOffset(sec);
+                    prevCpPedRef.current = null;
+                    setRunning(true);
+                  }}
+                    style={{ width:"100%", background:`linear-gradient(135deg, ${P.rose}, #9B1010)`,
+                      border:"none", borderRadius:13, color:"#fff", padding:"12px 14px",
+                      cursor:"pointer", fontFamily:sans, display:"flex", alignItems:"center", gap:10,
+                      boxShadow:`0 6px 18px color-mix(in srgb, ${P.rose} 35%, transparent)` }}>
+                    <span style={{ fontSize:20, flexShrink:0 }}>🔴</span>
+                    <div style={{ textAlign:"left", flex:1, minWidth:0 }}>
+                      <p style={{ margin:0, fontSize:13, fontWeight:800 }}>Récidive d'arrêt</p>
+                      <p style={{ margin:0, fontSize:10.5, opacity:0.85 }}>Reprendre la réanimation</p>
+                    </div>
+                    <span style={{ fontSize:15, flexShrink:0 }}>↩</span>
+                  </button>
+
+                  <button onClick={() => setModalRacsPed(true)}
+                    style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+                      background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
+                      border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
+                      cursor:"pointer", fontFamily:sans, textAlign:"left",
+                      boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
+                    <span style={{ width:36, height:36, borderRadius:10,
+                      background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
+                      display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
+                        RACS — Surveillance
+                      </p>
+                      <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
+                        Constantes à renseigner en attendant le VLM
+                      </p>
+                    </div>
+                    <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
+                  </button>
+                </>
+              )}
+
               {/* Examen pupillaire initial — disparaît une fois répondu */}
               {!events.some(e => e.id === "pupilles_initial") && (
                 <div style={{ background:"rgba(234,106,18,0.1)", border:"1.5px solid #EA6A12", borderRadius:13, padding:"11px 13px" }}>
@@ -5746,28 +5789,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                   onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
               </div>
 
-              {/* RACS — sort automatiquement dès qu'un RACS est logué (version VLI = surveillance) */}
-              {events.some(e => e.id === "rosc") && (
-                <button onClick={() => setModalRacsPed(true)}
-                  style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
-                    background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
-                    border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
-                    cursor:"pointer", fontFamily:sans, textAlign:"left",
-                    boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
-                  <span style={{ width:36, height:36, borderRadius:10,
-                    background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
-                    display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
-                      RACS — Surveillance
-                    </p>
-                    <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
-                      Constantes à renseigner en attendant le VLM
-                    </p>
-                  </div>
-                  <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
-                </button>
-              )}
+              {/* Le bouton "RACS — Surveillance" est désormais en tête de grille — voir plus haut. */}
             </div>
           );
         })()}
@@ -5866,6 +5888,52 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           const lastRhythmPed = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
           return (
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:10}}>
+
+          {/* ── Récidive d'arrêt + Soins post-RACS — en tête dès que RACS est obtenu ── */}
+          {events.some(e => e.id === "rosc") && (
+            <>
+              <button onClick={() => {
+                const roscTime = events.find(e => e.id === "rosc")?.time || "?";
+                addEvent("re_arret", `↩ Récidive d'arrêt — RACS précédent à ${roscTime}`, "🔴");
+                setEvents(prev => prev.filter(e => e.id !== "rosc"));
+                setAdrTimerStartPed(Date.now());
+                setCycleOffset(sec);
+                prevCpPedRef.current = null;
+                setRunning(true);
+              }}
+                style={{ gridColumn:"1 / -1", width:"100%", background:`linear-gradient(135deg, ${P.rose}, #9B1010)`,
+                  border:"none", borderRadius:13, color:"#fff", padding:"12px 14px",
+                  cursor:"pointer", fontFamily:sans, display:"flex", alignItems:"center", gap:10,
+                  boxShadow:`0 6px 18px color-mix(in srgb, ${P.rose} 35%, transparent)` }}>
+                <span style={{ fontSize:20, flexShrink:0 }}>🔴</span>
+                <div style={{ textAlign:"left", flex:1, minWidth:0 }}>
+                  <p style={{ margin:0, fontSize:13, fontWeight:800 }}>Récidive d'arrêt</p>
+                  <p style={{ margin:0, fontSize:10.5, opacity:0.85 }}>Reprendre la réanimation</p>
+                </div>
+                <span style={{ fontSize:15, flexShrink:0 }}>↩</span>
+              </button>
+
+              <button onClick={() => setModalRacsPed(true)}
+                style={{ gridColumn:"1 / -1", display:"flex", alignItems:"center", gap:10,
+                  background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
+                  border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
+                  cursor:"pointer", fontFamily:sans, textAlign:"left",
+                  boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
+                <span style={{ width:36, height:36, borderRadius:10,
+                  background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
+                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
+                    Soins post-RACS
+                  </p>
+                  <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
+                    RACS obtenu — renseigner constantes, amines, température
+                  </p>
+                </div>
+                <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
+              </button>
+            </>
+          )}
 
           {/* Examen pupillaire initial — disparaît une fois répondu */}
           {!events.some(e => e.id === "pupilles_initial") && (
@@ -6041,28 +6109,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               badge: events.some(e => e.id === "iot") ? { text:"✓", color:P.green, pulse:false } : null}}
             onClick={()=>setModalIotPed(true)}/>
 
-          {/* ── Soins post-RACS : sort automatiquement du "+" dès qu'un RACS est logué ── */}
-          {events.some(e => e.id === "rosc") && (
-            <button onClick={() => setModalRacsPed(true)}
-              style={{ gridColumn:"1 / -1", display:"flex", alignItems:"center", gap:10,
-                background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
-                border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
-                cursor:"pointer", fontFamily:sans, textAlign:"left",
-                boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
-              <span style={{ width:36, height:36, borderRadius:10,
-                background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
-                display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
-              <div style={{ flex:1, minWidth:0 }}>
-                <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
-                  Soins post-RACS
-                </p>
-                <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
-                  RACS obtenu — renseigner constantes, amines, température
-                </p>
-              </div>
-              <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
-            </button>
-          )}
+          {/* Le bouton "Soins post-RACS" est désormais en tête de grille — voir plus haut. */}
 
           {/* ── Critères d'arrêt de réanimation (>40 min, sans RACS) — pédiatrique ── */}
           {running && sec >= 2400 && !events.find(e => e.id === "rosc") && !events.find(e => e.id === "deces") && (
@@ -7121,13 +7168,21 @@ function ModulePediatrique({ onBack, theme, setTheme, isVLI = false }) {
           </p>
           {!teamPrep.teamConnected ? (
             <>
-              <button onClick={async () => { await teamPrep.startSession(); }}
+              <button onClick={async () => {
+                  if (!navigator.onLine) { setTeamJoinErrorPrep("🚫 Pas de connexion internet — le mode équipe nécessite un réseau"); return; }
+                  setTeamJoinErrorPrep("");
+                  try { await teamPrep.startSession(); }
+                  catch { setTeamJoinErrorPrep("Impossible de créer la session — vérifiez la connexion"); }
+                }}
                 style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
                   border:"none", borderRadius:13, color:"#fff", fontSize:14, fontWeight:700,
                   padding:"14px", cursor:"pointer", fontFamily:sans, marginBottom:16,
                   boxShadow:`0 5px 16px color-mix(in srgb, ${P.blue} 30%, transparent)` }}>
                 + Créer une session d'équipe
               </button>
+              {teamJoinErrorPrep && (
+                <p style={{ margin:"-10px 0 16px", fontSize:11.5, color:P.roseText, textAlign:"center" }}>{teamJoinErrorPrep}</p>
+              )}
               <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
               <Lbl>Rejoindre avec un code (6 caractères)</Lbl>
               <div style={{ display:"flex", gap:8 }}>
@@ -9420,16 +9475,21 @@ function App() {
         confirm:()=> addEvent("rosc","RACS","💚") },
       { kw:["cordarone","amiodarone","amio"], label:"Cordarone 300 mg", icon:"💊",
         confirm:()=> addEvent("cord300","Cordarone 300 mg IV","💊") },
-      { kw:["intubation","intuber","sonde"], label:"Intubation", icon:"🫁",
-        confirm:()=> setModalIot(true) },
+      { kw:["intubation","intuber","sonde"], label: (isVLI && !vliUnlocked) ? "Sécurisation VAS" : "Intubation", icon:"🫁",
+        confirm:()=> (isVLI && !vliUnlocked) ? setModalVasVLI(true) : setModalIot(true) },
       { kw:["pause","stoppe","stop compressions"], label:"Pause compressions", icon:"⏸",
         confirm:()=> setRunning(false) },
       { kw:["reprendre","continuer","resume","relancer"], label:"Reprendre compressions", icon:"▶",
         confirm:()=> setRunning(true) },
       { kw:["annule","annuler","supprime","efface"], label:"Annuler le dernier geste", icon:"↩️",
         confirm:()=> undoLast() },
-      { kw:["deces","constat","mort","decede"], label:"Constat de décès", icon:"🕊️",
-        confirm:()=> setModalDeces(true) },
+      // "Constat de décès" — jamais disponible en VLI restreint : un IDE n'a pas
+      // l'autorité de constater un décès, avec ou sans OML (cohérent avec le retrait
+      // du bouton visuel équivalent). Le filtre ci-dessous exclut cette commande.
+      ...((!(isVLI && !vliUnlocked)) ? [
+        { kw:["deces","constat","mort","decede"], label:"Constat de décès", icon:"🕊️",
+          confirm:()=> setModalDeces(true) },
+      ] : []),
       { kw:["analyse","rythme","check","verification"], label:"Analyse de rythme", icon:"⚡",
         confirm:()=> setShowRythmFlash(true) },
     ];
@@ -9438,7 +9498,7 @@ function App() {
     }
     return null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sec, events]);
+  }, [sec, events, isVLI, vliUnlocked]);
 
   // La fonction de matching change à chaque seconde (elle dépend de `sec`) — on la
   // range dans une ref à jour en continu, SANS jamais redéclencher le useEffect
@@ -10506,13 +10566,21 @@ function App() {
             Synchronise la chronologie, l'heure d'ACR, le no-flow/low-flow et la transmission
             entre plusieurs appareils de l'équipe en temps réel.
           </p>
-          <button onClick={async () => { await team.startSession(); }}
+          <button onClick={async () => {
+              if (!navigator.onLine) { setTeamJoinError("🚫 Pas de connexion internet — le mode équipe nécessite un réseau"); return; }
+              setTeamJoinError("");
+              try { await team.startSession(); }
+              catch { setTeamJoinError("Impossible de créer la session — vérifiez la connexion"); }
+            }}
             style={{ width:"100%", background:`linear-gradient(135deg,${P.blue},${P.blueText})`,
               border:"none", borderRadius:13, color:"#fff", fontSize:14, fontWeight:700,
               padding:"14px", cursor:"pointer", fontFamily:sans, marginBottom:16,
               boxShadow:`0 5px 16px color-mix(in srgb, ${P.blue} 30%, transparent)` }}>
             + Créer une session d'équipe
           </button>
+          {teamJoinError && (
+            <p style={{ margin:"-10px 0 16px", fontSize:11.5, color:P.roseText, textAlign:"center" }}>{teamJoinError}</p>
+          )}
           <div style={{ borderTop:`1px solid ${P.borderSoft}`, margin:"4px 0 16px" }} />
           <Lbl>Rejoindre avec un code (6 caractères)</Lbl>
           <div style={{ display:"flex", gap:8 }}>
@@ -12550,28 +12618,8 @@ function App() {
 
               </div>
 
-              {/* ── Récidive d'arrêt ── */}
-              <button onClick={() => {
-                const roscTime = events.find(e => e.id === "rosc")?.time || "?";
-                // 1. Logger la récidive (traçabilité)
-                addEvent("re_arret", `↩ Récidive d'arrêt — RACS précédent à ${roscTime}`, "🔴");
-                // 2. Supprimer le RACS pour remettre l'app en mode réanimation active
-                setEvents(prev => prev.filter(e => e.id !== "rosc"));
-                // 3. Relancer timer adrénaline + cycle MCE + compressions
-                setAdrTimerStart(Date.now());
-                setCycleOffset(sec);
-                prevCpRef.current = null; // évite un faux flash "analyse rythme" immédiat après le recalage
-                setRunning(true);
-                setModalRacs(false);
-              }}
-                style={{ width:"100%", background:`linear-gradient(135deg, ${P.rose}, #9B1010)`,
-                  border:"none", borderRadius:14, color:"#fff", fontSize:14, fontWeight:700,
-                  padding:"14px", cursor:"pointer", fontFamily:sans, marginTop:10, flexShrink:0,
-                  boxShadow:`0 6px 18px color-mix(in srgb, ${P.rose} 35%, transparent)`,
-                  display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
-                <span style={{ fontSize:18 }}>↩</span>
-                Récidive d'arrêt — Reprendre la réanimation
-              </button>
+              {/* Le bouton "Récidive d'arrêt" a été déplacé en tête de la grille d'actions,
+                  bien plus visible qu'enfoui ici en bas du modal. */}
 
               {/* Valider */}
               <button onClick={() => {
@@ -13103,6 +13151,52 @@ function App() {
             const lastRhythm = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
             return (
               <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
+                {/* ── Récidive d'arrêt + RACS Surveillance — en tête dès que RACS est obtenu ── */}
+                {events.some(e => e.id === "rosc") && (
+                  <>
+                    <button onClick={() => {
+                      const roscTime = events.find(e => e.id === "rosc")?.time || "?";
+                      addEvent("re_arret", `↩ Récidive d'arrêt — RACS précédent à ${roscTime}`, "🔴");
+                      setEvents(prev => prev.filter(e => e.id !== "rosc"));
+                      setAdrTimerStart(Date.now());
+                      setCycleOffset(sec);
+                      prevCpRef.current = null;
+                      setRunning(true);
+                    }}
+                      style={{ width:"100%", background:`linear-gradient(135deg, ${P.rose}, #9B1010)`,
+                        border:"none", borderRadius:13, color:"#fff", padding:"12px 14px",
+                        cursor:"pointer", fontFamily:sans, display:"flex", alignItems:"center", gap:10,
+                        boxShadow:`0 6px 18px color-mix(in srgb, ${P.rose} 35%, transparent)` }}>
+                      <span style={{ fontSize:20, flexShrink:0 }}>🔴</span>
+                      <div style={{ textAlign:"left", flex:1, minWidth:0 }}>
+                        <p style={{ margin:0, fontSize:13, fontWeight:800 }}>Récidive d'arrêt</p>
+                        <p style={{ margin:0, fontSize:10.5, opacity:0.85 }}>Reprendre la réanimation</p>
+                      </div>
+                      <span style={{ fontSize:15, flexShrink:0 }}>↩</span>
+                    </button>
+
+                    <button onClick={() => setModalRacs(true)}
+                      style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+                        background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
+                        border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
+                        cursor:"pointer", fontFamily:sans, textAlign:"left",
+                        boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
+                      <span style={{ width:36, height:36, borderRadius:10,
+                        background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
+                        display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
+                          RACS — Surveillance
+                        </p>
+                        <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
+                          Constantes à renseigner en attendant le VLM
+                        </p>
+                      </div>
+                      <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
+                    </button>
+                  </>
+                )}
+
                 {/* Examen pupillaire initial — disparaît une fois répondu */}
                 {!events.some(e => e.id === "pupilles_initial") && (
                   <div style={{ background:"rgba(234,106,18,0.1)", border:"1.5px solid #EA6A12", borderRadius:13, padding:"11px 13px" }}>
@@ -13210,28 +13304,7 @@ function App() {
                   </div>
                 )}
 
-                {/* Soins post-RACS — sort automatiquement dès qu'un RACS est logué (version VLI = surveillance) */}
-                {events.some(e => e.id === "rosc") && (
-                  <button onClick={() => setModalRacs(true)}
-                    style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
-                      background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
-                      border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
-                      cursor:"pointer", fontFamily:sans, textAlign:"left",
-                      boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
-                    <span style={{ width:36, height:36, borderRadius:10,
-                      background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
-                      display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
-                        RACS — Surveillance
-                      </p>
-                      <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
-                        Constantes à renseigner en attendant le VLM
-                      </p>
-                    </div>
-                    <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
-                  </button>
-                )}
+                {/* Le bouton "RACS — Surveillance" est désormais en tête de grille — voir plus haut. */}
               </div>
             );
           })()}
@@ -13239,6 +13312,52 @@ function App() {
           {/* ── Contenu Actions (grille complète — médicalisé, tous modules sauf VLI restreint) ── */}
           {mainTab === "actions" && !(isVLI && !vliUnlocked) && (
           <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:10 }}>
+
+            {/* ── Récidive d'arrêt + Soins post-RACS — en tête dès que RACS est obtenu ── */}
+            {events.some(e => e.id === "rosc") && (
+              <>
+                <button onClick={() => {
+                  const roscTime = events.find(e => e.id === "rosc")?.time || "?";
+                  addEvent("re_arret", `↩ Récidive d'arrêt — RACS précédent à ${roscTime}`, "🔴");
+                  setEvents(prev => prev.filter(e => e.id !== "rosc"));
+                  setAdrTimerStart(Date.now());
+                  setCycleOffset(sec);
+                  prevCpRef.current = null;
+                  setRunning(true);
+                }}
+                  style={{ width:"100%", background:`linear-gradient(135deg, ${P.rose}, #9B1010)`,
+                    border:"none", borderRadius:13, color:"#fff", padding:"12px 14px",
+                    cursor:"pointer", fontFamily:sans, display:"flex", alignItems:"center", gap:10,
+                    boxShadow:`0 6px 18px color-mix(in srgb, ${P.rose} 35%, transparent)` }}>
+                  <span style={{ fontSize:20, flexShrink:0 }}>🔴</span>
+                  <div style={{ textAlign:"left", flex:1, minWidth:0 }}>
+                    <p style={{ margin:0, fontSize:13, fontWeight:800 }}>Récidive d'arrêt</p>
+                    <p style={{ margin:0, fontSize:10.5, opacity:0.85 }}>Reprendre la réanimation</p>
+                  </div>
+                  <span style={{ fontSize:15, flexShrink:0 }}>↩</span>
+                </button>
+
+                <button onClick={() => setModalRacs(true)}
+                  style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+                    background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
+                    border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
+                    cursor:"pointer", fontFamily:sans, textAlign:"left",
+                    boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
+                  <span style={{ width:36, height:36, borderRadius:10,
+                    background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
+                    display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
+                      Soins post-RACS
+                    </p>
+                    <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
+                      RACS obtenu — renseigner constantes, amines, température
+                    </p>
+                  </div>
+                  <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
+                </button>
+              </>
+            )}
 
             {/* ── Examen pupillaire initial — disparaît une fois répondu ── */}
             {!events.some(e => e.id === "pupilles_initial") && (
@@ -13405,28 +13524,7 @@ function App() {
                 onClick={() => setModalIot(true)} />
             </div>
 
-            {/* ── Soins post-RACS : sort automatiquement du "+" dès qu'un RACS est logué ── */}
-            {events.some(e => e.id === "rosc") && (
-              <button onClick={() => setModalRacs(true)}
-                style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
-                  background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
-                  border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
-                  cursor:"pointer", fontFamily:sans, textAlign:"left",
-                  boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
-                <span style={{ width:36, height:36, borderRadius:10,
-                  background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
-                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
-                    Soins post-RACS
-                  </p>
-                  <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
-                    RACS obtenu — renseigner constantes, amines, température
-                  </p>
-                </div>
-                <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
-              </button>
-            )}
+            {/* Le bouton "Soins post-RACS" est désormais en tête de grille — voir plus haut. */}
 
             {/* ── Bouton + : révèle les actions secondaires ── */}
             <button onClick={() => setShowMoreActions(v => !v)}
