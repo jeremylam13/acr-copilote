@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-59";
+const APP_VERSION = "2026.08.15-60";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -9498,7 +9498,7 @@ function App() {
     }
     return null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sec, events, isVLI, vliUnlocked]);
+  }, [sec, events]);
 
   // La fonction de matching change à chaque seconde (elle dépend de `sec`) — on la
   // range dans une ref à jour en continu, SANS jamais redéclencher le useEffect
