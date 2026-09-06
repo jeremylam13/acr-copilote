@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-62";
+const APP_VERSION = "2026.08.15-63";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -3993,7 +3993,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         <Modal title="Mesure hémodynamique" icon="💓" soft={P.greenSoft} onClose={() => setModalHemoPed(false)}>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:12 }}>
             {[{k:"pas",l:"PAS",c:P.rose},{k:"pad",l:"PAD",c:P.blue},{k:"fc",l:"FC",c:P.violet}].map(({k,l,c}) => (
-              <div key={k}>
+              <div key={k} style={{ minWidth:0 }}>
                 <p style={{ margin:"0 0 5px", fontSize:9, fontWeight:700, color:c, fontFamily:mono, letterSpacing:"0.1em" }}>{l}</p>
                 <input type="number" inputMode="numeric" value={hemoFormPed[k]}
                   onChange={e => setHemoFormPed(f => ({...f,[k]:e.target.value}))} placeholder="—"
@@ -4449,7 +4449,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:9 }}>
               {[["fc","FC","/min"],["tas","PAS","mmHg"],["sat","SpO₂","%"],["fr","FR","/min"],
                 ["tempRacs","T°","°C"],["capno","EtCO₂","mmHg"],["glycemie","HGT","g/L"],["glasgow","Glasgow","/15"]].map(([k,l,u]) => (
-                <div key={k}>
+                <div key={k} style={{ minWidth:0 }}>
                   <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
                     textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>{l}</p>
                   <div style={{ display:"flex", alignItems:"center", gap:4 }}>
@@ -10952,7 +10952,7 @@ function App() {
         <Modal title="Mesure hémodynamique" icon="💓" soft={P.greenSoft} onClose={() => setModalHemo(false)}>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:12 }}>
             {[{k:"pas",l:"PAS",c:P.rose},{k:"pad",l:"PAD",c:P.blue},{k:"fc",l:"FC",c:P.violet}].map(({k,l,c}) => (
-              <div key={k}>
+              <div key={k} style={{ minWidth:0 }}>
                 <p style={{ margin:"0 0 5px", fontSize:9, fontWeight:700, color:c, fontFamily:mono, letterSpacing:"0.1em" }}>{l}</p>
                 <input type="number" inputMode="numeric" value={hemoForm[k]}
                   onChange={e => setHemoForm(f => ({...f,[k]:e.target.value}))} placeholder="—"
@@ -11997,7 +11997,7 @@ function App() {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:9 }}>
               {[["fc","FC","/min"],["tas","PAS","mmHg"],["sat","SpO₂","%"],["fr","FR","/min"],
                 ["tempRacs","T°","°C"],["capno","EtCO₂","mmHg"],["glycemie","Glycémie","g/L"],["glasgow","Glasgow","/15"]].map(([k,l,u]) => (
-                <div key={k}>
+                <div key={k} style={{ minWidth:0 }}>
                   <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
                     textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>{l}</p>
                   <div style={{ display:"flex", alignItems:"center", gap:4 }}>
