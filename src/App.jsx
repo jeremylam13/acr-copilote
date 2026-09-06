@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-60";
+const APP_VERSION = "2026.08.15-62";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -4411,7 +4411,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           <div onClick={e => e.stopPropagation()}
             style={{ background:P.surface, width:"100%", borderRadius:"20px 20px 0 0",
               padding:"20px 16px 36px", boxShadow:"0 -12px 40px rgba(0,0,0,0.18)",
-              fontFamily:sans, maxHeight:"90vh", overflowY:"auto" }}>
+              fontFamily:sans, maxHeight:"90vh", overflowY:"auto", overflowX:"hidden",
+              boxSizing:"border-box" }}>
             <div style={{ display:"flex", alignItems:"center", gap:11, marginBottom:16 }}>
               <div style={{ width:42, height:42, borderRadius:13,
                 background:"linear-gradient(135deg, #EA6A12, #B24E0A)",
@@ -5764,18 +5765,18 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                 </div>
               )}
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-                <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
-                  onClick={() => setModalRythme(true)} />
-                <ActionBtn action={{ label:"Voie d'abord", dose:"DIO 1ère intention", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
-                  onClick={() => setModalVvpPed(true)} />
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
                 <ActionBtn action={{ label:"Adrénaline", dose:`${localMat?.adrenalineMg||""} mg IV/IO`, vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText,
                     hapticType:"long", badge: adrAlarmActivePed ? { text:"!", color:P.rose, pulse:true } : null }}
                   onClick={() => { addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }} />
                 <ActionBtn action={{ label:"Défibrillation", dose:"selon DSA", vital:true, svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText,
                     hapticType:"double", badge: lastRhythm?.id === "rv_fvtv" ? { text:"FV", color:P.blue, pulse:false } : null }}
                   onClick={() => setModalChocPed(true)} />
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+                <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
+                  onClick={() => setModalRythme(true)} />
+                <ActionBtn action={{ label:"Voie d'abord", dose:"DIO 1ère intention", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+                  onClick={() => setModalVvpPed(true)} />
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
                 <ActionBtn action={{ label:"Cordarone", dose:`${localMat?.amio||""} mg`, svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
@@ -11958,7 +11959,8 @@ function App() {
           <div onClick={e => e.stopPropagation()}
             style={{ background:P.surface, width:"100%", borderRadius:"20px 20px 0 0",
               padding:"20px 16px 36px", boxShadow:"0 -12px 40px rgba(0,0,0,0.18)",
-              fontFamily:sans, maxHeight:"90vh", overflowY:"auto" }}>
+              fontFamily:sans, maxHeight:"90vh", overflowY:"auto", overflowX:"hidden",
+              boxSizing:"border-box" }}>
             <div style={{ display:"flex", alignItems:"center", gap:11, marginBottom:16 }}>
               <div style={{ width:42, height:42, borderRadius:13,
                 background:"linear-gradient(135deg, #EA6A12, #B24E0A)",
@@ -13240,18 +13242,18 @@ function App() {
                   </div>
                 )}
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
-                  <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
-                    onClick={() => setModalRythme(true)} />
-                  <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
-                    onClick={() => setModalVvp(true)} />
-                </div>
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
                   <ActionBtn action={{ label:"Adrénaline", dose:"1 mg IV/IO", vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText,
                       hapticType:"long", badge: adrAlarmActive ? { text:"!", color:P.rose, pulse:true } : null }}
                     onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
                   <ActionBtn action={{ label:"Défibrillation", dose:"selon DSA", vital:true, svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText,
                       hapticType:"double", badge: lastRhythm?.id === "rv_fvtv" ? { text:"FV", color:P.blue, pulse:false } : null }}
                     onClick={() => setModalChoc(true)} />
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+                  <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
+                    onClick={() => setModalRythme(true)} />
+                  <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+                    onClick={() => setModalVvp(true)} />
                 </div>
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
                   <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
