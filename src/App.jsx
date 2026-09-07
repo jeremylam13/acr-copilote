@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-67";
+const APP_VERSION = "2026.08.15-68";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -690,6 +690,31 @@ function _acrBeep() {
 }
 
 // ── Bip changement de cycle (double bip grave, distinct de l'alarme) ──────────
+// ── Compresse une photo avant stockage local — évite d'alourdir le PDF et le
+// stockage du téléphone avec des photos brutes de plusieurs Mo (redimensionne
+// à 1200px de large max, réencode en JPEG qualité ~72%) ──────────────────────
+function compressImageFile(file, maxWidth = 1200, quality = 0.72) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxWidth / img.width);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => resolve(e.target.result);
+      img.src = e.target.result;
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
 function playCycleBip() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1094,6 +1119,7 @@ function GuideApp({ onClose }) {
         { icon:"📞", title:"Appel régulation", desc:"Bandeau toujours accessible pour horodater un appel à la régulation, avec un champ libre pour noter ce qui a été dit et la destination du patient." },
         { icon:"📝", title:"Note libre", desc:"Un encart de texte libre, entre les Soins post-RACS et la chronologie, pour consigner une information qui ne rentre dans aucune case." },
         { icon:"📄", title:"Compte-rendu automatique", desc:"Un rapport structuré façon SBAR est généré en continu à partir de la chronologie — prêt à copier, imprimer ou partager en fin de réanimation, sans ressaisie." },
+        { icon:"📷", title:"Photos & tracés", desc:"Carte disponible dans tous les modules (Adulte, Traumatique, Pédiatrique, VLI) pour joindre des ECG (numérotés automatiquement dans l'ordre) ou des photos circonstancielles (lieu, contexte de l'intervention). Un titre est pré-rempli et modifiable avant l'enregistrement. Toutes les photos sont compressées automatiquement pour ne pas alourdir le téléphone, et apparaissent à la toute fin du PDF avec leur titre et leur heure de prise — conservées dans l'archive du cas." },
         { icon:"🕐", title:"Frise chronologique visuelle", desc:"Graduation en minutes (0 min = début de la RCP), avec chaque geste positionné proportionnellement au temps écoulé. Si plusieurs gestes ont lieu à quelques secondes d'écart (ex : chocs rapprochés), ils s'empilent automatiquement sur des rangées distinctes avec leur heure affichée — jamais superposés ni illisibles." },
         { icon:"📑", title:"Export PDF sans coupure", desc:"Le PDF ne coupe jamais un encart entre deux pages — l'algorithme détecte quand un bloc (identité, bandeau, frise, section détaillée) déborderait sur la page suivante et bascule la coupure juste avant, pour que chaque encart reste toujours entier et lisible." },
         { icon:"🌗", title:"Thème jour / nuit", desc:"Bascule en un tap, en haut de l'écran. Le thème jour est pensé pour la lisibilité en plein soleil, le thème nuit pour ne pas éblouir en intervention de nuit." },
@@ -1403,7 +1429,7 @@ function ChoiceBtn({ label, sub, accent, soft, textC, onClick }) {
 }
 
 // ── PDF ────────────────────────────────────────────────────────────────────────
-function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, trans, hemocue, hemo, amines, etco2, onClose }) {
+function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, trans, hemocue, hemo, amines, etco2, images, onClose }) {
   const chocs = events.filter(e => e.id === "choc").length;
   const adrs  = events.filter(e => e.id === "adr").length;
   const rosc  = events.find(e => e.id === "rosc");
@@ -1974,6 +2000,21 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         </div>`).join("") +
       `</div>`
     );
+
+    // Photos & tracés joints
+    if (images && images.length > 0) {
+      html += `
+        <p class="pdf-card" style="margin:18px 0 10px;font-size:14px;font-weight:800;color:${C.text};
+          font-family:'Archivo',sans-serif">🖼️ Photos & tracés joints</p>` +
+        images.map(im => `
+          <div class="pdf-card" style="background:${C.surface};border:1px solid ${C.border};border-radius:12px;
+            padding:12px;margin-bottom:12px;box-shadow:0 1px 3px rgba(10,17,27,0.06)">
+            <p style="margin:0 0 8px;font-size:12px;font-weight:700;color:${C.text}">
+              ${esc(im.title)} <span style="font-weight:500;color:${C.textSoft};font-family:'JetBrains Mono',monospace">— ${esc(im.time)}</span>
+            </p>
+            <img src="${im.dataUrl}" style="width:100%;border-radius:8px;display:block" />
+          </div>`).join("");
+    }
 
     html += `
       <p style="text-align:center;font-size:10px;color:${C.textSoft};margin-top:18px;font-style:italic;line-height:1.6">
@@ -3224,6 +3265,39 @@ function RemplissageVasculairePed({ racs, setRacs, localMat }) {
 
 function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, initialTeamCode, isVLI = false }) {
   const [vliUnlockedPed, setVliUnlockedPed] = useLocalState("acr_vli_ped_unlocked", false);
+  const [imagesPed, setImagesPed] = useLocalState("acr_ped_images", []);
+  const [modalPhotosPed, setModalPhotosPed] = useState(false);
+  const [photoStepPed, setPhotoStepPed] = useState("choice");
+  const [pendingImagePed, setPendingImagePed] = useState(null);
+  const [pendingTitlePed, setPendingTitlePed] = useState("");
+  const [pendingPhotoTypePed, setPendingPhotoTypePed] = useState("ecg");
+  const photoInputRefPed = useRef(null);
+
+  const openPhotoCapturePed = (type) => {
+    setPendingPhotoTypePed(type);
+    if (photoInputRefPed.current) { photoInputRefPed.current.value = ""; photoInputRefPed.current.click(); }
+  };
+  const handlePhotoSelectedPed = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const dataUrl = await compressImageFile(file);
+    if (!dataUrl) return;
+    const ecgCount = imagesPed.filter(im => im.type === "ecg").length;
+    const autoTitle = pendingPhotoTypePed === "ecg" ? `ECG ${ecgCount + 1}` : "";
+    setPendingImagePed({ type: pendingPhotoTypePed, dataUrl });
+    setPendingTitlePed(autoTitle);
+    setPhotoStepPed("confirm");
+  };
+  const confirmSavePhotoPed = () => {
+    if (!pendingImagePed) return;
+    const title = pendingTitlePed.trim() || (pendingImagePed.type === "ecg" ? "ECG" : "Photo");
+    setImagesPed(prev => [...prev, { id: Date.now(), type: pendingImagePed.type, title,
+      dataUrl: pendingImagePed.dataUrl, sec, time: getNow() }]);
+    addEvent(pendingImagePed.type === "ecg" ? "ecg_photo" : "photo_circonstance",
+      `${pendingImagePed.type === "ecg" ? "📈" : "📷"} ${title} ajouté${pendingImagePed.type==="ecg"?"":"e"}`, pendingImagePed.type === "ecg" ? "📈" : "📷");
+    setPendingImagePed(null); setPendingTitlePed(""); setPhotoStepPed("choice");
+  };
+  const deletePhotoPed = (id) => setImagesPed(prev => prev.filter(im => im.id !== id));
   const [pupillesInitExpandedPed, setPupillesInitExpandedPed] = useState(false);
   const [racsPupillesExpandedPed, setRacsPupillesExpandedPed] = useState(false);
   const [modalVliTransitionPed, setModalVliTransitionPed] = useState(false);
@@ -3745,12 +3819,12 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             temp:patPed.temp, atcd:patPed.atcd, histoire:patPed.histoire },
           noFlow: noFlowMin, lowFlow: lowFlowMin, acrTime: localAcrTime,
           iot: { cormack:"", sonde:localMat?.sondeAvecBallonnet||"", repere:localMat?.repereLab||"", capno:"" },
-          events: [...events], totalSec: sec, trans: { ...transPed }, hemocue: [],
+          events: [...events], totalSec: sec, trans: { ...transPed }, hemocue: [], images: [...imagesPed],
         },
       });
     }
     teamPed.disconnect();
-    setVliUnlockedPed(false); setModalVliTransitionPed(false);
+    setVliUnlockedPed(false); setModalVliTransitionPed(false); setImagesPed([]);
     clearSession("acr_ped_");
     if (onHome) onHome();
   };
@@ -5811,6 +5885,22 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                   onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
               </div>
 
+              {/* ── Photos & tracés (ECG, contexte) ── */}
+              <button onClick={() => { setPhotoStepPed("choice"); setModalPhotosPed(true); }}
+                style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+                  background:P.surface, border:`1px solid ${P.border}`, borderRadius:16,
+                  padding:"14px 16px", cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+                <span style={{ width:38, height:38, borderRadius:11, background:P.surfaceAlt,
+                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>📷</span>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.text }}>
+                    Photos & tracés{imagesPed.length > 0 ? ` · ${imagesPed.length}` : ""}
+                  </p>
+                  <p style={{ margin:0, fontSize:10, color:P.textSoft }}>ECG, contexte de l'intervention...</p>
+                </div>
+                <span style={{ color:P.textSoft, fontSize:15, flexShrink:0 }}>›</span>
+              </button>
+
               {/* Le bouton "RACS — Surveillance" est désormais en tête de grille — voir plus haut. */}
             </div>
           );
@@ -6155,6 +6245,22 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               <span style={{ fontSize:16, color:P.amberText, flexShrink:0 }}>›</span>
             </button>
           )}
+
+          {/* ── Photos & tracés (ECG, contexte) ── */}
+          <button onClick={() => { setPhotoStepPed("choice"); setModalPhotosPed(true); }}
+            style={{ gridColumn:"1 / -1", display:"flex", alignItems:"center", gap:12,
+              background:P.surface, border:`1px solid ${P.border}`, borderRadius:16,
+              padding:"14px 16px", cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+            <span style={{ width:38, height:38, borderRadius:11, background:P.surfaceAlt,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>📷</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.text }}>
+                Photos & tracés{imagesPed.length > 0 ? ` · ${imagesPed.length}` : ""}
+              </p>
+              <p style={{ margin:0, fontSize:10, color:P.textSoft }}>ECG, contexte de l'intervention...</p>
+            </div>
+            <span style={{ color:P.textSoft, fontSize:15, flexShrink:0 }}>›</span>
+          </button>
 
           {/* ── Bouton + : révèle les actions secondaires ── */}
           <button onClick={() => setShowMoreActionsPed(v => !v)}
@@ -7078,6 +7184,95 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         </div>
       </div>
 
+      {/* ── Input caché pour la capture photo (appareil photo natif) ── */}
+      <input ref={photoInputRefPed} type="file" accept="image/*" capture="environment"
+        style={{ display:"none" }} onChange={handlePhotoSelectedPed} />
+
+      {/* ── Modal Photos & tracés — pédiatrique ── */}
+      {modalPhotosPed && (
+        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.55)",
+          display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+          onClick={e => { if (e.target === e.currentTarget) { setModalPhotosPed(false); setPhotoStepPed("choice"); setPendingImagePed(null); } }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:P.surface, width:"100%", borderRadius:"20px 20px 0 0",
+              padding:"20px 16px 32px", maxHeight:"85vh", overflowY:"auto", boxSizing:"border-box",
+              fontFamily:sans }}>
+
+            {photoStepPed === "choice" && (<>
+              <div style={{ display:"flex", alignItems:"center", marginBottom:16 }}>
+                <p style={{ margin:0, fontSize:16, fontWeight:800, color:P.text, fontFamily:disp, flex:1 }}>📷 Photos & tracés</p>
+                <button onClick={() => setModalPhotosPed(false)} style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:20, cursor:"pointer" }}>×</button>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:11, marginBottom:18 }}>
+                <button onClick={() => openPhotoCapturePed("ecg")}
+                  style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:8,
+                    background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
+                    padding:"20px 10px", cursor:"pointer", fontFamily:sans, textAlign:"center" }}>
+                  <span style={{ fontSize:28 }}>📈</span>
+                  <p style={{ margin:0, fontSize:13, fontWeight:800, color:P.text }}>ECG</p>
+                  <p style={{ margin:0, fontSize:9, color:P.textSoft }}>Numéroté auto</p>
+                </button>
+                <button onClick={() => openPhotoCapturePed("circonstance")}
+                  style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:8,
+                    background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
+                    padding:"20px 10px", cursor:"pointer", fontFamily:sans, textAlign:"center" }}>
+                  <span style={{ fontSize:28 }}>📷</span>
+                  <p style={{ margin:0, fontSize:13, fontWeight:800, color:P.text }}>Photo circonstancielle</p>
+                  <p style={{ margin:0, fontSize:9, color:P.textSoft }}>Lieu, contexte...</p>
+                </button>
+              </div>
+              {imagesPed.length > 0 && (<>
+                <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:700, color:P.textSoft,
+                  textTransform:"uppercase", letterSpacing:"0.06em" }}>Déjà ajoutées · {imagesPed.length}</p>
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {imagesPed.map(im => (
+                    <div key={im.id} style={{ display:"flex", alignItems:"center", gap:10,
+                      background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:11, padding:"8px 10px" }}>
+                      <img src={im.dataUrl} alt={im.title} style={{ width:36, height:36, borderRadius:8,
+                        objectFit:"cover", flexShrink:0 }} />
+                      <span style={{ flex:1, minWidth:0, fontSize:12, fontWeight:700, color:P.text,
+                        overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{im.title}</span>
+                      <span style={{ fontSize:9.5, color:P.textSoft, flexShrink:0 }}>{im.time}</span>
+                      <button onClick={() => deletePhotoPed(im.id)}
+                        style={{ background:"transparent", border:"none", color:P.rose, fontSize:14,
+                          cursor:"pointer", flexShrink:0 }}>🗑️</button>
+                    </div>
+                  ))}
+                </div>
+              </>)}
+            </>)}
+
+            {photoStepPed === "confirm" && pendingImagePed && (<>
+              <p style={{ margin:"0 0 14px", fontSize:16, fontWeight:800, color:P.text, fontFamily:disp }}>
+                {pendingImagePed.type === "ecg" ? "📈 Nouvel ECG" : "📷 Nouvelle photo"}
+              </p>
+              <img src={pendingImagePed.dataUrl} alt="" style={{ width:"100%", borderRadius:12, marginBottom:14,
+                display:"block", maxHeight:280, objectFit:"contain", background:P.surfaceAlt }} />
+              <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:700, color:P.textSoft,
+                textTransform:"uppercase", letterSpacing:"0.06em" }}>Titre</p>
+              <input value={pendingTitlePed} onChange={e => setPendingTitlePed(e.target.value)}
+                placeholder={pendingImagePed.type === "ecg" ? "ECG" : "Titre de la photo"}
+                style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                  borderRadius:10, padding:12, fontSize:14, fontWeight:700, color:P.text,
+                  marginBottom:16, boxSizing:"border-box", fontFamily:sans }} />
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                <button onClick={() => { setPendingImagePed(null); setPhotoStepPed("choice"); }}
+                  style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:12,
+                    padding:13, fontSize:13, fontWeight:700, color:P.textMid, cursor:"pointer", fontFamily:sans }}>
+                  Reprendre
+                </button>
+                <button onClick={confirmSavePhotoPed}
+                  style={{ background:`linear-gradient(135deg,${P.green},${P.greenText})`, border:"none",
+                    borderRadius:12, padding:13, fontSize:13, fontWeight:700, color:"#fff",
+                    cursor:"pointer", fontFamily:sans }}>
+                  ✓ Enregistrer
+                </button>
+              </div>
+            </>)}
+          </div>
+        </div>
+      )}
+
       {/* PDF pédiatrique */}
       {showPdf && (
         <PdfView
@@ -7101,6 +7296,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           hemocue={[]}
           hemo={hemoListPed} amines={amineListPed}
           etco2={etco2ListPed}
+          images={imagesPed}
           onClose={() => setShowPdf(false)}
         />
       )}
@@ -9777,7 +9973,7 @@ function App() {
           patient: { ...pat },
           noFlow: noFlowMin, lowFlow: lowFlowMin, acrTime,
           iot: { ...iot }, events: [...events], totalSec: sec,
-          trans: { ...trans }, hemocue: [...hemocueHist],
+          trans: { ...trans }, hemocue: [...hemocueHist], images: [...images],
         },
       };
       setArchives(saveArchive(snapshot));
@@ -9785,7 +9981,7 @@ function App() {
     team.disconnect();
     setStarted(false); setRunning(false); setSec(0); setSecStored(0); setModule(null);
     setAcrTime(""); setNoFlowMin(""); setLowFlowMin(""); setLowFlowStart("");
-    setEvents([]); setAlert(null); setCycleOffset(0);
+    setEvents([]); setAlert(null); setCycleOffset(0); setImages([]);
     setShowPdf(false); setShowLog(false);
     setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"", lieu:"" });
     setIot({ cormack:"", sonde:"", repere:"", capno:"", difficile:false, techniquesDifficiles:[], nbTentatives:"", inhalation:false });
@@ -9827,6 +10023,39 @@ function App() {
   // Déverrouillage VLI → passation au VLM : une fois débloqué, la grille complète
   // reste accessible pour le reste de la session (pas de retour arrière possible).
   const [vliUnlocked, setVliUnlocked] = useLocalState("acr_vli_unlocked", false);
+  const [images, setImages] = useLocalState("acr_adulte_images", []);
+  const [modalPhotos, setModalPhotos] = useState(false);
+  const [photoStep, setPhotoStep] = useState("choice"); // "choice" | "confirm"
+  const [pendingImage, setPendingImage] = useState(null); // { type, dataUrl }
+  const [pendingTitle, setPendingTitle] = useState("");
+  const [pendingPhotoType, setPendingPhotoType] = useState("ecg");
+  const photoInputRef = useRef(null);
+
+  const openPhotoCapture = (type) => {
+    setPendingPhotoType(type);
+    if (photoInputRef.current) { photoInputRef.current.value = ""; photoInputRef.current.click(); }
+  };
+  const handlePhotoSelected = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const dataUrl = await compressImageFile(file);
+    if (!dataUrl) return;
+    const ecgCount = images.filter(im => im.type === "ecg").length;
+    const autoTitle = pendingPhotoType === "ecg" ? `ECG ${ecgCount + 1}` : "";
+    setPendingImage({ type: pendingPhotoType, dataUrl });
+    setPendingTitle(autoTitle);
+    setPhotoStep("confirm");
+  };
+  const confirmSavePhoto = () => {
+    if (!pendingImage) return;
+    const title = pendingTitle.trim() || (pendingImage.type === "ecg" ? "ECG" : "Photo");
+    setImages(prev => [...prev, { id: Date.now(), type: pendingImage.type, title,
+      dataUrl: pendingImage.dataUrl, sec, time: getNow() }]);
+    addEvent(pendingImage.type === "ecg" ? "ecg_photo" : "photo_circonstance",
+      `${pendingImage.type === "ecg" ? "📈" : "📷"} ${title} ajouté${pendingImage.type==="ecg"?"":"e"}`, pendingImage.type === "ecg" ? "📈" : "📷");
+    setPendingImage(null); setPendingTitle(""); setPhotoStep("choice");
+  };
+  const deletePhoto = (id) => setImages(prev => prev.filter(im => im.id !== id));
   const [pupillesInitExpanded, setPupillesInitExpanded] = useState(false);
   const [racsPupillesExpanded, setRacsPupillesExpanded] = useState(false);
   const [modalVliTransition, setModalVliTransition] = useState(false);
@@ -13306,6 +13535,22 @@ function App() {
                     onClick={() => addEvent("planche","Planche à masser mise en place","🦺")} />
                 </div>
 
+                {/* ── Photos & tracés (ECG, contexte) ── */}
+                <button onClick={() => { setPhotoStep("choice"); setModalPhotos(true); }}
+                  style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+                    background:P.surface, border:`1px solid ${P.border}`, borderRadius:16,
+                    padding:"14px 16px", cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+                  <span style={{ width:38, height:38, borderRadius:11, background:P.surfaceAlt,
+                    display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>📷</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.text }}>
+                      Photos & tracés{images.length > 0 ? ` · ${images.length}` : ""}
+                    </p>
+                    <p style={{ margin:0, fontSize:10, color:P.textSoft }}>ECG, contexte de l'intervention...</p>
+                  </div>
+                  <span style={{ color:P.textSoft, fontSize:15, flexShrink:0 }}>›</span>
+                </button>
+
                 {/* La carte EtCO₂ n'est plus dupliquée ici — celle affichée en haut de l'écran,
                     juste après Patient/Transmission/Régulation, est commune à tous les modes
                     (y compris VLI) et suffit déjà. Idem pour la carte Hémodynamique. */}
@@ -13531,6 +13776,22 @@ function App() {
             </div>
 
             {/* Le bouton "Soins post-RACS" est désormais en tête de grille — voir plus haut. */}
+
+            {/* ── Photos & tracés (ECG, contexte) ── */}
+            <button onClick={() => { setPhotoStep("choice"); setModalPhotos(true); }}
+              style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+                background:P.surface, border:`1px solid ${P.border}`, borderRadius:16,
+                padding:"14px 16px", cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+              <span style={{ width:38, height:38, borderRadius:11, background:P.surfaceAlt,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>📷</span>
+              <div style={{ flex:1, minWidth:0 }}>
+                <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.text }}>
+                  Photos & tracés{images.length > 0 ? ` · ${images.length}` : ""}
+                </p>
+                <p style={{ margin:0, fontSize:10, color:P.textSoft }}>ECG, contexte de l'intervention...</p>
+              </div>
+              <span style={{ color:P.textSoft, fontSize:15, flexShrink:0 }}>›</span>
+            </button>
 
             {/* ── Bouton + : révèle les actions secondaires ── */}
             <button onClick={() => setShowMoreActions(v => !v)}
@@ -14706,10 +14967,99 @@ function App() {
         </div>
       )}
 
+      {/* ── Input caché pour la capture photo (appareil photo natif) ── */}
+      <input ref={photoInputRef} type="file" accept="image/*" capture="environment"
+        style={{ display:"none" }} onChange={handlePhotoSelected} />
+
+      {/* ── Modal Photos & tracés ── */}
+      {modalPhotos && (
+        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.55)",
+          display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+          onClick={e => { if (e.target === e.currentTarget) { setModalPhotos(false); setPhotoStep("choice"); setPendingImage(null); } }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:P.surface, width:"100%", borderRadius:"20px 20px 0 0",
+              padding:"20px 16px 32px", maxHeight:"85vh", overflowY:"auto", boxSizing:"border-box",
+              fontFamily:sans }}>
+
+            {photoStep === "choice" && (<>
+              <div style={{ display:"flex", alignItems:"center", marginBottom:16 }}>
+                <p style={{ margin:0, fontSize:16, fontWeight:800, color:P.text, fontFamily:disp, flex:1 }}>📷 Photos & tracés</p>
+                <button onClick={() => setModalPhotos(false)} style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:20, cursor:"pointer" }}>×</button>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:11, marginBottom:18 }}>
+                <button onClick={() => openPhotoCapture("ecg")}
+                  style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:8,
+                    background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
+                    padding:"20px 10px", cursor:"pointer", fontFamily:sans, textAlign:"center" }}>
+                  <span style={{ fontSize:28 }}>📈</span>
+                  <p style={{ margin:0, fontSize:13, fontWeight:800, color:P.text }}>ECG</p>
+                  <p style={{ margin:0, fontSize:9, color:P.textSoft }}>Numéroté auto</p>
+                </button>
+                <button onClick={() => openPhotoCapture("circonstance")}
+                  style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:8,
+                    background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:16,
+                    padding:"20px 10px", cursor:"pointer", fontFamily:sans, textAlign:"center" }}>
+                  <span style={{ fontSize:28 }}>📷</span>
+                  <p style={{ margin:0, fontSize:13, fontWeight:800, color:P.text }}>Photo circonstancielle</p>
+                  <p style={{ margin:0, fontSize:9, color:P.textSoft }}>Lieu, contexte...</p>
+                </button>
+              </div>
+              {images.length > 0 && (<>
+                <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:700, color:P.textSoft,
+                  textTransform:"uppercase", letterSpacing:"0.06em" }}>Déjà ajoutées · {images.length}</p>
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {images.map(im => (
+                    <div key={im.id} style={{ display:"flex", alignItems:"center", gap:10,
+                      background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:11, padding:"8px 10px" }}>
+                      <img src={im.dataUrl} alt={im.title} style={{ width:36, height:36, borderRadius:8,
+                        objectFit:"cover", flexShrink:0 }} />
+                      <span style={{ flex:1, minWidth:0, fontSize:12, fontWeight:700, color:P.text,
+                        overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{im.title}</span>
+                      <span style={{ fontSize:9.5, color:P.textSoft, flexShrink:0 }}>{im.time}</span>
+                      <button onClick={() => deletePhoto(im.id)}
+                        style={{ background:"transparent", border:"none", color:P.rose, fontSize:14,
+                          cursor:"pointer", flexShrink:0 }}>🗑️</button>
+                    </div>
+                  ))}
+                </div>
+              </>)}
+            </>)}
+
+            {photoStep === "confirm" && pendingImage && (<>
+              <p style={{ margin:"0 0 14px", fontSize:16, fontWeight:800, color:P.text, fontFamily:disp }}>
+                {pendingImage.type === "ecg" ? "📈 Nouvel ECG" : "📷 Nouvelle photo"}
+              </p>
+              <img src={pendingImage.dataUrl} alt="" style={{ width:"100%", borderRadius:12, marginBottom:14,
+                display:"block", maxHeight:280, objectFit:"contain", background:P.surfaceAlt }} />
+              <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:700, color:P.textSoft,
+                textTransform:"uppercase", letterSpacing:"0.06em" }}>Titre</p>
+              <input value={pendingTitle} onChange={e => setPendingTitle(e.target.value)}
+                placeholder={pendingImage.type === "ecg" ? "ECG" : "Titre de la photo"}
+                style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                  borderRadius:10, padding:12, fontSize:14, fontWeight:700, color:P.text,
+                  marginBottom:16, boxSizing:"border-box", fontFamily:sans }} />
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                <button onClick={() => { setPendingImage(null); setPhotoStep("choice"); }}
+                  style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:12,
+                    padding:13, fontSize:13, fontWeight:700, color:P.textMid, cursor:"pointer", fontFamily:sans }}>
+                  Reprendre
+                </button>
+                <button onClick={confirmSavePhoto}
+                  style={{ background:`linear-gradient(135deg,${P.green},${P.greenText})`, border:"none",
+                    borderRadius:12, padding:13, fontSize:13, fontWeight:700, color:"#fff",
+                    cursor:"pointer", fontFamily:sans }}>
+                  ✓ Enregistrer
+                </button>
+              </div>
+            </>)}
+          </div>
+        </div>
+      )}
+
       {/* PDF adulte — overlay */}
       {showPdf && (
         <PdfView patient={pat} noFlow={noFlowMin} lowFlow={lowFlowMin} acrTime={acrTime}
-          iot={iot} events={events} totalSec={sec} trans={trans} hemocue={hemocueHist} hemo={hemoList} amines={amineList} etco2={etco2List} onClose={() => setShowPdf(false)} />
+          iot={iot} events={events} totalSec={sec} trans={trans} hemocue={hemocueHist} hemo={hemoList} amines={amineList} etco2={etco2List} images={images} onClose={() => setShowPdf(false)} />
       )}
 
     </div>
