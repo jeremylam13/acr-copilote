@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-66";
+const APP_VERSION = "2026.08.15-67";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -13308,42 +13308,7 @@ function App() {
 
                 {/* La carte EtCO₂ n'est plus dupliquée ici — celle affichée en haut de l'écran,
                     juste après Patient/Transmission/Régulation, est commune à tous les modes
-                    (y compris VLI) et suffit déjà. */}
-
-                {/* Carte Hémodynamique post-RACS — surveillance seule, pas de bouton Amine */}
-                {events.find(e => e.id === "rosc") && (
-                  <div style={{ background:P.surface, border:`1px solid ${P.green}`, borderRadius:13,
-                    padding:"9px 12px", boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 14%, transparent)` }}>
-                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: hemoOpen ? 6 : 0 }}>
-                      <button onClick={() => setHemoOpen(v => !v)}
-                        style={{ display:"flex", alignItems:"center", gap:7, background:"transparent", border:"none",
-                          cursor:"pointer", padding:0, flex:1, minWidth:0, textAlign:"left" }}>
-                        <span style={{ width:24, height:24, borderRadius:8, background:P.greenSoft,
-                          display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>💓</span>
-                        <p style={{ margin:0, fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>Hémodynamique <span style={{ fontSize:8, fontWeight:600, color:P.textSoft, fontFamily:mono }}>post-RACS</span></p>
-                        <span style={{ fontSize:10, color:P.textSoft, marginLeft:4 }}>{hemoOpen ? "▾" : "▸"}</span>
-                      </button>
-                      <button onClick={() => { setHemoForm({ pas:"", pad:"", fc:"" }); setModalHemo(true); }}
-                        style={{ background:`color-mix(in srgb, ${P.green} 14%, transparent)`, color:P.greenText,
-                          border:`1px solid ${P.green}`, borderRadius:9, padding:"5px 9px", fontSize:10.5,
-                          fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>+ Mesure</button>
-                    </div>
-                    {hemoOpen && hemoList.length > 0 && (
-                      <div style={{ display:"flex", gap:12, marginBottom:5 }}>
-                        {[{c:P.rose,l:"PAS"},{c:P.blue,l:"PAD"},{c:P.amber,l:"PAM",dash:true},{c:P.violet,l:"FC",dot:true}].map(({c,l,dash,dot})=>(
-                          <div key={l} style={{ display:"flex", alignItems:"center", gap:3 }}>
-                            <svg width="18" height="8" viewBox="0 0 18 8">
-                              <line x1="0" y1="4" x2="18" y2="4" stroke={c} strokeWidth="2"
-                                strokeDasharray={dash?"5 3":dot?"2 3":undefined} />
-                            </svg>
-                            <span style={{ fontSize:9, fontWeight:700, color:c, fontFamily:mono }}>{l}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {hemoOpen && <HemoCurve hemoList={hemoList} amineList={amineList} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />}
-                  </div>
-                )}
+                    (y compris VLI) et suffit déjà. Idem pour la carte Hémodynamique. */}
 
                 {/* Le bouton "RACS — Surveillance" est désormais en tête de grille — voir plus haut. */}
               </div>
