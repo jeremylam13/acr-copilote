@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-63";
+const APP_VERSION = "2026.08.15-66";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -706,6 +706,12 @@ function playCycleBip() {
     play(t,       523, 0.08); // C5
     play(t + 0.14, 659, 0.08); // E5
     try { if ("vibrate" in navigator) navigator.vibrate([40, 60, 40]); } catch {}
+    // Referme le contexte une fois le son terminé — sans ça, chaque bip de cycle
+    // (toutes les 2 min) laisse un AudioContext ouvert indéfiniment. Safari limite
+    // le nombre de contextes simultanés : au bout de plusieurs cycles dans une
+    // réanimation longue, la limite est atteinte et TOUT nouvel AudioContext
+    // (y compris celui du métronome) échoue silencieusement à se créer.
+    setTimeout(() => { ctx.close().catch(() => {}); }, 400);
   } catch {}
 }
 
@@ -3308,6 +3314,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
 
   // Bip cycle pédiatrique
   const prevCpPedRef = useRef(null);
+  const maxChocsPedRef = useRef(0);
   useEffect(() => {
     if (!running) { prevCpPedRef.current = null; return; }
     const cp = (sec - cycleOffset) % 120;
@@ -3718,6 +3725,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
     _doCloture();
   };
   const _doCloture = () => {
+    maxChocsPedRef.current = 0;
     const hasContent = (events && events.length > 1) || patPed.nom || sec > 0;
     if (hasContent) {
       const outcome = events.find(e => e.id === "rosc") ? "RACS"
@@ -5240,7 +5248,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                       setTimeout(() => setVoiceTranscriptPed(""), 5000);
                       return;
                     }
-                    try { new (window.AudioContext||window.webkitAudioContext)().resume(); } catch(e){}
+                    try { unlockAudio(); } catch(e){}
                   }
                   setVoiceActivePed(v => !v);
                 }}
@@ -5411,38 +5419,51 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           const chocsSmur  = events.filter(e => e.id === "choc").length;
           const chocsPomp  = (parseInt(transPed.chocsPompiers) || 0) + (parseInt(transPed.chocsPublic) || 0);
           const chocsTotal = chocsSmur + chocsPomp;
+          // Rappel basé sur le pic de chocs jamais atteint, pas la valeur instantanée —
+          // immunisé contre toute chute passagère (ex: re-render pendant une synchronisation d'équipe).
+          if (chocsTotal > maxChocsPedRef.current) maxChocsPedRef.current = chocsTotal;
+          const chocsPeak  = maxChocsPedRef.current;
           const adrCount   = events.filter(e => e.id === "adr").length;
           const amioCount  = events.filter(e => e.id === "cord" || e.id === "amio").length;
+          const adrMgTotal  = adrCount * (parseFloat(localMat?.adrenalineMg) || 0);
+          const amioMgTotal = amioCount * (parseFloat(localMat?.amio) || 0);
           if (chocsTotal === 0 && !running && events.length === 0) return null;
-          const showAmio1 = chocsTotal >= 3 && amioCount === 0;
-          const showAmio2 = chocsTotal >= 5 && amioCount === 1;
+          const showAmio1 = chocsPeak >= 3 && amioCount === 0;
+          const showAmio2 = chocsPeak >= 5 && amioCount === 1;
           return (
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:10}}>
               <div style={{background: chocsTotal > 0 ? P.blueSoft : P.surfaceAlt,
                 border:`1px solid ${chocsTotal > 0 ? P.blue+"44" : P.border}`,
-                borderRadius:10,padding:"7px 10px"}}>
-                <p style={{margin:"0 0 2px",fontSize:9,color:P.textSoft,textTransform:"uppercase",
-                  letterSpacing:"0.09em",fontFamily:mono}}>Chocs cumulés</p>
-                <div style={{display:"flex",alignItems:"baseline",gap:5}}>
-                  <span style={{fontSize:24,fontWeight:700,color:P.blueText,fontFamily:mono,lineHeight:1}}>
-                    {chocsTotal}
-                  </span>
-                  {chocsPomp > 0 && (
-                    <span style={{fontSize:10,color:P.textSoft,fontFamily:mono}}>
-                      ({chocsPomp} avant SMUR + {chocsSmur} SMUR)
-                    </span>
-                  )}
-                </div>
+                borderRadius:10,padding:"7px 8px"}}>
+                <p style={{margin:"0 0 2px",fontSize:8,color:P.textSoft,textTransform:"uppercase",
+                  letterSpacing:"0.06em",fontFamily:mono}}>Chocs</p>
+                <span style={{fontSize:20,fontWeight:700,color:P.blueText,fontFamily:mono,lineHeight:1}}>
+                  {chocsTotal}
+                </span>
               </div>
               <div style={{background: adrCount > 0 ? P.roseSoft : P.surfaceAlt,
                 border:`1px solid ${adrCount > 0 ? P.rose+"44" : P.border}`,
-                borderRadius:10,padding:"7px 10px"}}>
-                <p style={{margin:"0 0 2px",fontSize:9,color:P.textSoft,textTransform:"uppercase",
-                  letterSpacing:"0.09em",fontFamily:mono}}>Adré · Amio</p>
-                <span style={{fontSize:16,fontWeight:700,color:P.roseText,fontFamily:mono}}>
-                  {adrCount} × · {amioCount}
+                borderRadius:10,padding:"7px 8px"}}>
+                <p style={{margin:"0 0 2px",fontSize:8,color:P.textSoft,textTransform:"uppercase",
+                  letterSpacing:"0.06em",fontFamily:mono}}>Adré</p>
+                <span style={{fontSize:20,fontWeight:700,color:P.roseText,fontFamily:mono,lineHeight:1}}>
+                  {adrMgTotal.toFixed(2).replace(/\.?0+$/,"")}mg
                 </span>
               </div>
+              <div style={{background: amioCount > 0 ? P.amberSoft : P.surfaceAlt,
+                border:`1px solid ${amioCount > 0 ? P.amber+"44" : P.border}`,
+                borderRadius:10,padding:"7px 8px"}}>
+                <p style={{margin:"0 0 2px",fontSize:8,color:P.textSoft,textTransform:"uppercase",
+                  letterSpacing:"0.06em",fontFamily:mono}}>Amio</p>
+                <span style={{fontSize:20,fontWeight:700,color:P.amberText,fontFamily:mono,lineHeight:1}}>
+                  {amioMgTotal.toFixed(1).replace(/\.0$/,"")}mg
+                </span>
+              </div>
+              {chocsPomp > 0 && (
+                <p style={{gridColumn:"1 / -1",margin:"-2px 0 0",fontSize:9.5,color:P.textSoft,fontFamily:mono}}>
+                  Chocs : {chocsPomp} avant SMUR + {chocsSmur} SMUR
+                </p>
+              )}
               {(showAmio1 || showAmio2) && localMat && (
                 <div style={{gridColumn:"1 / -1",background:P.amberSoft,
                   border:`1.5px solid ${P.amber}`,borderRadius:10,padding:"8px 12px",
@@ -9681,6 +9702,7 @@ function App() {
 
   // ── Bip changement de masseur + flash analyse de rythme ──
   const prevCpRef = useRef(null);
+  const maxChocsRef = useRef(0);
   useEffect(() => {
     if (!started || !running) { prevCpRef.current = null; return; }
     const cp = (sec - cycleOffset) % 120;
@@ -9736,6 +9758,7 @@ function App() {
   };
 
   const reset = () => {
+    maxChocsRef.current = 0;
     // Archiver la session si elle a du contenu (avant effacement)
     const hasContent = (events && events.length > 1) || pat.nom || sec > 0;
     if (hasContent) {
@@ -12746,7 +12769,7 @@ function App() {
                       setTimeout(() => setVoiceTranscript(""), 5000);
                       return;
                     }
-                    try { new (window.AudioContext||window.webkitAudioContext)().resume(); } catch(e){}
+                    try { unlockAudio(); } catch(e){}
                   }
                   setVoiceActive(v => !v);
                 }}
@@ -12869,38 +12892,54 @@ function App() {
           const chocsSmur = events.filter(e => e.id === "choc").length;
           const chocsPomp = (parseInt(trans.chocsPompiers) || 0) + (parseInt(trans.chocsPublic) || 0);
           const chocsTotal = chocsSmur + chocsPomp;
+          // Le rappel se base sur le PIC de chocs jamais atteint, pas la valeur instantanée —
+          // ça le rend immunisé contre toute chute passagère de courte durée (ex: re-render
+          // transitoire pendant une synchronisation d'équipe) qui ferait sinon disparaître le
+          // rappel à tort avant que la Cordarone soit réellement administrée.
+          if (chocsTotal > maxChocsRef.current) maxChocsRef.current = chocsTotal;
+          const chocsPeak = maxChocsRef.current;
           const adrCount = events.filter(e => e.id === "adr").length;
-          const cordCount = events.filter(e => e.id === "cord300" || e.id === "cord150").length;
+          const cord300Count = events.filter(e => e.id === "cord300").length;
+          const cord150Count = events.filter(e => e.id === "cord150").length;
+          const cordCount = cord300Count + cord150Count;
+          const cordMgTotal = cord300Count * 300 + cord150Count * 150;
           if (chocsTotal === 0 && !started) return null;
-          const showCord300 = chocsTotal >= 3 && cordCount === 0;
-          const showCord150 = chocsTotal >= 5 && cordCount === 1;
+          const showCord300 = chocsPeak >= 3 && cordCount === 0;
+          const showCord150 = chocsPeak >= 5 && cordCount === 1;
           return (
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:7, marginBottom:10 }}>
               <div style={{ background: chocsTotal > 0 ? P.blueSoft : P.surfaceAlt,
                 border:`1px solid ${chocsTotal > 0 ? P.blue+"44" : P.border}`,
-                borderRadius:10, padding:"7px 10px" }}>
-                <p style={{ margin:"0 0 2px", fontSize:9, color:P.textSoft, textTransform:"uppercase",
-                  letterSpacing:"0.09em", fontFamily:mono }}>Chocs cumulés</p>
-                <div style={{ display:"flex", alignItems:"baseline", gap:5 }}>
-                  <span style={{ fontSize:24, fontWeight:700, color: P.blueText, fontFamily:mono, lineHeight:1 }}>
-                    {chocsTotal}
-                  </span>
-                  {chocsPomp > 0 && (
-                    <span style={{ fontSize:10, color:P.textSoft, fontFamily:mono }}>
-                      ({chocsPomp} avant SMUR + {chocsSmur} SMUR)
-                    </span>
-                  )}
-                </div>
+                borderRadius:10, padding:"7px 8px" }}>
+                <p style={{ margin:"0 0 2px", fontSize:8, color:P.textSoft, textTransform:"uppercase",
+                  letterSpacing:"0.06em", fontFamily:mono }}>Chocs</p>
+                <span style={{ fontSize:20, fontWeight:700, color: P.blueText, fontFamily:mono, lineHeight:1 }}>
+                  {chocsTotal}
+                </span>
               </div>
               <div style={{ background: adrCount > 0 ? P.roseSoft : P.surfaceAlt,
                 border:`1px solid ${adrCount > 0 ? P.rose+"44" : P.border}`,
-                borderRadius:10, padding:"7px 10px" }}>
-                <p style={{ margin:"0 0 2px", fontSize:9, color:P.textSoft, textTransform:"uppercase",
-                  letterSpacing:"0.09em", fontFamily:mono }}>Adré · Cord.</p>
-                <span style={{ fontSize:16, fontWeight:700, color:P.roseText, fontFamily:mono }}>
-                  {adrCount} × 1mg · {cordCount}
+                borderRadius:10, padding:"7px 8px" }}>
+                <p style={{ margin:"0 0 2px", fontSize:8, color:P.textSoft, textTransform:"uppercase",
+                  letterSpacing:"0.06em", fontFamily:mono }}>Adré</p>
+                <span style={{ fontSize:20, fontWeight:700, color:P.roseText, fontFamily:mono, lineHeight:1 }}>
+                  {adrCount}mg
                 </span>
               </div>
+              <div style={{ background: cordCount > 0 ? P.amberSoft : P.surfaceAlt,
+                border:`1px solid ${cordCount > 0 ? P.amber+"44" : P.border}`,
+                borderRadius:10, padding:"7px 8px" }}>
+                <p style={{ margin:"0 0 2px", fontSize:8, color:P.textSoft, textTransform:"uppercase",
+                  letterSpacing:"0.06em", fontFamily:mono }}>Cord.</p>
+                <span style={{ fontSize:20, fontWeight:700, color:P.amberText, fontFamily:mono, lineHeight:1 }}>
+                  {cordMgTotal}mg
+                </span>
+              </div>
+              {chocsPomp > 0 && (
+                <p style={{ gridColumn:"1 / -1", margin:"-2px 0 0", fontSize:9.5, color:P.textSoft, fontFamily:mono }}>
+                  Chocs : {chocsPomp} avant SMUR + {chocsSmur} SMUR
+                </p>
+              )}
               {(showCord300 || showCord150) && (
                 <div style={{ gridColumn:"1 / -1", background:P.amberSoft,
                   border:`1.5px solid ${P.amber}`, borderRadius:10, padding:"8px 12px",
