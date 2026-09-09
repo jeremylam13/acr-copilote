@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-68";
+const APP_VERSION = "2026.08.15-69";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -3703,10 +3703,14 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
     rec.onresult = (e) => {
       const results = Array.from(e.results);
       const interim = results.map(r => r[0].transcript).join(" ");
-      setVoiceTranscriptPed(interim);
-      if (buildWakeWordRegex(voiceWakeWordRefPed.current).test(normalizeVoice(interim))) {
+      const wakeWordDetectedNow = buildWakeWordRegex(voiceWakeWordRefPed.current).test(normalizeVoice(interim));
+      if (wakeWordDetectedNow) {
         lastWakeWordTimeRefPed.current = Date.now();
       }
+      // N'affiche le transcript à l'écran que si "Alpha" a été dit récemment —
+      // évite d'occuper l'écran avec toutes les conversations ambiantes.
+      const wakeWordCurrentlyActive = wakeWordDetectedNow || (Date.now() - lastWakeWordTimeRefPed.current < 4000);
+      if (wakeWordCurrentlyActive) setVoiceTranscriptPed(interim);
 
       const finalResult = results.find(r => r.isFinal);
       if (finalResult) {
@@ -9738,11 +9742,17 @@ function App() {
     rec.onresult = (e) => {
       const results = Array.from(e.results);
       const interim = results.map(r => r[0].transcript).join(" ");
-      setVoiceTranscript(interim);
       // Détection précoce du mot-code, même avant que le résultat soit "final"
-      if (buildWakeWordRegex(voiceWakeWordRef.current).test(normalizeVoice(interim))) {
+      const wakeWordDetectedNow = buildWakeWordRegex(voiceWakeWordRef.current).test(normalizeVoice(interim));
+      if (wakeWordDetectedNow) {
         lastWakeWordTimeRef.current = Date.now();
       }
+      // N'affiche le transcript à l'écran que si "Alpha" a été dit récemment —
+      // évite d'occuper l'écran avec toutes les conversations ambiantes non
+      // destinées à l'app (le micro écoute en continu, pas seulement les
+      // commandes voulues).
+      const wakeWordCurrentlyActive = wakeWordDetectedNow || (Date.now() - lastWakeWordTimeRef.current < 4000);
+      if (wakeWordCurrentlyActive) setVoiceTranscript(interim);
 
       const finalResult = results.find(r => r.isFinal);
       if (finalResult) {
