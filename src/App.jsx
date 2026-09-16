@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-70";
+const APP_VERSION = "2026.08.15-71";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1226,7 +1226,7 @@ function GuideApp({ onClose }) {
       items: [
         { icon:"🚒", title:"Adulte ou Pédiatrique — deux protocoles distincts", desc:"Le bouton \"ACR VLI\" de l'accueil propose un choix : Adulte ou Pédiatrique. Le protocole pédiatrique diffère sur plusieurs points clés — DIO en 1ère intention (pas seulement après échec de VVP), doses recalculées automatiquement au poids de l'enfant (mêmes tables que le module Pédiatrique médical), et onglet Situations particulières réduit à 3 cartes (pas d'hypothermie ni de femme enceinte, non applicables)." },
         { icon:"🚑", title:"Un module à part, en attente du médecin", desc:"Accent orange distinctif partout à l'écran. La grille d'actions est volontairement restreinte aux gestes autorisés par le protocole VLI local (Pompiers/ISP) : analyse de rythme, voie d'abord, adrénaline, défibrillation, cordarone, sécurisation des VAS, planche à masser. Le certificat de décès n'existe volontairement pas en VLI — un infirmier n'a jamais l'autorité de constater un décès, avec ou sans OML ; ce point relève uniquement du VLM ou de la régulation médicale. Fast-écho, ECMO, BATT et les thérapeutiques réservées au médecin restent inaccessibles tant que le VLM n'est pas arrivé." },
-        { icon:"🫁", title:"Sécurisation des VAS", desc:"Choix explicite entre dispositif supra-glottique (geste infirmier) et intubation orotrachéale (réservée à l'IADE) — la chronologie garde une trace précise de ce qui a réellement été posé. Une case \"Inhalation objectivée\" est disponible avant de valider le choix, comme dans les modules médicaux." },
+        { icon:"🫁", title:"Sécurisation des VAS", desc:"Choix explicite entre dispositif supra-glottique (geste infirmier) et intubation orotrachéale (réservée à l'IADE) — la chronologie garde une trace précise de ce qui a réellement été posé. Une case \"Inhalation objectivée\" est disponible avant de valider le choix, comme dans les modules médicaux. En VLI Pédiatrique, la taille du dispositif supra-glottique (i-gel) est calculée et affichée automatiquement selon le poids sélectionné." },
         { icon:"🎯", title:"Onglet Situations particulières (Adulte)", desc:"Remplace Étiologie/Thérapeutiques en VLI Adulte. Chaque situation du protocole ISP est accessible en un tap, avec le détail du protocole visible directement sur la carte.",
           list: [
             { label:"Hémorragie", detail:"Isofundine 500 mL/10 min, jusqu'à 2 VVP" },
@@ -2720,6 +2720,21 @@ function findPedRow(poids) {
   return best;
 }
 
+// Taille du dispositif supra-glottique i-gel selon le poids — table officielle
+// du fabricant, seuils simplifiés en tranches non chevauchantes pour un calcul
+// automatique sans ambiguïté.
+function igelSize(poids) {
+  const p = parseFloat(poids);
+  if (!p || p <= 0) return "";
+  if (p < 5)  return "1";
+  if (p < 12) return "1,5";
+  if (p < 25) return "2";
+  if (p < 35) return "2,5";
+  if (p < 60) return "3";
+  if (p < 90) return "4";
+  return "5";
+}
+
 function calcMateriel(poids) {
   const row = findPedRow(poids);
   if (!row) return null;
@@ -2752,6 +2767,7 @@ function calcMateriel(poids) {
     remplissage20:      Math.round(p * 20),
     amio:               row.amioMg,
     sondeGastrique:     row.sng + " Ch",
+    igel:               igelSize(poids),
     // Normes post-RACS
     fcN:    row.fcN,
     pasN:   row.pasN,
@@ -6161,10 +6177,12 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               {vasVLIInhalationPed && "✓"}
             </span>
           </button>
-          <ChoiceBtn label="Dispositif supra-glottique" sub="Geste infirmier — protocole VLI"
+          <ChoiceBtn label="Dispositif supra-glottique (i-gel)"
+            sub={localMat?.igel ? `Taille ${localMat.igel} — geste infirmier` : "Geste infirmier — protocole VLI"}
             accent="#EA6A12" soft="rgba(234,106,18,0.12)" textC="#B24E0A"
             onClick={() => {
-              addEvent("vas_supraglottique", `Dispositif supra-glottique posé${vasVLIInhalationPed ? " (inhalation objectivée)" : ""}`, "🫁");
+              const tailleTxt = localMat?.igel ? ` taille ${localMat.igel}` : "";
+              addEvent("vas_supraglottique", `Dispositif supra-glottique (i-gel${tailleTxt}) posé${vasVLIInhalationPed ? " (inhalation objectivée)" : ""}`, "🫁");
               setVasVLIInhalationPed(false); setModalVasVLIPed(false);
             }} />
           <ChoiceBtn label="Intubation orotrachéale (IOT)" sub="Réservée à l'IADE"
