@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-71";
+const APP_VERSION = "2026.08.15-72";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1124,6 +1124,7 @@ function GuideApp({ onClose }) {
         { icon:"📑", title:"Export PDF sans coupure", desc:"Le PDF ne coupe jamais un encart entre deux pages — l'algorithme détecte quand un bloc (identité, bandeau, frise, section détaillée) déborderait sur la page suivante et bascule la coupure juste avant, pour que chaque encart reste toujours entier et lisible." },
         { icon:"🌗", title:"Thème jour / nuit", desc:"Bascule en un tap, en haut de l'écran. Le thème jour est pensé pour la lisibilité en plein soleil, le thème nuit pour ne pas éblouir en intervention de nuit." },
         { icon:"💾", title:"Sauvegarde automatique locale", desc:"Toutes les données sont enregistrées en continu sur l'appareil. Fermeture accidentelle, batterie déchargée, crash de l'app : rien n'est perdu, la session reprend exactement où elle s'est arrêtée." },
+        { icon:"🔒", title:"Code d'accès à l'application", desc:"Demandé une seule fois, au tout premier lancement sur un appareil — puis mémorisé, plus jamais redemandé ensuite (sauf effacement des données du navigateur). Sert à limiter la diffusion en dehors de l'équipe, pas une protection informatique à proprement parler. Nécessite un réseau uniquement pour cette toute première vérification." },
         { icon:"📦", title:"Export / import de sauvegarde", desc:"Depuis Réglages : exportez un fichier contenant toutes les archives et tous les réglages, à conserver ailleurs ou à transférer sur un nouveau téléphone. Utile avant un changement d'appareil, une mise à jour d'OS, ou simplement par précaution — les données restent sinon uniquement sur ce téléphone. Noms et prénoms sont automatiquement réduits à leurs initiales dans le fichier exporté (le fichier peut quitter l'appareil — minimisation des données médicales) ; ils restent en clair dans le détail d'un cas consulté directement sur le téléphone. À l'import, les archives sont fusionnées sans rien effacer ; les réglages, eux, sont remplacés par ceux du fichier importé (une confirmation est demandée avant)." },
         { icon:"✉️", title:"Contact / Retours", desc:"Depuis Réglages : trois boutons pour signaler un bug, suggérer une amélioration, ou simplement faire un retour positif — chacun ouvre l'app mail avec le sujet et la version de l'app déjà pré-remplis, pour ne rien avoir à taper à la main." },
         { icon:"📊", title:"Dashboard & statistiques", desc:"Chaque réanimation clôturée est archivée localement (durée, issue, données clés) et alimente automatiquement le tableau de bord — accessible depuis la page d'accueil. Filtrable par type (Adulte/Trauma/Pédiatrique) et par période (date de début/fin), tout le reste de l'écran se recalcule instantanément selon le filtre choisi.",
@@ -14734,10 +14735,81 @@ function App() {
   );
 }
 
+// ── Écran de code d'accès — vérifié une fois via Supabase, puis mémorisé sur
+// l'appareil (jamais redemandé ensuite, sauf effacement des données du
+// navigateur). Empêche une transmission trop facile du lien de l'app en
+// dehors de l'équipe, sans prétendre à une vraie sécurité informatique. ──────
+function AccessGate({ children }) {
+  const [unlocked, setUnlocked] = useLocalState("acr_access_unlocked", false);
+  const [code, setCode] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!code.trim()) return;
+    if (!navigator.onLine) {
+      setError("🚫 Réseau nécessaire pour la toute première vérification du code sur cet appareil.");
+      return;
+    }
+    setChecking(true); setError("");
+    try {
+      const { data, error: err } = await supabaseTeam.from("acr_access_control")
+        .select("code").eq("id", "current").single();
+      if (err || !data) { setError("Vérification impossible — réessayez."); setChecking(false); return; }
+      if (code.trim().toUpperCase() === String(data.code).trim().toUpperCase()) {
+        setUnlocked(true);
+      } else {
+        setError("Code incorrect");
+      }
+    } catch {
+      setError("Vérification impossible — réessayez.");
+    }
+    setChecking(false);
+  };
+
+  if (unlocked) return children;
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#F2F5F9", display:"flex", flexDirection:"column",
+      alignItems:"center", justifyContent:"center", padding:"32px 24px", fontFamily:"'Inter',system-ui,sans-serif",
+      boxSizing:"border-box" }}>
+      <div style={{ width:64, height:64, borderRadius:18, background:"linear-gradient(135deg,#E3527A,#B0355A)",
+        display:"flex", alignItems:"center", justifyContent:"center", fontSize:30, marginBottom:20 }}>🔒</div>
+      <p style={{ margin:"0 0 4px", fontSize:18, fontWeight:800, color:"#0A111B" }}>Copilote ACR</p>
+      <p style={{ margin:"0 0 28px", fontSize:12.5, color:"#76869E", textAlign:"center" }}>
+        Application réservée à l'équipe SMUR<br />Code d'accès requis
+      </p>
+
+      <input value={code} onChange={e => { setCode(e.target.value); setError(""); }}
+        onKeyDown={e => { if (e.key === "Enter") submit(); }}
+        placeholder="Code d'accès" autoFocus
+        style={{ width:"100%", maxWidth:280, background: error ? "#FDEAEB" : "#fff",
+          border:`1.5px solid ${error ? "#DE1019" : "#C5CFDD"}`, borderRadius:12, padding:14,
+          fontSize:16, fontWeight:700, textAlign:"center", letterSpacing:"0.1em",
+          color: error ? "#A50710" : "#0A111B", marginBottom: error ? 8 : 14,
+          boxSizing:"border-box", fontFamily:"monospace", outline:"none" }} />
+      {error && <p style={{ margin:"0 0 14px", fontSize:11.5, color:"#A50710", fontWeight:600, textAlign:"center", maxWidth:280 }}>{error}</p>}
+
+      <button onClick={submit} disabled={checking}
+        style={{ width:"100%", maxWidth:280, background:"linear-gradient(135deg,#E3527A,#B0355A)",
+          border:"none", borderRadius:12, padding:14, fontSize:14, fontWeight:700, color:"#fff",
+          cursor: checking ? "default" : "pointer", opacity: checking ? 0.7 : 1 }}>
+        {checking ? "Vérification..." : "Valider"}
+      </button>
+
+      <p style={{ margin:"20px 0 0", fontSize:10.5, color:"#9AA7BD", textAlign:"center", maxWidth:260 }}>
+        Mémorisé sur cet appareil ensuite — pas redemandé à chaque ouverture
+      </p>
+    </div>
+  );
+}
+
 export default function AppWithBoundary() {
   return (
     <ErrorBoundary>
-      <App />
+      <AccessGate>
+        <App />
+      </AccessGate>
     </ErrorBoundary>
   );
 }
