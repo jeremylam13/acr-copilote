@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-72";
+const APP_VERSION = "2026.08.15-74";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -1111,6 +1111,7 @@ function GuideApp({ onClose }) {
       title: "Général",
       color: "slate",
       items: [
+        { icon:"🧭", title:"Tour guidé de l'accueil", desc:"S'affiche une seule fois (à la toute première ouverture, ou une fois au prochain lancement pour les utilisateurs déjà habitués) : Réglages, Guide, Jour/Nuit, choix du module, Statistiques — chaque élément encadré en un tap, avec une explication courte. Peut être passé à tout moment (\"Passer\"), il ne réapparaît plus ensuite." },
         { icon:"⏱", title:"Chronomètre & minuteur adrénaline", desc:"Le chrono démarre au lancement de la réa. Un minuteur dédié rappelle l'échéance de la prochaine adrénaline avec une alarme sonore, et se relance automatiquement à chaque administration." },
         { icon:"🔄", title:"Cycle RCP · 2 min", desc:"Une barre de progression affiche le temps restant avant la prochaine analyse de rythme (cycle de 2 minutes, remis à zéro automatiquement à chaque nouveau cycle). Le bouton \"↺\" à côté permet de recaler manuellement ce cycle sur la réanimation réellement en cours — utile si vous reprenez une RCP déjà démarrée par une autre équipe et que le décompte affiché ne correspond plus au rythme réel des compressions. Le recalage est aussi tracé dans la chronologie." },
         { icon:"📋", title:"Chronologie complète", desc:"Chaque geste (choc, adrénaline, intubation, RACS...) est horodaté automatiquement. La liste est repliée par défaut pour ne pas encombrer l'écran — dépliez-la à tout moment. Un geste ajouté par erreur peut être annulé juste après (toast \"Annuler\")." },
@@ -1180,7 +1181,7 @@ function GuideApp({ onClose }) {
       color: "violet",
       items: [
         { icon:"📍", title:"Emplacement du micro", desc:"Le bouton micro se trouve désormais dans l'en-tête, à côté du mode équipe et du réglage jour/nuit — un simple bouton compact à activer/désactiver, qui ne gêne plus jamais l'accès aux boutons d'action. Tant qu'il est actif, un bandeau fin reste affiché en haut de l'écran (fixe, toujours visible même en faisant défiler la page) : écoute en cours, transcription entendue, confirmation d'une commande reconnue, ou réponse à une question." },
-        { icon:"🎤", title:"Mot-code vocal (personnalisable)", desc:"Toute commande ou question doit être précédée d'un mot-code — \"Alpha\" par défaut (ex : \"Alpha, adrénaline\"). Ce filtre évite que le brouhaha d'une réanimation ne déclenche une action par erreur — un flash vert du micro confirme que le mot-code a bien été entendu. Modifiable dans Réglages : choisissez un mot qui ne risque pas d'être prononcé par hasard pendant une prise en charge (évitez les mots médicaux courants comme \"urgence\" ou \"protocole\"), préférez un mot court, et si possible un mot qu'on ne prononcerait pas naturellement en deux temps avec une pause au milieu." },
+        { icon:"🎤", title:"Mot-code vocal (personnalisable)", desc:"Toute commande ou question doit être précédée d'un mot-code — \"Alpha\" par défaut (ex : \"Alpha, adrénaline\"). Ce filtre évite que le brouhaha d'une réanimation ne déclenche une action par erreur — un flash vert du micro confirme que le mot-code a bien été entendu. Dès qu'une commande est reconnue, la fenêtre d'écoute se referme aussitôt — toute conversation ambiante juste après n'est plus prise en compte, il faut redire le mot-code pour la suivante. Modifiable dans Réglages : choisissez un mot qui ne risque pas d'être prononcé par hasard pendant une prise en charge (évitez les mots médicaux courants comme \"urgence\" ou \"protocole\"), préférez un mot court, et si possible un mot qu'on ne prononcerait pas naturellement en deux temps avec une pause au milieu." },
         { icon:"💉", title:"Toutes les commandes d'action", desc:"Chaque commande logue un geste dans la chronologie après un bandeau de confirmation de 2,5s (annulable). Les doses affichées s'adaptent automatiquement en pédiatrique selon le poids.",
           list: [
             { label:"Alpha, adrénaline", detail:"log une dose d'adrénaline et relance le minuteur" },
@@ -1390,6 +1391,54 @@ function ActionBtn({ action, onClick }) {
 }
 
 // ── Modal bottom-sheet ─────────────────────────────────────────────────────────
+// ── Tour guidé de l'accueil — encadre l'élément ciblé (mesuré en direct via ref)
+// et affiche une bulle explicative fixe en bas d'écran. Position du halo recalculée
+// à chaque étape ; la bulle reste toujours en bas, plus simple et robuste qu'un
+// calcul "au-dessus/en-dessous" selon l'espace disponible. ──────────────────────
+function TourOverlay({ targetRef, title, desc, stepIndex, totalSteps, onNext, onSkip, isLast, P, sans, disp, mono }) {
+  const [rect, setRect] = useState(null);
+  useEffect(() => {
+    const el = targetRef?.current;
+    setRect(el ? el.getBoundingClientRect() : null);
+  }, [targetRef, stepIndex]);
+
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:300, fontFamily:sans }}>
+      <div style={{ position:"absolute", inset:0, background:"rgba(8,15,35,0.72)", backdropFilter:"blur(2px)" }} />
+      {rect && (
+        <div style={{ position:"fixed", top:rect.top - 6, left:rect.left - 6,
+          width:rect.width + 12, height:rect.height + 12, borderRadius:14,
+          border:`3px solid ${P.rose}`, boxShadow:`0 0 0 6px color-mix(in srgb, ${P.rose} 25%, transparent), 0 0 24px color-mix(in srgb, ${P.rose} 50%, transparent)`,
+          pointerEvents:"none" }} />
+      )}
+      <div style={{ position:"fixed", left:0, right:0, bottom:0, background:P.surface,
+        borderRadius:"20px 20px 0 0", padding:"20px 20px calc(20px + env(safe-area-inset-bottom, 0px))",
+        boxShadow:"0 -12px 40px rgba(0,0,0,0.3)" }}>
+        <p style={{ margin:"0 0 6px", fontSize:15, fontWeight:800, color:P.text, fontFamily:disp }}>{title}</p>
+        <p style={{ margin:"0 0 14px", fontSize:12.5, color:P.textMid, lineHeight:1.5 }}>{desc}</p>
+        <div style={{ display:"flex", gap:5, marginBottom:16 }}>
+          {Array.from({ length: totalSteps }).map((_, i) => (
+            <span key={i} style={{ height:6, borderRadius:3, background: i===stepIndex ? P.rose : P.border,
+              width: i===stepIndex ? 18 : 6, transition:"all 0.2s" }} />
+          ))}
+        </div>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          {!isLast ? (
+            <button onClick={onSkip} style={{ background:"transparent", border:"none",
+              color:P.textSoft, fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:sans, padding:"8px 4px" }}>
+              Passer
+            </button>
+          ) : <span />}
+          <button onClick={onNext} style={{ background:P.rose, border:"none", borderRadius:10,
+            color:"#fff", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:sans, padding:"10px 18px" }}>
+            {isLast ? "✓ Terminer" : "Suivant →"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Modal({ title, icon, soft, onClose, children }) {
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(28,43,58,0.5)", zIndex:80,
@@ -3382,6 +3431,10 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         const cmd = matchVoiceCommandPedRef.current(text, wakeWordActive);
         setVoiceTranscriptPed("");
         if (cmd) {
+          // Referme aussitôt la fenêtre "mot-code actif" dès qu'une commande est
+          // reconnue — évite qu'une conversation ambiante juste après soit prise
+          // à tort pour une nouvelle commande (voir version adulte pour le détail).
+          lastWakeWordTimeRefPed.current = 0;
           if (cmd.isQuestion) {
             clearTimeout(voiceAnswerRefPed.current);
             setVoiceAnswerPed({ ...cmd, key: Date.now() });
@@ -9426,6 +9479,13 @@ function App() {
         const cmd = matchVoiceCommandRef.current(text, wakeWordActive);
         setVoiceTranscript("");
         if (cmd) {
+          // Dès qu'une commande est reconnue, on referme aussitôt la fenêtre
+          // "mot-code actif" — sans ça, elle reste ouverte jusqu'à 4s après "Alpha",
+          // et une conversation ambiante pendant ce délai pourrait être prise à tort
+          // pour une nouvelle commande. On ne la referme que sur un VRAI succès :
+          // dire "Alpha" seul (sans commande reconnue dans la foulée) laisse la
+          // fenêtre ouverte normalement, pour donner la commande dans la seconde suivante.
+          lastWakeWordTimeRef.current = 0;
           if (cmd.isQuestion) {
             // Question : réponse immédiate, parlée à voix haute — ne modifie jamais rien,
             // donc pas de délai de confirmation ni de possibilité d'annulation.
@@ -9685,6 +9745,16 @@ function App() {
 
   const [module, setModule] = useState(null);
   const [showOnboarding, setShowOnboarding] = useLocalState("acr_onboarding_done", false);
+  // Tour guidé — état séparé de showOnboarding : se déclenche pour tout le monde une
+  // seule fois (y compris ceux qui avaient déjà fermé l'écran de bienvenue avant que
+  // ce tour n'existe), puis ne se réaffiche plus.
+  const [tourDone, setTourDone] = useLocalState("acr_tour_done", false);
+  const [tourStep, setTourStep] = useState(0);
+  const tourRefSettings = useRef(null);
+  const tourRefGuide = useRef(null);
+  const tourRefTheme = useRef(null);
+  const tourRefModules = useRef(null);
+  const tourRefStats = useRef(null);
   const [showVliChoice, setShowVliChoice] = useState(false);
   const [showDashboard, setShowDashboard] = useState(false);
   const isTrauma = module === "traumatique";
@@ -9822,6 +9892,12 @@ function App() {
                 Aide cognitive SMUR — Arrêt cardiaque
               </p>
             </div>
+            <p style={{ margin:"0 0 22px", fontSize:12.5, color:P.textMid, lineHeight:1.6, textAlign:"center" }}>
+              En France, un arrêt cardiaque survient toutes les 10 minutes environ —
+              près de 50 000 par an. <b style={{ color:P.text }}>Copilote ACR</b> vous
+              accompagne à chaque étape de la prise en charge, et génère automatiquement
+              un compte-rendu détaillé, prêt à transmettre.
+            </p>
             {[
               { icon:"⏱", title:"Chrono + Adrénaline", desc:"Timer automatique, alarme à chaque interval" },
               { icon:"⚡", title:"Analyse de rythme", desc:"Flash toutes les 2 min, 4 choix en 1 tap" },
@@ -9847,7 +9923,7 @@ function App() {
                 boxShadow:`0 8px 24px color-mix(in srgb, ${P.rose} 35%, transparent)` }}>
               Commencer →
             </button>
-            <button onClick={() => { setShowOnboarding(true); setShowGuide(true); }}
+            <button onClick={() => { setShowOnboarding(true); setTourDone(true); setShowGuide(true); }}
               style={{ width:"100%", marginTop:10,
                 background:"transparent", border:`1.5px solid ${P.border}`, borderRadius:16,
                 color:P.textMid, fontSize:14, fontWeight:700, fontFamily:sans, padding:"14px",
@@ -9861,14 +9937,35 @@ function App() {
         </div>
       )}
 
+      {/* ── Tour guidé — une fois, indépendamment de l'écran de bienvenue ── */}
+      {showOnboarding && !tourDone && (() => {
+        const steps = [
+          { ref: tourRefSettings, title: "⚙️ Réglages", desc: "Personnalise l'app à ta façon : mot-code vocal, intervalle adrénaline, métronome, dilution pédiatrique..." },
+          { ref: tourRefGuide, title: "📖 Guide d'utilisation", desc: "Le guide complet de l'app, accessible à tout moment — utile pour découvrir une fonctionnalité ou se rafraîchir la mémoire." },
+          { ref: tourRefTheme, title: "☀️ Jour / Nuit 🌙", desc: "Bascule l'écran en mode sombre, plus confortable pour les interventions de nuit." },
+          { ref: tourRefModules, title: "Choisis ton type d'arrêt", desc: "Chaque module (Adulte, Traumatique, Pédiatrique, VLI) adapte automatiquement les doses, gestes et protocoles disponibles." },
+          { ref: tourRefStats, title: "📊 Statistiques", desc: tourRefStats.current
+              ? "Taux de RACS, durées moyennes, répartition par type — exportable en Excel."
+              : "Apparaît ici une fois que tu auras archivé tes premiers cas — taux de RACS, durées moyennes, export Excel..." },
+        ];
+        const step = steps[tourStep];
+        return (
+          <TourOverlay targetRef={step.ref} title={step.title} desc={step.desc}
+            stepIndex={tourStep} totalSteps={steps.length} isLast={tourStep === steps.length - 1}
+            onSkip={() => setTourDone(true)}
+            onNext={() => tourStep === steps.length - 1 ? setTourDone(true) : setTourStep(s => s + 1)}
+            P={P} sans={sans} disp={disp} mono={mono} />
+        );
+      })()}
+
       {/* Réglages en haut à gauche */}
       <div style={{ position:"absolute", top:16, left:16, zIndex:5, display:"flex", gap:8 }}>
-        <button onClick={() => setModalSettings(true)}
+        <button ref={tourRefSettings} onClick={() => setModalSettings(true)}
           style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:11,
             width:40, height:40, cursor:"pointer", fontSize:18, color:P.textMid,
             display:"flex", alignItems:"center", justifyContent:"center", fontFamily:sans }}
           aria-label="Réglages">⚙️</button>
-        <button onClick={() => setShowGuide(true)}
+        <button ref={tourRefGuide} onClick={() => setShowGuide(true)}
           style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:11,
             width:40, height:40, cursor:"pointer", fontSize:18, color:P.textMid,
             display:"flex", alignItems:"center", justifyContent:"center", fontFamily:sans }}
@@ -9876,7 +9973,7 @@ function App() {
       </div>
 
       {/* Bascule Jour/Nuit en haut, bien à droite */}
-      <div style={{ position:"absolute", top:16, right:12, zIndex:5 }}>
+      <div ref={tourRefTheme} style={{ position:"absolute", top:16, right:12, zIndex:5 }}>
         <ThemeToggle theme={theme} setTheme={setTheme} compact />
       </div>
 
@@ -9934,7 +10031,7 @@ function App() {
       )}
 
       {/* 4 modules — grille 2x2 compacte pour tout voir sans défiler */}
-      <div style={{ width:"100%", maxWidth:380, display:"grid", gridTemplateColumns:"1fr 1fr", gap:11 }}>
+      <div ref={tourRefModules} style={{ width:"100%", maxWidth:380, display:"grid", gridTemplateColumns:"1fr 1fr", gap:11 }}>
 
         {/* ACR Adulte */}
         <button onClick={() => setModule("adulte_extra")} style={{
@@ -10068,7 +10165,7 @@ function App() {
               Arrêts archivés · {archives.length}
             </p>
             <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-              <button onClick={() => setShowDashboard(true)}
+              <button ref={tourRefStats} onClick={() => setShowDashboard(true)}
                 style={{ background:P.blue, border:"none", borderRadius:8,
                   color:"#fff", fontSize:11, fontWeight:700, cursor:"pointer",
                   fontFamily:sans, padding:"5px 10px", display:"flex", alignItems:"center", gap:4 }}>
