@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-74";
+const APP_VERSION = "2026.08.15-75";
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -10250,6 +10250,22 @@ function App() {
               <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Guide complet de l'application</p>
               <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
                 Toutes les fonctionnalités, pour une prise en main avant utilisation réelle
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
+          <button onClick={() => { setModalSettings(false); setShowOnboarding(false); setTourDone(false); }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:P.roseSoft,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir l'écran de bienvenue</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Présentation de l'app + tour guidé des fonctionnalités de l'accueil
               </p>
             </div>
             <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
