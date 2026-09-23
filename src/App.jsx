@@ -4,7 +4,19 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-75";
+const APP_VERSION = "2026.08.15-82";
+
+// ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
+// correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
+// nouveautés à annoncer aux utilisateurs — pour rester discret et ne pas
+// réafficher le bandeau à chaque petite mise à jour technique.
+const WHATS_NEW_VERSION = "1";
+const WHATS_NEW_ITEMS = [
+  { icon:"🚒", text:"Nouveau module ACR VLI (protocole ISP) — Adulte et Pédiatrique" },
+  { icon:"📷", text:"Photos & tracés — joindre des ECG et photos au compte-rendu" },
+  { icon:"🔍", text:"Précision pupillaire détaillée (myosis, mydriase, anisocorie)" },
+  { icon:"🔒", text:"Code d'accès à l'application" },
+];
 
 // ── Mode équipe multi-device (sync temps réel via Supabase) ──────────────────
 const supabaseUrl = "https://wofxgdobpphsjacfqeky.supabase.co";
@@ -252,6 +264,10 @@ styleSheet.textContent = `
   @keyframes pulse {
     0%, 100% { transform: scale(1); }
     50% { transform: scale(1.02); box-shadow: 0 8px 28px rgba(255,59,71,0.6); }
+  }
+  @keyframes acr-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
   }
   @keyframes acrConfirmIn {
     0% { opacity:0; transform: translate(-50%, 12px) scale(0.96); }
@@ -1112,6 +1128,10 @@ function GuideApp({ onClose }) {
       color: "slate",
       items: [
         { icon:"🧭", title:"Tour guidé de l'accueil", desc:"S'affiche une seule fois (à la toute première ouverture, ou une fois au prochain lancement pour les utilisateurs déjà habitués) : Réglages, Guide, Jour/Nuit, choix du module, Statistiques — chaque élément encadré en un tap, avec une explication courte. Peut être passé à tout moment (\"Passer\"), il ne réapparaît plus ensuite." },
+        { icon:"🧭", title:"Tour guidé du module Adulte/Trauma", desc:"Se déclenche une fois, dès qu'une réanimation est démarrée dans ce module — vocal, équipe, gestes vitaux, onglets, Patient/Transmission/Régulation, Soins post-RACS, compte-rendu. En mode Traumatique, deux étapes supplémentaires apparaissent : la carte Causes HOTT et le Fast-écho. Passable à tout moment (utile si une vraie prise en charge démarre pendant le tour), et rejouable depuis Réglages → \"Revoir le tour du module Adulte/Trauma\"." },
+        { icon:"🧭", title:"Tour guidé du module Pédiatrique", desc:"Se déclenche une fois à l'écran actif — vocal, équipe, poids de l'enfant, gestes vitaux (doses recalculées au poids), guide de dilution, onglets, Patient/Transmission/Régulation, Soins post-RACS, compte-rendu. Passable à tout moment, rejouable depuis Réglages → \"Revoir le tour du module Pédiatrique\"." },
+        { icon:"🧭", title:"Tour guidé VLI Adulte", desc:"Se déclenche une fois, tant que la transition VLM n'a pas eu lieu — vocal, équipe, bouton VLM arrivée, gestes vitaux, onglets Actions/Situations, Sécurisation VAS, Photos & tracés, compte-rendu. Rejouable depuis Réglages → \"Revoir le tour du module VLI Adulte\"." },
+        { icon:"🧭", title:"Tour guidé VLI Pédiatrique", desc:"Même principe que VLI Adulte, avec en plus l'étape Poids de l'enfant et la mention de la taille i-gel calculée automatiquement dans l'étape Sécurisation VAS. Rejouable depuis Réglages → \"Revoir le tour du module VLI Pédiatrique\"." },
         { icon:"⏱", title:"Chronomètre & minuteur adrénaline", desc:"Le chrono démarre au lancement de la réa. Un minuteur dédié rappelle l'échéance de la prochaine adrénaline avec une alarme sonore, et se relance automatiquement à chaque administration." },
         { icon:"🔄", title:"Cycle RCP · 2 min", desc:"Une barre de progression affiche le temps restant avant la prochaine analyse de rythme (cycle de 2 minutes, remis à zéro automatiquement à chaque nouveau cycle). Le bouton \"↺\" à côté permet de recaler manuellement ce cycle sur la réanimation réellement en cours — utile si vous reprenez une RCP déjà démarrée par une autre équipe et que le décompte affiché ne correspond plus au rythme réel des compressions. Le recalage est aussi tracé dans la chronologie." },
         { icon:"📋", title:"Chronologie complète", desc:"Chaque geste (choc, adrénaline, intubation, RACS...) est horodaté automatiquement. La liste est repliée par défaut pour ne pas encombrer l'écran — dépliez-la à tout moment. Un geste ajouté par erreur peut être annulé juste après (toast \"Annuler\")." },
@@ -1402,14 +1422,35 @@ function TourOverlay({ targetRef, title, desc, stepIndex, totalSteps, onNext, on
     setRect(el ? el.getBoundingClientRect() : null);
   }, [targetRef, stepIndex]);
 
+  // Halo autour de la cible (marge de 6px) — le reste de l'écran est recouvert par
+  // 4 bandes floutées qui l'entourent exactement, pour que SEULE la cible reste
+  // nette. Sans cible (ex: étape Stats avant le premier cas archivé), un seul
+  // voile flouté couvre tout l'écran.
+  const pad = 6;
+  const vw = typeof window !== "undefined" ? window.innerWidth : 0;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 0;
+  const blurStyle = { position:"fixed", background:"rgba(8,15,35,0.68)",
+    backdropFilter:"blur(3px)", WebkitBackdropFilter:"blur(3px)" };
+  const hole = rect ? {
+    top: Math.max(0, rect.top - pad), left: Math.max(0, rect.left - pad),
+    right: Math.min(vw, rect.right + pad), bottom: Math.min(vh, rect.bottom + pad),
+  } : null;
+
   return (
     <div style={{ position:"fixed", inset:0, zIndex:300, fontFamily:sans }}>
-      <div style={{ position:"absolute", inset:0, background:"rgba(8,15,35,0.72)", backdropFilter:"blur(2px)" }} />
-      {rect && (
-        <div style={{ position:"fixed", top:rect.top - 6, left:rect.left - 6,
-          width:rect.width + 12, height:rect.height + 12, borderRadius:14,
-          border:`3px solid ${P.rose}`, boxShadow:`0 0 0 6px color-mix(in srgb, ${P.rose} 25%, transparent), 0 0 24px color-mix(in srgb, ${P.rose} 50%, transparent)`,
-          pointerEvents:"none" }} />
+      {!hole ? (
+        <div style={{ ...blurStyle, inset:0 }} />
+      ) : (
+        <>
+          <div style={{ ...blurStyle, top:0, left:0, right:0, height:hole.top }} />
+          <div style={{ ...blurStyle, top:hole.bottom, left:0, right:0, bottom:0 }} />
+          <div style={{ ...blurStyle, top:hole.top, left:0, width:hole.left, height:hole.bottom - hole.top }} />
+          <div style={{ ...blurStyle, top:hole.top, left:hole.right, right:0, height:hole.bottom - hole.top }} />
+          <div style={{ position:"fixed", top:hole.top, left:hole.left,
+            width:hole.right - hole.left, height:hole.bottom - hole.top, borderRadius:14,
+            border:`3px solid ${P.rose}`, boxShadow:`0 0 24px color-mix(in srgb, ${P.rose} 50%, transparent)`,
+            pointerEvents:"none" }} />
+        </>
       )}
       <div style={{ position:"fixed", left:0, right:0, bottom:0, background:P.surface,
         borderRadius:"20px 20px 0 0", padding:"20px 20px calc(20px + env(safe-area-inset-bottom, 0px))",
@@ -1485,6 +1526,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
   const rosc  = events.find(e => e.id === "rosc");
   const deces = events.find(e => e.id === "deces");
   const [copied, setCopied] = useState(false);
+  const [pdfGenerating, setPdfGenerating] = useState(false);
 
   // Génère le texte complet du compte-rendu
   const buildText = () => {
@@ -2484,7 +2526,9 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         background:P.surface, borderTop:`1px solid ${P.border}`,
         padding:"10px 14px 14px", boxShadow:"0 -4px 18px rgba(0,0,0,0.10)" }}>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, maxWidth:600, margin:"0 auto" }}>
-          <button onClick={async () => {
+          <button disabled={pdfGenerating} onClick={async () => {
+            if (pdfGenerating) return;
+            setPdfGenerating(true);
             try {
               const html = buildHtml();
               const { default: jsPDF } = await import('jspdf');
@@ -2537,14 +2581,24 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
             } catch(e) {
               // Fallback : impression navigateur
               window.print();
+            } finally {
+              setPdfGenerating(false);
             }
           }}
-            style={{ background:`linear-gradient(135deg, ${P.blue}, ${P.blueText})`,
-              border:"none", borderRadius:13, padding:"13px 8px", cursor:"pointer",
+            style={{ background: pdfGenerating ? P.textSoft : `linear-gradient(135deg, ${P.blue}, ${P.blueText})`,
+              border:"none", borderRadius:13, padding:"13px 8px", cursor: pdfGenerating ? "default" : "pointer",
               fontFamily:disp, fontSize:13, fontWeight:800, color:"#fff",
               display:"flex", alignItems:"center", justifyContent:"center", gap:6,
-              boxShadow:`0 5px 14px color-mix(in srgb, ${P.blue} 30%, transparent)` }}>
-            🖨️ PDF
+              boxShadow: pdfGenerating ? "none" : `0 5px 14px color-mix(in srgb, ${P.blue} 30%, transparent)`,
+              opacity: pdfGenerating ? 0.85 : 1 }}>
+            {pdfGenerating ? (
+              <>
+                <span style={{ width:14, height:14, border:"2px solid rgba(255,255,255,0.4)",
+                  borderTopColor:"#fff", borderRadius:"50%", animation:"acr-spin 0.7s linear infinite",
+                  display:"inline-block" }} />
+                Génération...
+              </>
+            ) : "🖨️ PDF"}
           </button>
           <button onClick={handleShare}
             style={{ background:`linear-gradient(135deg, ${P.teal}, ${P.tealText})`,
@@ -2971,6 +3025,25 @@ function RemplissageVasculairePed({ racs, setRacs, localMat }) {
 
 function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, initialTeamCode, isVLI = false }) {
   const [vliUnlockedPed, setVliUnlockedPed] = useLocalState("acr_vli_ped_unlocked", false);
+
+  // Tour guidé du module Pédiatrique — une fois, déclenché à l'écran actif.
+  const [tourModDonePed, setTourModDonePed] = useLocalState("acr_tour_mod_ped_done", false);
+  const [tourModStepPed, setTourModStepPed] = useState(0);
+  const tourModRefVoicePed = useRef(null);
+  const tourModRefTeamPed = useRef(null);
+  const tourModRefWeight = useRef(null);
+  const tourModRefVitalsPed = useRef(null);
+  const tourModRefMatPed = useRef(null);
+  const tourModRefTabsPed = useRef(null);
+  const tourModRefRowPed = useRef(null);
+  const tourModRefRacsPed = useRef(null);
+  const tourModRefReportPed = useRef(null);
+  const tourModRefVlmPed = useRef(null);
+  const tourModRefVitalsVliPed = useRef(null);
+  const tourModRefVasVliPed = useRef(null);
+  const tourModRefPhotosVliPed = useRef(null);
+  const [tourVliDonePed, setTourVliDonePed] = useLocalState("acr_tour_vli_ped_done", false);
+  const [tourVliStepPed, setTourVliStepPed] = useState(0);
   const [imagesPed, setImagesPed] = useLocalState("acr_ped_images", []);
   const [modalPhotosPed, setModalPhotosPed] = useState(false);
   const [photoStepPed, setPhotoStepPed] = useState("choice");
@@ -5028,7 +5101,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           </div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             {SpeechRecognitionAPI && (
-              <button
+              <button ref={tourModRefVoicePed}
                 onClick={() => {
                   if (!voiceActivePed) {
                     if (!navigator.onLine) {
@@ -5049,7 +5122,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                 <span style={{ fontSize:14 }}>🎙️</span>
               </button>
             )}
-            <button onClick={() => setModalTeamPed(true)}
+            <button ref={tourModRefTeamPed} onClick={() => setModalTeamPed(true)}
               style={{ background: teamPed.teamConnected ? P.greenSoft : P.surfaceAlt,
                 border:`1px solid ${teamPed.teamConnected ? P.green : P.border}`, borderRadius:10,
                 padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
@@ -5075,7 +5148,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         )}
 
         {/* Sélecteur poids — compact éditable */}
-        <div style={{marginBottom:10}}>
+        <div ref={tourModRefWeight} style={{marginBottom:10}}>
           <button onClick={()=>setShowPoidsEdit(v=>!v)}
             style={{width:"100%",background:P.surfaceAlt,border:`1.5px solid ${showPoidsEdit?P.amber:P.border}`,
               borderRadius:10,padding:"8px 14px",cursor:"pointer",fontFamily:sans,
@@ -5304,7 +5377,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
 
         {/* Rappel doses + matériel */}
         {localMat && (
-          <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,borderRadius:12,
+          <div ref={tourModRefMatPed} style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,borderRadius:12,
             padding:"10px 14px",marginBottom:10}}>
             <p style={{margin:"0 0 6px",fontSize:10,fontWeight:600,color:P.amberText,
               textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Doses · Matériel — {localPoids} kg</p>
@@ -5336,7 +5409,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
 
         {/* ── Bouton transition VLM (VLI pédiatrique uniquement, tant que non déverrouillé) ── */}
         {isVLI && !vliUnlockedPed && (
-          <button onClick={() => setModalVliTransitionPed(true)}
+          <button ref={tourModRefVlmPed} onClick={() => setModalVliTransitionPed(true)}
             style={{ width:"100%", background:"linear-gradient(135deg,#EA6A12,#B24E0A)", border:"none",
               borderRadius:13, padding:"12px 14px", marginBottom:12, display:"flex", alignItems:"center",
               gap:10, cursor:"pointer", boxShadow:"0 4px 14px rgba(234,106,18,0.4)" }}>
@@ -5350,7 +5423,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         )}
 
         {/* ── Rangée d'accès rapide : Patient · Transmission · Régulation ── */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
+        <div ref={tourModRefRowPed} style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
           <button onClick={() => setModalPatPed(true)}
             style={{ background:P.surface, border:`1px solid ${patPed.nom ? P.blue : P.border}`, borderRadius:14,
               padding:"11px 6px", cursor:"pointer", fontFamily:sans, display:"flex",
@@ -5456,7 +5529,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         )}
 
         {/* ── Tab bar Actions / Étiologie / Thérapeutiques / (Situations particulières VLI) ── */}
-        <div style={{display:"grid",gridTemplateColumns: (isVLI && !vliUnlockedPed) ? "1fr 1fr" : "1fr 1fr 1fr",gap:5,
+        <div ref={tourModRefTabsPed} style={{display:"grid",gridTemplateColumns: (isVLI && !vliUnlockedPed) ? "1fr 1fr" : "1fr 1fr 1fr",gap:5,
           background:P.surfaceAlt,borderRadius:12,padding:4,marginBottom:10}}>
           {(isVLI && !vliUnlockedPed ? [
             { id:"actions", label:"Actions",    icon:"⚡" },
@@ -5573,7 +5646,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                   )}
                 </div>
               )}
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <div ref={tourModRefVitalsVliPed} style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
                 <ActionBtn action={{ label:"Adrénaline", dose:`${localMat?.adrenalineMg||""} mg IV/IO`, vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText,
                     hapticType:"long", badge: adrAlarmActivePed ? { text:"!", color:P.rose, pulse:true } : null }}
                   onClick={() => { addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }} />
@@ -5587,7 +5660,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                 <ActionBtn action={{ label:"Voie d'abord", dose:"DIO 1ère intention", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
                   onClick={() => setModalVvpPed(true)} />
               </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <div ref={tourModRefVasVliPed} style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
                 <ActionBtn action={{ label:"Cordarone", dose:`${localMat?.amio||""} mg`, svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                   onClick={() => addEvent("cord",`Amiodarone ${localMat?.amio||""}mg IV/IO (5mg/kg)`,"💊")} />
                 <ActionBtn action={{ label:"Sécurisation VAS", svg:ICONS.iot, accent:"#EA6A12", soft:"rgba(234,106,18,0.12)", textC:"#B24E0A",
@@ -5600,7 +5673,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               </div>
 
               {/* ── Photos & tracés (ECG, contexte) ── */}
-              <button onClick={() => { setPhotoStepPed("choice"); setModalPhotosPed(true); }}
+              <button ref={tourModRefPhotosVliPed} onClick={() => { setPhotoStepPed("choice"); setModalPhotosPed(true); }}
                 style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
                   background:P.surface, border:`1px solid ${P.border}`, borderRadius:16,
                   padding:"14px 16px", cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
@@ -5739,7 +5812,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                 <span style={{ fontSize:15, flexShrink:0 }}>↩</span>
               </button>
 
-              <button onClick={() => setModalRacsPed(true)}
+              <button ref={tourModRefRacsPed} onClick={() => setModalRacsPed(true)}
                 style={{ gridColumn:"1 / -1", display:"flex", alignItems:"center", gap:10,
                   background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
                   border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
@@ -5919,12 +5992,14 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             );
           })()}
 
-          <ActionBtn action={{label:"Adrénaline",dose:`${localMat?.adrenalineMg||""} mg`,vital:true,svg:ICONS.adr,accent:P.rose,soft:P.roseSoft,textC:P.roseText,
-              hapticType:"long", badge: adrAlarmActivePed ? { text:"!", color:P.rose, pulse:true } : null}}
-            onClick={()=>{ addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }}/>
-          <ActionBtn action={{label:"Défibrillation",dose:"4 J/kg",vital:true,svg:ICONS.choc,accent:P.blue,soft:P.blueSoft,textC:P.blueText,
-              hapticType:"double", badge: lastRhythmPed?.id === "rv_fvtv" ? { text:"FV", color:P.blue, pulse:false } : null}}
-            onClick={()=>setModalChocPed(true)}/>
+          <div ref={tourModRefVitalsPed} style={{ gridColumn:"1 / -1", display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+            <ActionBtn action={{label:"Adrénaline",dose:`${localMat?.adrenalineMg||""} mg`,vital:true,svg:ICONS.adr,accent:P.rose,soft:P.roseSoft,textC:P.roseText,
+                hapticType:"long", badge: adrAlarmActivePed ? { text:"!", color:P.rose, pulse:true } : null}}
+              onClick={()=>{ addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }}/>
+            <ActionBtn action={{label:"Défibrillation",dose:"4 J/kg",vital:true,svg:ICONS.choc,accent:P.blue,soft:P.blueSoft,textC:P.blueText,
+                hapticType:"double", badge: lastRhythmPed?.id === "rv_fvtv" ? { text:"FV", color:P.blue, pulse:false } : null}}
+              onClick={()=>setModalChocPed(true)}/>
+          </div>
           <ActionBtn action={{label:"Analyse de rythme",svg:ICONS.rythme,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
             onClick={()=>setModalRythme(true)}/>
           <ActionBtn action={{label:"Voie d'abord",svg:ICONS.vvp,accent:P.green,soft:P.greenSoft,textC:P.greenText}}
@@ -6885,7 +6960,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           </button>
         )}
         <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:8}}>
-          <button onClick={() => setShowPdf(true)}
+          <button ref={tourModRefReportPed} onClick={() => setShowPdf(true)}
             style={{width:"100%",background:"linear-gradient(135deg,#3B82C4,#2563A8)",border:"none",
               borderRadius:11,color:"#fff",fontSize:13,fontWeight:600,padding:"11px",
               cursor:"pointer",fontFamily:sans,display:"flex",alignItems:"center",justifyContent:"center",gap:7}}>
@@ -6988,6 +7063,54 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           </div>
         </div>
       )}
+
+      {/* ── Tour guidé du module Pédiatrique — une fois, à l'écran actif ── */}
+      {!isVLI && !tourModDonePed && (() => {
+        const steps = [
+          { ref: tourModRefVoicePed, title: "🎙️ Commande vocale", desc: "Dis \"Alpha\" suivi d'une commande pour logger un geste sans lâcher tes mains — \"Alpha, adrénaline\" par exemple." },
+          { ref: tourModRefTeamPed, title: "👥 Mode équipe", desc: "Synchronise la prise en charge entre plusieurs téléphones en temps réel — crée ou rejoins une session avec un code à 6 caractères." },
+          { ref: tourModRefWeight, title: "⚖️ Poids de l'enfant", desc: "Pilote automatiquement toutes les doses affichées dans l'app — adrénaline, cordarone, matériel. Modifiable à tout moment en cas d'estimation initiale erronée." },
+          { ref: tourModRefVitalsPed, title: "💉 Les gestes vitaux", desc: "Adrénaline et défibrillation, recalculées au poids en direct — toujours en haut, en un seul tap." },
+          { ref: tourModRefMatPed, title: "💧 Guide de dilution", desc: "Rappel du matériel et des doses pendant toute la réanimation — dilution adaptée automatiquement si l'enfant pèse moins de 10 kg." },
+          { ref: tourModRefTabsPed, title: "⚡🔍💊 Actions / Étiologie / Thérapeutiques", desc: "Actions regroupe les gestes courants. Étiologie aide à chercher la cause. Thérapeutiques regroupe amines, remplissage et sédation." },
+          { ref: tourModRefRowPed, title: "🪪 Patient · Transmission · Régulation", desc: "Accès rapide au dossier patient, à la transmission SBAR et au contact régulation — toujours visibles en un tap." },
+          { ref: tourModRefRacsPed, title: "🫀 Soins post-RACS", desc: tourModRefRacsPed.current
+              ? "Constantes, amines, sédation et courbes en direct (TA, EtCO₂)."
+              : "Apparaît automatiquement dès qu'un RACS est obtenu — constantes, amines, sédation, et courbes en direct (TA, EtCO₂)." },
+          { ref: tourModRefReportPed, title: "📄 Compte-rendu", desc: "Généré automatiquement en continu — prêt à imprimer, partager ou copier à tout moment, sans ressaisie." },
+        ];
+        const step = steps[tourModStepPed];
+        return (
+          <TourOverlay targetRef={step.ref} title={step.title} desc={step.desc}
+            stepIndex={tourModStepPed} totalSteps={steps.length} isLast={tourModStepPed === steps.length - 1}
+            onSkip={() => setTourModDonePed(true)}
+            onNext={() => tourModStepPed === steps.length - 1 ? setTourModDonePed(true) : setTourModStepPed(s => s + 1)}
+            P={P} sans={sans} disp={disp} mono={mono} />
+        );
+      })()}
+
+      {/* ── Tour guidé VLI Pédiatrique — une fois, tant que non déverrouillé ── */}
+      {isVLI && !vliUnlockedPed && !tourVliDonePed && (() => {
+        const steps = [
+          { ref: tourModRefVoicePed, title: "🎙️ Commande vocale", desc: "Dis \"Alpha\" suivi d'une commande pour logger un geste sans lâcher tes mains — \"Alpha, adrénaline\" par exemple." },
+          { ref: tourModRefTeamPed, title: "👥 Mode équipe", desc: "Synchronise la prise en charge entre plusieurs téléphones en temps réel — crée ou rejoins une session avec un code à 6 caractères." },
+          { ref: tourModRefWeight, title: "⚖️ Poids de l'enfant", desc: "Pilote automatiquement toutes les doses affichées — adrénaline, cordarone, et la taille du dispositif supra-glottique (i-gel)." },
+          { ref: tourModRefVlmPed, title: "🚒 VLM arrivée", desc: "Dès l'arrivée du médecin, ce bouton débloque la grille complète du module ACR Pédiatrique — plus aucune restriction, tous les gestes et thérapeutiques deviennent accessibles. Rien n'est perdu : patient, chocs, adrénaline, tout reste intact." },
+          { ref: tourModRefVitalsVliPed, title: "💉 Les gestes vitaux", desc: "Adrénaline et défibrillation, recalculées au poids en direct — toujours en haut, en un seul tap." },
+          { ref: tourModRefTabsPed, title: "⚡🎯 Actions / Situations", desc: "Actions regroupe les gestes autorisés par le protocole VLI. Situations particulières couvre hémorragie, obstruction VAS et intoxication aux fumées — doses recalculées au poids." },
+          { ref: tourModRefVasVliPed, title: "🫁 Sécurisation VAS", desc: "Choix entre dispositif supra-glottique (i-gel, taille automatiquement calculée selon le poids) et intubation orotrachéale (réservée à l'IADE)." },
+          { ref: tourModRefPhotosVliPed, title: "📷 Photos & tracés", desc: "Joins un ECG (numéroté automatiquement) ou une photo circonstancielle — retrouvés à la fin du compte-rendu." },
+          { ref: tourModRefReportPed, title: "📄 Compte-rendu", desc: "Généré automatiquement en continu — prêt à imprimer, partager ou copier à tout moment, sans ressaisie." },
+        ];
+        const step = steps[tourVliStepPed];
+        return (
+          <TourOverlay targetRef={step.ref} title={step.title} desc={step.desc}
+            stepIndex={tourVliStepPed} totalSteps={steps.length} isLast={tourVliStepPed === steps.length - 1}
+            onSkip={() => setTourVliDonePed(true)}
+            onNext={() => tourVliStepPed === steps.length - 1 ? setTourVliDonePed(true) : setTourVliStepPed(s => s + 1)}
+            P={P} sans={sans} disp={disp} mono={mono} />
+        );
+      })()}
 
       {/* PDF pédiatrique */}
       {showPdf && (
@@ -9749,6 +9872,7 @@ function App() {
   // seule fois (y compris ceux qui avaient déjà fermé l'écran de bienvenue avant que
   // ce tour n'existe), puis ne se réaffiche plus.
   const [tourDone, setTourDone] = useLocalState("acr_tour_done", false);
+  const [whatsNewSeen, setWhatsNewSeen] = useLocalState("acr_whats_new_seen", "0");
   const [tourStep, setTourStep] = useState(0);
   const tourRefSettings = useRef(null);
   const tourRefGuide = useRef(null);
@@ -9762,6 +9886,26 @@ function App() {
   // Déverrouillage VLI → passation au VLM : une fois débloqué, la grille complète
   // reste accessible pour le reste de la session (pas de retour arrière possible).
   const [vliUnlocked, setVliUnlocked] = useLocalState("acr_vli_unlocked", false);
+
+  // Tour guidé du module Adulte/Trauma — une fois par module (distinct de celui
+  // de l'accueil), déclenché une fois l'écran actif atteint (après "Démarrer").
+  const [tourModDone, setTourModDone] = useLocalState("acr_tour_mod_adulte_done", false);
+  const [tourModStep, setTourModStep] = useState(0);
+  const tourModRefVoice = useRef(null);
+  const tourModRefTeam = useRef(null);
+  const tourModRefVitals = useRef(null);
+  const tourModRefTabs = useRef(null);
+  const tourModRefRow = useRef(null);
+  const tourModRefRacs = useRef(null);
+  const tourModRefReport = useRef(null);
+  const tourModRefVlm = useRef(null);
+  const tourModRefVitalsVli = useRef(null);
+  const tourModRefVasVli = useRef(null);
+  const tourModRefPhotosVli = useRef(null);
+  const [tourVliDone, setTourVliDone] = useLocalState("acr_tour_vli_done", false);
+  const [tourVliStep, setTourVliStep] = useState(0);
+  const tourModRefHott = useRef(null);
+  const tourModRefFast = useRef(null);
   const [images, setImages] = useLocalState("acr_adulte_images", []);
   const [modalPhotos, setModalPhotos] = useState(false);
   const [photoStep, setPhotoStep] = useState("choice"); // "choice" | "confirm"
@@ -10030,6 +10174,28 @@ function App() {
         </div>
       )}
 
+      {/* ── Bandeau discret "Nouveautés" — une fois par lot d'annonces, jamais en même temps que l'onboarding/tour ── */}
+      {showOnboarding && tourDone && whatsNewSeen !== WHATS_NEW_VERSION && (
+        <div style={{ width:"100%", maxWidth:380, background:P.surface, border:`1px solid ${P.border}`,
+          borderRadius:14, padding:"12px 14px", marginBottom:14, position:"relative" }}>
+          <button onClick={() => setWhatsNewSeen(WHATS_NEW_VERSION)}
+            style={{ position:"absolute", top:8, right:8, background:"transparent", border:"none",
+              color:P.textSoft, fontSize:15, cursor:"pointer", padding:4, lineHeight:1 }}
+            aria-label="Fermer">×</button>
+          <p style={{ margin:"0 0 8px", fontSize:11.5, fontWeight:800, color:P.text, paddingRight:20 }}>
+            ✨ Nouveautés
+          </p>
+          <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+            {WHATS_NEW_ITEMS.map((it, i) => (
+              <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:7 }}>
+                <span style={{ fontSize:12, flexShrink:0, lineHeight:1.4 }}>{it.icon}</span>
+                <span style={{ fontSize:11, color:P.textMid, lineHeight:1.4 }}>{it.text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 4 modules — grille 2x2 compacte pour tout voir sans défiler */}
       <div ref={tourRefModules} style={{ width:"100%", maxWidth:380, display:"grid", gridTemplateColumns:"1fr 1fr", gap:11 }}>
 
@@ -10266,6 +10432,76 @@ function App() {
               <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir l'écran de bienvenue</p>
               <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
                 Présentation de l'app + tour guidé des fonctionnalités de l'accueil
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
+          <button onClick={() => { setModalSettings(false); setTourModDone(false); setTourModStep(0); }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:P.roseSoft,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module Adulte/Trauma</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Se relance dès qu'une réanimation est démarrée dans ce module
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
+          <button onClick={() => {
+              setModalSettings(false);
+              try { localStorage.setItem("acr_tour_mod_ped_done", "false"); } catch {}
+            }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:P.roseSoft,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module Pédiatrique</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Se relance dès qu'une réanimation est démarrée dans ce module
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
+          <button onClick={() => { setModalSettings(false); setTourVliDone(false); setTourVliStep(0); }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:"rgba(234,106,18,0.14)",
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module VLI Adulte</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Se relance dès qu'une réanimation VLI est démarrée
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
+          <button onClick={() => {
+              setModalSettings(false);
+              try { localStorage.setItem("acr_tour_vli_ped_done", "false"); } catch {}
+            }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:"rgba(234,106,18,0.14)",
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module VLI Pédiatrique</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Se relance dès qu'une réanimation VLI pédiatrique est démarrée
               </p>
             </div>
             <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
@@ -12772,7 +13008,7 @@ function App() {
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
             {SpeechRecognitionAPI && (
-              <button
+              <button ref={tourModRefVoice}
                 onClick={() => {
                   if (!voiceActive) {
                     if (!navigator.onLine) {
@@ -12793,7 +13029,7 @@ function App() {
                 <span style={{ fontSize:14 }}>🎙️</span>
               </button>
             )}
-            <button onClick={() => setModalTeam(true)}
+            <button ref={tourModRefTeam} onClick={() => setModalTeam(true)}
               style={{ background: team.teamConnected ? P.greenSoft : P.surfaceAlt,
                 border:`1px solid ${team.teamConnected ? P.green : P.border}`, borderRadius:10,
                 padding:"6px 9px", cursor:"pointer", fontFamily:sans, display:"flex",
@@ -13013,7 +13249,7 @@ function App() {
 
         {/* ── Bouton transition VLM (VLI uniquement, tant que non déverrouillé) ── */}
         {isVLI && !vliUnlocked && (
-          <button onClick={() => setModalVliTransition(true)}
+          <button ref={tourModRefVlm} onClick={() => setModalVliTransition(true)}
             style={{ width:"100%", background:"linear-gradient(135deg,#EA6A12,#B24E0A)", border:"none",
               borderRadius:13, padding:"12px 14px", marginBottom:12, display:"flex", alignItems:"center",
               gap:10, cursor:"pointer", boxShadow:"0 4px 14px rgba(234,106,18,0.4)" }}>
@@ -13030,7 +13266,7 @@ function App() {
         {true && <>
 
           {/* ── Rangée d'accès rapide : Patient · Transmission · Régulation ── */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
+          <div ref={tourModRefRow} style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
             {/* Patient */}
             <button onClick={() => setModalPat(true)}
               style={{ background:P.surface, border:`1px solid ${pat.nom ? P.blue : P.border}`, borderRadius:14,
@@ -13171,7 +13407,7 @@ function App() {
           )}
 
           {/* ── Tab bar Actions / (Étiologie) / Thérapeutiques / (Situations particulières VLI) ── */}
-          <div style={{ display:"grid", gridTemplateColumns: (isTrauma || (isVLI && !vliUnlocked)) ? "1fr 1fr" : "1fr 1fr 1fr", gap:5,
+          <div ref={tourModRefTabs} style={{ display:"grid", gridTemplateColumns: (isTrauma || (isVLI && !vliUnlocked)) ? "1fr 1fr" : "1fr 1fr 1fr", gap:5,
             background:P.surfaceAlt, borderRadius:12, padding:4, marginBottom:10 }}>
             {(isVLI && !vliUnlocked ? [
               { id:"actions", label:"Actions",       icon:"⚡" },
@@ -13291,7 +13527,7 @@ function App() {
                     )}
                   </div>
                 )}
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+                <div ref={tourModRefVitalsVli} style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
                   <ActionBtn action={{ label:"Adrénaline", dose:"1 mg IV/IO", vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText,
                       hapticType:"long", badge: adrAlarmActive ? { text:"!", color:P.rose, pulse:true } : null }}
                     onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
@@ -13305,7 +13541,7 @@ function App() {
                   <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
                     onClick={() => setModalVvp(true)} />
                 </div>
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+                <div ref={tourModRefVasVli} style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
                   <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                     onClick={() => setModalCord(true)} />
                   <ActionBtn action={{ label:"Sécurisation VAS", svg:ICONS.iot, accent:"#EA6A12", soft:"rgba(234,106,18,0.12)", textC:"#B24E0A",
@@ -13318,7 +13554,7 @@ function App() {
                 </div>
 
                 {/* ── Photos & tracés (ECG, contexte) ── */}
-                <button onClick={() => { setPhotoStep("choice"); setModalPhotos(true); }}
+                <button ref={tourModRefPhotosVli} onClick={() => { setPhotoStep("choice"); setModalPhotos(true); }}
                   style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
                     background:P.surface, border:`1px solid ${P.border}`, borderRadius:16,
                     padding:"14px 16px", cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
@@ -13370,7 +13606,7 @@ function App() {
                   <span style={{ fontSize:15, flexShrink:0 }}>↩</span>
                 </button>
 
-                <button onClick={() => setModalRacs(true)}
+                <button ref={tourModRefRacs} onClick={() => setModalRacs(true)}
                   style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
                     background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
                     border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
@@ -13455,7 +13691,7 @@ function App() {
               };
 
               if (collapsed) return (
-                <button onClick={() => setHottManualExpand(true)}
+                <button ref={tourModRefHott} onClick={() => setHottManualExpand(true)}
                   style={{ width:"100%", display:"flex", alignItems:"center", gap:9,
                     background:P.greenSoft, border:`1px solid ${P.green}`, borderRadius:12,
                     padding:"10px 13px", cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
@@ -13473,7 +13709,7 @@ function App() {
               const cardSoft  = allDone ? P.greenSoft : doneIds.length > 0 ? P.amberSoft : P.roseSoft;
               const cardText  = allDone ? P.greenText : doneIds.length > 0 ? P.amberText : P.roseText;
               return (
-                <div style={{ background:cardSoft, border:`1.5px solid ${cardColor}`, borderRadius:14,
+                <div ref={tourModRefHott} style={{ background:cardSoft, border:`1.5px solid ${cardColor}`, borderRadius:14,
                   padding:"13px 14px", boxShadow:`0 3px 12px color-mix(in srgb, ${cardColor} 15%, transparent)` }}>
                   <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
                     <span style={{ fontSize:16 }}>🔍</span>
@@ -13527,11 +13763,11 @@ function App() {
               const lastRhythm = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
               const iotDone = events.some(e => e.id === "iot");
               return (
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+            <div ref={tourModRefVitals} style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Adrénaline", dose:"1 mg IV/IO", vital:true, svg:ICONS.adr, accent:P.rose, soft:P.roseSoft, textC:P.roseText,
                   hapticType:"long", badge: adrAlarmActive ? { text:"!", color:P.rose, pulse:true } : null }}
                 onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }} />
-              <ActionBtn action={{ label:"Défibrillation", dose:"4 J/kg", vital:true, svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText,
+              <ActionBtn action={{ label:"Défibrillation", dose:"150-360 J", vital:true, svg:ICONS.choc, accent:P.blue, soft:P.blueSoft, textC:P.blueText,
                   hapticType:"double", badge: lastRhythm?.id === "rv_fvtv" ? { text:"FV", color:P.blue, pulse:false } : null }}
                 onClick={() => setModalChoc(true)} />
             </div>
@@ -13546,8 +13782,10 @@ function App() {
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               {isTrauma ? (
-                <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
-                  onClick={() => setModalFastTrauma(true)} />
+                <div ref={tourModRefFast}>
+                  <ActionBtn action={{ label:"Fast-écho", svg:ICONS.fast, accent:P.blue, soft:P.blueSoft, textC:P.blueText }}
+                    onClick={() => setModalFastTrauma(true)} />
+                </div>
               ) : (
                 <ActionBtn action={{ label:"Cordarone", svg:ICONS.amio, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                   onClick={() => setModalCord(true)} />
@@ -14003,7 +14241,7 @@ function App() {
               fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:sans }}>
             {running ? "⏸ Pause" : "▶ Reprendre"}
           </button>
-          <button onClick={() => setShowPdf(true)}
+          <button ref={tourModRefReport} onClick={() => setShowPdf(true)}
             style={{ background:"linear-gradient(135deg,#3B82C4,#2563A8)", border:"none",
               borderRadius:11, padding:"10px 6px", color:"#fff",
               fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:sans,
@@ -14837,6 +15075,55 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* ── Tour guidé du module — une fois, une fois l'écran actif atteint ── */}
+      {started && !isVLI && !tourModDone && (() => {
+        const steps = [
+          { ref: tourModRefVoice, title: "🎙️ Commande vocale", desc: "Dis \"Alpha\" suivi d'une commande pour logger un geste sans lâcher tes mains — \"Alpha, adrénaline\" par exemple." },
+          { ref: tourModRefTeam, title: "👥 Mode équipe", desc: "Synchronise la prise en charge entre plusieurs téléphones en temps réel — crée ou rejoins une session avec un code à 6 caractères." },
+          { ref: tourModRefVitals, title: "💉 Les gestes vitaux", desc: "Adrénaline et défibrillation restent toujours en haut, en un seul tap — le minuteur adrénaline se relance automatiquement à chaque dose." },
+          ...(isTrauma ? [
+            { ref: tourModRefHott, title: "🔍 Causes HOTT", desc: "Reste visible tant que les 4 causes (Hypovolémie, Hypoxie, pneumothOrax, Tamponnade) n'ont pas été recherchées. Chaque tap ouvre directement le bon geste — contrôle hémorragie, intubation, thoracostomie, Fast-écho — et coche la cause automatiquement." },
+            { ref: tourModRefFast, title: "🔵 Fast-écho", desc: "Échographie rapide de recherche d'épanchement (péricardique, pleural, abdominal) — accessible en un tap, aussi reliée à la cause \"Tamponnade\" de la carte HOTT." },
+          ] : []),
+          { ref: tourModRefTabs, title: isTrauma ? "⚡💊 Actions / Thérapeutiques" : "⚡🔍💊 Actions / Étiologie / Thérapeutiques", desc: "Actions regroupe les gestes courants." + (isTrauma ? " Thérapeutiques regroupe les gestes spécifiques au trauma : thoracostomies, transfusion, remplissage, acide tranexamique." : " Étiologie aide à chercher la cause. Thérapeutiques regroupe amines, remplissage et sédation.") },
+          { ref: tourModRefRow, title: "🪪 Patient · Transmission · Régulation", desc: "Accès rapide au dossier patient, à la transmission SBAR et au contact régulation — toujours visibles en un tap." },
+          { ref: tourModRefRacs, title: "🫀 Soins post-RACS", desc: tourModRefRacs.current
+              ? "Constantes, amines, sédation et courbes en direct (TA, EtCO₂)."
+              : "Apparaît automatiquement dès qu'un RACS est obtenu — constantes, amines, sédation, et courbes en direct (TA, EtCO₂)." },
+          { ref: tourModRefReport, title: "📄 Compte-rendu", desc: "Généré automatiquement en continu — prêt à imprimer, partager ou copier à tout moment, sans ressaisie." },
+        ];
+        const step = steps[tourModStep];
+        return (
+          <TourOverlay targetRef={step.ref} title={step.title} desc={step.desc}
+            stepIndex={tourModStep} totalSteps={steps.length} isLast={tourModStep === steps.length - 1}
+            onSkip={() => setTourModDone(true)}
+            onNext={() => tourModStep === steps.length - 1 ? setTourModDone(true) : setTourModStep(s => s + 1)}
+            P={P} sans={sans} disp={disp} mono={mono} />
+        );
+      })()}
+
+      {/* ── Tour guidé VLI Adulte — une fois, tant que non déverrouillé ── */}
+      {started && isVLI && !vliUnlocked && !tourVliDone && (() => {
+        const steps = [
+          { ref: tourModRefVoice, title: "🎙️ Commande vocale", desc: "Dis \"Alpha\" suivi d'une commande pour logger un geste sans lâcher tes mains — \"Alpha, adrénaline\" par exemple." },
+          { ref: tourModRefTeam, title: "👥 Mode équipe", desc: "Synchronise la prise en charge entre plusieurs téléphones en temps réel — crée ou rejoins une session avec un code à 6 caractères." },
+          { ref: tourModRefVlm, title: "🚒 VLM arrivée", desc: "Dès l'arrivée du médecin, ce bouton débloque la grille complète du module ACR Adulte — plus aucune restriction, tous les gestes et thérapeutiques deviennent accessibles. Rien n'est perdu : patient, chocs, adrénaline, tout reste intact." },
+          { ref: tourModRefVitalsVli, title: "💉 Les gestes vitaux", desc: "Adrénaline et défibrillation restent toujours en haut, en un seul tap — le minuteur adrénaline se relance automatiquement à chaque dose." },
+          { ref: tourModRefTabs, title: "⚡🎯 Actions / Situations", desc: "Actions regroupe les gestes autorisés par le protocole VLI. Situations particulières couvre hémorragie, obstruction VAS et intoxication aux fumées — chaque situation en un tap." },
+          { ref: tourModRefVasVli, title: "🫁 Sécurisation VAS", desc: "Choix explicite entre dispositif supra-glottique (geste infirmier) et intubation orotrachéale (réservée à l'IADE) — la chronologie garde une trace précise de ce qui a réellement été posé." },
+          { ref: tourModRefPhotosVli, title: "📷 Photos & tracés", desc: "Joins un ECG (numéroté automatiquement) ou une photo circonstancielle — retrouvés à la fin du compte-rendu." },
+          { ref: tourModRefReport, title: "📄 Compte-rendu", desc: "Généré automatiquement en continu — prêt à imprimer, partager ou copier à tout moment, sans ressaisie." },
+        ];
+        const step = steps[tourVliStep];
+        return (
+          <TourOverlay targetRef={step.ref} title={step.title} desc={step.desc}
+            stepIndex={tourVliStep} totalSteps={steps.length} isLast={tourVliStep === steps.length - 1}
+            onSkip={() => setTourVliDone(true)}
+            onNext={() => tourVliStep === steps.length - 1 ? setTourVliDone(true) : setTourVliStep(s => s + 1)}
+            P={P} sans={sans} disp={disp} mono={mono} />
+        );
+      })()}
 
       {/* PDF adulte — overlay */}
       {showPdf && (
