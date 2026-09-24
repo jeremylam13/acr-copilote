@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-85";
+const APP_VERSION = "2026.08.15-86";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -15118,7 +15118,7 @@ function App() {
       )}
 
       {/* ── Tour guidé du module — une fois, une fois l'écran actif atteint ── */}
-      {started && !isVLI && !tourModDone && (() => {
+      {started && !isVLI && !modalElectrodes && !tourModDone && (() => {
         const steps = [
           { ref: tourModRefVoice, title: "🎙️ Commande vocale", desc: "Dis \"Alpha\" suivi d'une commande pour logger un geste sans lâcher tes mains — \"Alpha, adrénaline\" par exemple." },
           { ref: tourModRefTeam, title: "👥 Mode équipe", desc: "Synchronise la prise en charge entre plusieurs téléphones en temps réel — crée ou rejoins une session avec un code à 6 caractères." },
