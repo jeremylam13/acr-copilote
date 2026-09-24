@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-82";
+const APP_VERSION = "2026.08.15-85";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -1418,8 +1418,26 @@ function ActionBtn({ action, onClick }) {
 function TourOverlay({ targetRef, title, desc, stepIndex, totalSteps, onNext, onSkip, isLast, P, sans, disp, mono }) {
   const [rect, setRect] = useState(null);
   useEffect(() => {
-    const el = targetRef?.current;
-    setRect(el ? el.getBoundingClientRect() : null);
+    // Mesure en continu (pas juste une fois) — si un autre encart de l'écran
+    // apparaît/disparaît ou change de taille pendant que cette étape est affichée
+    // (ex : un rappel qui se déplie), la cible se décale dans la page et une
+    // mesure figée pointerait au mauvais endroit. Le halo reste ainsi toujours
+    // juste, sans dépendre de la stabilité du reste de l'écran.
+    let raf;
+    const measure = () => {
+      const el = targetRef?.current;
+      setRect(prev => {
+        const next = el ? el.getBoundingClientRect() : null;
+        if (!prev && !next) return prev;
+        if (!prev || !next) return next;
+        if (prev.top === next.top && prev.left === next.left &&
+            prev.width === next.width && prev.height === next.height) return prev;
+        return next;
+      });
+      raf = requestAnimationFrame(measure);
+    };
+    raf = requestAnimationFrame(measure);
+    return () => cancelAnimationFrame(raf);
   }, [targetRef, stepIndex]);
 
   // Halo autour de la cible (marge de 6px) — le reste de l'écran est recouvert par
@@ -9904,6 +9922,7 @@ function App() {
   const tourModRefPhotosVli = useRef(null);
   const [tourVliDone, setTourVliDone] = useLocalState("acr_tour_vli_done", false);
   const [tourVliStep, setTourVliStep] = useState(0);
+  const [showRevoirGroup, setShowRevoirGroup] = useState(false);
   const tourModRefHott = useRef(null);
   const tourModRefFast = useRef(null);
   const [images, setImages] = useLocalState("acr_adulte_images", []);
@@ -10174,27 +10193,6 @@ function App() {
         </div>
       )}
 
-      {/* ── Bandeau discret "Nouveautés" — une fois par lot d'annonces, jamais en même temps que l'onboarding/tour ── */}
-      {showOnboarding && tourDone && whatsNewSeen !== WHATS_NEW_VERSION && (
-        <div style={{ width:"100%", maxWidth:380, background:P.surface, border:`1px solid ${P.border}`,
-          borderRadius:14, padding:"12px 14px", marginBottom:14, position:"relative" }}>
-          <button onClick={() => setWhatsNewSeen(WHATS_NEW_VERSION)}
-            style={{ position:"absolute", top:8, right:8, background:"transparent", border:"none",
-              color:P.textSoft, fontSize:15, cursor:"pointer", padding:4, lineHeight:1 }}
-            aria-label="Fermer">×</button>
-          <p style={{ margin:"0 0 8px", fontSize:11.5, fontWeight:800, color:P.text, paddingRight:20 }}>
-            ✨ Nouveautés
-          </p>
-          <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-            {WHATS_NEW_ITEMS.map((it, i) => (
-              <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:7 }}>
-                <span style={{ fontSize:12, flexShrink:0, lineHeight:1.4 }}>{it.icon}</span>
-                <span style={{ fontSize:11, color:P.textMid, lineHeight:1.4 }}>{it.text}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* 4 modules — grille 2x2 compacte pour tout voir sans défiler */}
       <div ref={tourRefModules} style={{ width:"100%", maxWidth:380, display:"grid", gridTemplateColumns:"1fr 1fr", gap:11 }}>
@@ -10269,6 +10267,28 @@ function App() {
 
       </div>
 
+
+      {/* ── Bandeau discret "Nouveautés" — une fois par lot d'annonces, jamais en même temps que l'onboarding/tour ── */}
+      {showOnboarding && tourDone && whatsNewSeen !== WHATS_NEW_VERSION && (
+        <div style={{ width:"100%", maxWidth:380, background:P.surface, border:`1px solid ${P.border}`,
+          borderRadius:14, padding:"12px 14px", marginBottom:14, position:"relative" }}>
+          <button onClick={() => setWhatsNewSeen(WHATS_NEW_VERSION)}
+            style={{ position:"absolute", top:8, right:8, background:"transparent", border:"none",
+              color:P.textSoft, fontSize:15, cursor:"pointer", padding:4, lineHeight:1 }}
+            aria-label="Fermer">×</button>
+          <p style={{ margin:"0 0 8px", fontSize:11.5, fontWeight:800, color:P.text, paddingRight:20 }}>
+            ✨ Nouveautés
+          </p>
+          <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+            {WHATS_NEW_ITEMS.map((it, i) => (
+              <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:7 }}>
+                <span style={{ fontSize:12, flexShrink:0, lineHeight:1.4 }}>{it.icon}</span>
+                <span style={{ fontSize:11, color:P.textMid, lineHeight:1.4 }}>{it.text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {/* Intra-hospitalier — pas encore disponible, discret pour ne pas encombrer la grille des 4 modules actifs */}
       <button onClick={() => setModule("adulte_intra")}
         style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:11,
@@ -10421,91 +10441,6 @@ function App() {
             <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
           </button>
 
-          <button onClick={() => { setModalSettings(false); setShowOnboarding(false); setTourDone(false); }}
-            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
-              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
-              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
-              marginBottom: 14 }}>
-            <span style={{ width:36, height:36, borderRadius:10, background:P.roseSoft,
-              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
-            <div style={{ flex:1, minWidth:0 }}>
-              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir l'écran de bienvenue</p>
-              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
-                Présentation de l'app + tour guidé des fonctionnalités de l'accueil
-              </p>
-            </div>
-            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
-          </button>
-
-          <button onClick={() => { setModalSettings(false); setTourModDone(false); setTourModStep(0); }}
-            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
-              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
-              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
-              marginBottom: 14 }}>
-            <span style={{ width:36, height:36, borderRadius:10, background:P.roseSoft,
-              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
-            <div style={{ flex:1, minWidth:0 }}>
-              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module Adulte/Trauma</p>
-              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
-                Se relance dès qu'une réanimation est démarrée dans ce module
-              </p>
-            </div>
-            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
-          </button>
-
-          <button onClick={() => {
-              setModalSettings(false);
-              try { localStorage.setItem("acr_tour_mod_ped_done", "false"); } catch {}
-            }}
-            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
-              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
-              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
-              marginBottom: 14 }}>
-            <span style={{ width:36, height:36, borderRadius:10, background:P.roseSoft,
-              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
-            <div style={{ flex:1, minWidth:0 }}>
-              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module Pédiatrique</p>
-              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
-                Se relance dès qu'une réanimation est démarrée dans ce module
-              </p>
-            </div>
-            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
-          </button>
-
-          <button onClick={() => { setModalSettings(false); setTourVliDone(false); setTourVliStep(0); }}
-            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
-              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
-              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
-              marginBottom: 14 }}>
-            <span style={{ width:36, height:36, borderRadius:10, background:"rgba(234,106,18,0.14)",
-              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
-            <div style={{ flex:1, minWidth:0 }}>
-              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module VLI Adulte</p>
-              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
-                Se relance dès qu'une réanimation VLI est démarrée
-              </p>
-            </div>
-            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
-          </button>
-
-          <button onClick={() => {
-              setModalSettings(false);
-              try { localStorage.setItem("acr_tour_vli_ped_done", "false"); } catch {}
-            }}
-            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
-              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
-              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
-              marginBottom: 14 }}>
-            <span style={{ width:36, height:36, borderRadius:10, background:"rgba(234,106,18,0.14)",
-              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
-            <div style={{ flex:1, minWidth:0 }}>
-              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module VLI Pédiatrique</p>
-              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
-                Se relance dès qu'une réanimation VLI pédiatrique est démarrée
-              </p>
-            </div>
-            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
-          </button>
 
           {/* Intervalle adrénaline */}
           <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13, padding:"13px 14px" }}>
@@ -10753,6 +10688,112 @@ function App() {
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* ── Groupe repliable : tous les "Revoir" (écran de bienvenue + 4 tours de module) ── */}
+          <button onClick={() => setShowRevoirGroup(v => !v)}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: showRevoirGroup ? 10 : 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:P.roseSoft,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir les guides et tours</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Écran de bienvenue, tours des modules Adulte/Trauma, Pédiatrique, VLI
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0, transform: showRevoirGroup ? "rotate(90deg)" : "none", transition:"transform 0.15s" }}>›</span>
+          </button>
+          {showRevoirGroup && (
+            <div style={{ marginBottom:14 }}>
+          <button onClick={() => { setModalSettings(false); setShowOnboarding(false); setTourDone(false); }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:P.roseSoft,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir l'écran de bienvenue</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Présentation de l'app + tour guidé des fonctionnalités de l'accueil
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
+          <button onClick={() => { setModalSettings(false); setTourModDone(false); setTourModStep(0); }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:P.roseSoft,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module Adulte/Trauma</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Se relance dès qu'une réanimation est démarrée dans ce module
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
+          <button onClick={() => {
+              setModalSettings(false);
+              try { localStorage.setItem("acr_tour_mod_ped_done", "false"); } catch {}
+            }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:P.roseSoft,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module Pédiatrique</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Se relance dès qu'une réanimation est démarrée dans ce module
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
+          <button onClick={() => { setModalSettings(false); setTourVliDone(false); setTourVliStep(0); }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:"rgba(234,106,18,0.14)",
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module VLI Adulte</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Se relance dès qu'une réanimation VLI est démarrée
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
+          <button onClick={() => {
+              setModalSettings(false);
+              try { localStorage.setItem("acr_tour_vli_ped_done", "false"); } catch {}
+            }}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:"rgba(234,106,18,0.14)",
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🧭</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Revoir le tour du module VLI Pédiatrique</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                Se relance dès qu'une réanimation VLI pédiatrique est démarrée
+              </p>
+            </div>
+            <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
             </div>
           )}
 
