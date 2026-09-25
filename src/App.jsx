@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-86";
+const APP_VERSION = "2026.08.15-87";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -10194,6 +10194,28 @@ function App() {
       )}
 
 
+      {/* ── Bandeau discret "Nouveautés" — une fois par lot d'annonces, jamais en même temps que l'onboarding/tour ── */}
+      {showOnboarding && tourDone && whatsNewSeen !== WHATS_NEW_VERSION && (
+        <div style={{ width:"100%", maxWidth:380, background:P.surface, border:`1px solid ${P.border}`,
+          borderRadius:14, padding:"12px 14px", marginBottom:14, position:"relative" }}>
+          <button onClick={() => setWhatsNewSeen(WHATS_NEW_VERSION)}
+            style={{ position:"absolute", top:8, right:8, background:"transparent", border:"none",
+              color:P.textSoft, fontSize:15, cursor:"pointer", padding:4, lineHeight:1 }}
+            aria-label="Fermer">×</button>
+          <p style={{ margin:"0 0 8px", fontSize:11.5, fontWeight:800, color:P.text, paddingRight:20 }}>
+            ✨ Nouveautés
+          </p>
+          <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+            {WHATS_NEW_ITEMS.map((it, i) => (
+              <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:7 }}>
+                <span style={{ fontSize:12, flexShrink:0, lineHeight:1.4 }}>{it.icon}</span>
+                <span style={{ fontSize:11, color:P.textMid, lineHeight:1.4 }}>{it.text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 4 modules — grille 2x2 compacte pour tout voir sans défiler */}
       <div ref={tourRefModules} style={{ width:"100%", maxWidth:380, display:"grid", gridTemplateColumns:"1fr 1fr", gap:11 }}>
 
@@ -10268,27 +10290,6 @@ function App() {
       </div>
 
 
-      {/* ── Bandeau discret "Nouveautés" — une fois par lot d'annonces, jamais en même temps que l'onboarding/tour ── */}
-      {showOnboarding && tourDone && whatsNewSeen !== WHATS_NEW_VERSION && (
-        <div style={{ width:"100%", maxWidth:380, background:P.surface, border:`1px solid ${P.border}`,
-          borderRadius:14, padding:"12px 14px", marginBottom:14, position:"relative" }}>
-          <button onClick={() => setWhatsNewSeen(WHATS_NEW_VERSION)}
-            style={{ position:"absolute", top:8, right:8, background:"transparent", border:"none",
-              color:P.textSoft, fontSize:15, cursor:"pointer", padding:4, lineHeight:1 }}
-            aria-label="Fermer">×</button>
-          <p style={{ margin:"0 0 8px", fontSize:11.5, fontWeight:800, color:P.text, paddingRight:20 }}>
-            ✨ Nouveautés
-          </p>
-          <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-            {WHATS_NEW_ITEMS.map((it, i) => (
-              <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:7 }}>
-                <span style={{ fontSize:12, flexShrink:0, lineHeight:1.4 }}>{it.icon}</span>
-                <span style={{ fontSize:11, color:P.textMid, lineHeight:1.4 }}>{it.text}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
       {/* Intra-hospitalier — pas encore disponible, discret pour ne pas encombrer la grille des 4 modules actifs */}
       <button onClick={() => setModule("adulte_intra")}
         style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:11,
