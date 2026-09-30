@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-89";
+const APP_VERSION = "2026.08.15-90";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -11033,7 +11033,7 @@ function App() {
 
   // ── ÉCRAN RCP ──────────────────────────────────────────────────────────────
   return (
-    <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans, paddingBottom:100 }}>
+    <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans, paddingBottom:28 }}>
 
       {/* Modal Analyse de rythme */}
       {/* ── Modal Défibrillation ── */}
@@ -15004,7 +15004,7 @@ function App() {
       {/* ── Toast Undo ── */}
       {undoToast && (
         <div key={undoToast.key}
-          style={{ position:"fixed", bottom:150, left:"50%", zIndex:96,
+          style={{ position:"fixed", bottom:80, left:"50%", zIndex:96,
             transform:"translateX(-50%)", maxWidth:"90%",
             background:P.surface, border:`1.5px solid ${P.amber}`, borderRadius:14,
             padding:"10px 12px", display:"flex", alignItems:"center", gap:10,
@@ -15031,7 +15031,7 @@ function App() {
       {/* ── Toast de confirmation d'ajout à la chronologie ── */}
       {confirmAdd && (
         <div key={confirmAdd.key}
-          style={{ position:"fixed", bottom:88, left:"50%", zIndex:95,
+          style={{ position:"fixed", bottom:24, left:"50%", zIndex:95,
             transform:"translateX(-50%)", maxWidth:"90%",
             background:`linear-gradient(135deg, ${P.green}, ${P.greenText})`,
             color:"#fff", borderRadius:13, padding:"9px 10px 9px 16px",
@@ -15198,58 +15198,6 @@ function App() {
         <PdfView patient={pat} noFlow={noFlowMin} lowFlow={lowFlowMin} acrTime={acrTime}
           iot={iot} events={events} totalSec={sec} trans={trans} hemocue={hemocueHist} hemo={hemoList} amines={amineList} etco2={etco2List} images={images} onClose={() => setShowPdf(false)} />
       )}
-
-      {/* ── Barre d'actions vitales épinglée — Adrénaline / Choc / Analyse de rythme
-          toujours accessibles en un tap, quel que soit le scroll ou l'onglet actif.
-          Masquée automatiquement derrière tout modal ou overlay plein écran (z-index
-          supérieur) grâce à leur fond opaque en position fixed. ── */}
-      {(() => {
-        const adrAlarmActivePinned = adrTimerStart > 0 && started && !events.find(e => e.id === "rosc")
-          && ((Date.now() - adrTimerStart) / 1000 >= adrIntervalGlobal * 60);
-        const lastRhythmPinned = [...events].reverse().find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
-        return (
-          <div style={{ position:"fixed", bottom:0, left:0, right:0, zIndex:40,
-            background:P.surface, borderTop:`1px solid ${P.border}`,
-            padding:"8px 12px 10px", boxShadow:"0 -6px 16px rgba(0,0,0,0.10)" }}>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:7, maxWidth:600, margin:"0 auto" }}>
-              <button onClick={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }}
-                style={{ background:`linear-gradient(135deg, ${P.rose}, ${P.roseText})`, border:"none",
-                  borderRadius:12, padding:"9px 6px", cursor:"pointer", fontFamily:sans, color:"#fff",
-                  display:"flex", flexDirection:"column", alignItems:"center", gap:2, position:"relative",
-                  boxShadow:`0 4px 12px color-mix(in srgb, ${P.rose} 35%, transparent)` }}>
-                {adrAlarmActivePinned && (
-                  <span style={{ position:"absolute", top:-5, right:-5, width:18, height:18, borderRadius:9,
-                    background:P.rose, color:"#fff", fontSize:10, fontWeight:900, display:"flex",
-                    alignItems:"center", justifyContent:"center", boxShadow:"0 2px 6px rgba(0,0,0,0.25)",
-                    animation:"rythmPulse 1.2s ease-in-out infinite" }}>!</span>
-                )}
-                <span style={{ fontSize:11.5, fontWeight:800 }}>💉 Adré</span>
-                <span style={{ fontSize:8.5, fontFamily:mono, fontWeight:700, opacity:0.9 }}>1 mg IV/IO</span>
-              </button>
-              <button onClick={() => setModalChoc(true)}
-                style={{ background:`linear-gradient(135deg, ${P.blue}, ${P.blueText})`, border:"none",
-                  borderRadius:12, padding:"9px 6px", cursor:"pointer", fontFamily:sans, color:"#fff",
-                  display:"flex", flexDirection:"column", alignItems:"center", gap:2, position:"relative",
-                  boxShadow:`0 4px 12px color-mix(in srgb, ${P.blue} 35%, transparent)` }}>
-                {lastRhythmPinned?.id === "rv_fvtv" && (
-                  <span style={{ position:"absolute", top:-5, right:-5, background:P.blue, color:"#fff",
-                    fontSize:9.5, fontWeight:900, padding:"1px 5px", borderRadius:8,
-                    boxShadow:"0 2px 6px rgba(0,0,0,0.25)" }}>FV</span>
-                )}
-                <span style={{ fontSize:11.5, fontWeight:800 }}>⚡ Choc</span>
-                <span style={{ fontSize:8.5, fontFamily:mono, fontWeight:700, opacity:0.9 }}>selon DSA</span>
-              </button>
-              <button onClick={() => setModalRythme(true)}
-                style={{ background:P.amberSoft, border:`1.5px solid ${P.amber}`, borderRadius:12,
-                  padding:"9px 6px", cursor:"pointer", fontFamily:sans, color:P.amberText,
-                  display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
-                <span style={{ fontSize:11.5, fontWeight:800 }}>📈 Rythme</span>
-                <span style={{ fontSize:8.5, fontFamily:mono, fontWeight:700, opacity:0.9 }}>analyser</span>
-              </button>
-            </div>
-          </div>
-        );
-      })()}
 
     </div>
   );
