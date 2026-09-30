@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-87";
+const APP_VERSION = "2026.08.15-88";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -1545,6 +1545,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
   const deces = events.find(e => e.id === "deces");
   const [copied, setCopied] = useState(false);
   const [pdfGenerating, setPdfGenerating] = useState(false);
+  const [shareGenerating, setShareGenerating] = useState(false);
 
   // Génère le texte complet du compte-rendu
   const buildText = () => {
@@ -2136,56 +2137,100 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     return html;
   };
 
-  const handleShare = async () => {
-    const text = buildText();
+  // Génère le compte-rendu en PDF réel (jsPDF + html2canvas) et retourne l'instance jsPDF.
+  // Utilisé à la fois par le bouton "🖨️ PDF" (sauvegarde locale) et par "Partager"
+  // (partage/attache un vrai fichier .pdf au lieu du HTML brut).
+  const buildPdf = async () => {
     const html = buildHtml();
+    const { default: jsPDF } = await import('jspdf');
+    const { default: html2canvas } = await import('html2canvas');
+    // Créer un iframe invisible pour rendre le HTML
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:640px;height:1px;opacity:0;border:none';
+    document.body.appendChild(iframe);
+    iframe.contentDocument.write(html);
+    iframe.contentDocument.close();
+    await new Promise(r => setTimeout(r, 600));
+    const canvas = await html2canvas(iframe.contentDocument.body, {
+      scale: 1.5, useCORS: true, allowTaint: true,
+      backgroundColor: '#E9EEF5', width: 640,
+      height: iframe.contentDocument.body.scrollHeight
+    });
+    // Repère la position (en pixels canvas) de chaque carte du compte-rendu,
+    // pour ne jamais couper une page en plein milieu de l'une d'elles.
+    const scale = 1.5;
+    const cards = Array.from(iframe.contentDocument.querySelectorAll('.pdf-card')).map(el => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top * scale, bottom: r.bottom * scale };
+    });
+    document.body.removeChild(iframe);
+    const pdf = new jsPDF({ format: 'a4', orientation: 'portrait', unit: 'pt' });
+    const w = pdf.internal.pageSize.getWidth();
+    const ratio = canvas.width / w;
+    const pageH = pdf.internal.pageSize.getHeight() * ratio;
+    const minChunk = pageH * 0.25; // évite une page quasi vide si une carte est très grande
+    let srcY = 0;
+    while (srcY < canvas.height) {
+      let sliceEnd = Math.min(srcY + pageH, canvas.height);
+      for (const c of cards) {
+        // Une carte commencée sur cette page mais qui déborderait de la coupure :
+        // on recule la coupure juste avant elle, sauf si ça laisserait une page trop vide.
+        if (c.top > srcY && c.top < sliceEnd && c.bottom > sliceEnd) {
+          if (c.top - srcY >= minChunk) sliceEnd = Math.min(sliceEnd, c.top);
+        }
+      }
+      const pageCanvas = document.createElement('canvas');
+      pageCanvas.width = canvas.width;
+      pageCanvas.height = sliceEnd - srcY;
+      pageCanvas.getContext('2d').drawImage(canvas, 0, srcY, canvas.width, pageCanvas.height, 0, 0, canvas.width, pageCanvas.height);
+      if (srcY > 0) pdf.addPage();
+      pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, w, pageCanvas.height / ratio);
+      srcY = sliceEnd;
+    }
+    return pdf;
+  };
+
+  const handleShare = async () => {
+    if (shareGenerating) return;
     const date = new Date().toISOString().slice(0,10);
     const nom  = patient?.nom ? `_${patient.nom}` : "";
-    const filenameHtml = `Compte-rendu-SMUR${nom}_${date}.html`;
-    const filenameTxt  = `ACR${nom}_${date}.txt`;
+    const filenamePdf = `CR-SMUR${nom}_${date}.pdf`;
 
-    // Méthode 1 : Web Share API — partage le rapport HTML coloré et structuré
-    if (navigator.share) {
-      try {
-        const fileHtml = new File([html], filenameHtml, { type: "text/html" });
-        if (navigator.canShare && navigator.canShare({ files: [fileHtml] })) {
-          await navigator.share({ files: [fileHtml], title: "Compte-rendu SMUR" });
-          return;
-        }
-        // Si le partage de fichier HTML n'est pas supporté, tenter le texte brut en fichier
-        const fileTxt = new File([text], filenameTxt, { type: "text/plain" });
-        if (navigator.canShare && navigator.canShare({ files: [fileTxt] })) {
-          await navigator.share({ files: [fileTxt], title: "Compte-rendu ACR" });
-          return;
-        }
-        // Partage sans fichier (texte seul)
-        await navigator.share({ title: "Compte-rendu ACR", text });
-        return;
-      } catch (e) {
-        if (e.name !== "AbortError") console.error(e);
-        else return;
-      }
-    }
-
-    // Méthode 2 : téléchargement du rapport HTML coloré (fallback Android / desktop)
+    setShareGenerating(true);
     try {
-      const blob = new Blob([html], { type: "text/html" });
-      const url = URL.createObjectURL(blob);
+      // Méthode 1 : générer un vrai PDF et le partager en tant que fichier .pdf
+      // (le HTML brut partagé directement finissait collé en texte dans le corps
+      // des mails côté Gmail au lieu d'être un fichier PDF utilisable/imprimable)
+      const pdf = await buildPdf();
+      const pdfBlob = pdf.output('blob');
+      const filePdf = new File([pdfBlob], filenamePdf, { type: "application/pdf" });
+
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [filePdf] })) {
+        try {
+          await navigator.share({ files: [filePdf], title: "Compte-rendu SMUR" });
+          return;
+        } catch (e) {
+          if (e.name === "AbortError") return;
+          console.error(e);
+        }
+      }
+
+      // Méthode 2 : pas de partage fichier disponible → téléchargement direct du PDF
+      const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = filenameHtml;
+      a.download = filenamePdf;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-      return;
-    } catch(e) {}
-
-    // Méthode 3 : ouvrir le rapport HTML coloré dans un nouvel onglet (dernier recours)
-    const w = window.open("", "_blank");
-    if (w) {
-      w.document.write(html);
-      w.document.close();
+    } catch (e) {
+      // Méthode 3 (dernier recours) : la génération PDF a échoué, on retombe sur
+      // l'impression navigateur plutôt que de partager du HTML brut illisible.
+      console.error(e);
+      window.print();
+    } finally {
+      setShareGenerating(false);
     }
   };
 
@@ -2548,52 +2593,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
             if (pdfGenerating) return;
             setPdfGenerating(true);
             try {
-              const html = buildHtml();
-              const { default: jsPDF } = await import('jspdf');
-              const { default: html2canvas } = await import('html2canvas');
-              // Créer un iframe invisible pour rendre le HTML
-              const iframe = document.createElement('iframe');
-              iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:640px;height:1px;opacity:0;border:none';
-              document.body.appendChild(iframe);
-              iframe.contentDocument.write(html);
-              iframe.contentDocument.close();
-              await new Promise(r => setTimeout(r, 600));
-              const canvas = await html2canvas(iframe.contentDocument.body, {
-                scale: 1.5, useCORS: true, allowTaint: true,
-                backgroundColor: '#E9EEF5', width: 640,
-                height: iframe.contentDocument.body.scrollHeight
-              });
-              // Repère la position (en pixels canvas) de chaque carte du compte-rendu,
-              // pour ne jamais couper une page en plein milieu de l'une d'elles.
-              const scale = 1.5;
-              const cards = Array.from(iframe.contentDocument.querySelectorAll('.pdf-card')).map(el => {
-                const r = el.getBoundingClientRect();
-                return { top: r.top * scale, bottom: r.bottom * scale };
-              });
-              document.body.removeChild(iframe);
-              const pdf = new jsPDF({ format: 'a4', orientation: 'portrait', unit: 'pt' });
-              const w = pdf.internal.pageSize.getWidth();
-              const ratio = canvas.width / w;
-              const pageH = pdf.internal.pageSize.getHeight() * ratio;
-              const minChunk = pageH * 0.25; // évite une page quasi vide si une carte est très grande
-              let srcY = 0;
-              while (srcY < canvas.height) {
-                let sliceEnd = Math.min(srcY + pageH, canvas.height);
-                for (const c of cards) {
-                  // Une carte commencée sur cette page mais qui déborderait de la coupure :
-                  // on recule la coupure juste avant elle, sauf si ça laisserait une page trop vide.
-                  if (c.top > srcY && c.top < sliceEnd && c.bottom > sliceEnd) {
-                    if (c.top - srcY >= minChunk) sliceEnd = Math.min(sliceEnd, c.top);
-                  }
-                }
-                const pageCanvas = document.createElement('canvas');
-                pageCanvas.width = canvas.width;
-                pageCanvas.height = sliceEnd - srcY;
-                pageCanvas.getContext('2d').drawImage(canvas, 0, srcY, canvas.width, pageCanvas.height, 0, 0, canvas.width, pageCanvas.height);
-                if (srcY > 0) pdf.addPage();
-                pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, w, pageCanvas.height / ratio);
-                srcY = sliceEnd;
-              }
+              const pdf = await buildPdf();
               const nom = patient?.nom ? `_${patient.nom}` : '';
               pdf.save(`CR-SMUR${nom}_${new Date().toISOString().slice(0,10)}.pdf`);
             } catch(e) {
@@ -2618,13 +2618,21 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
               </>
             ) : "🖨️ PDF"}
           </button>
-          <button onClick={handleShare}
-            style={{ background:`linear-gradient(135deg, ${P.teal}, ${P.tealText})`,
-              border:"none", borderRadius:13, padding:"13px 8px", cursor:"pointer",
+          <button disabled={shareGenerating} onClick={handleShare}
+            style={{ background: shareGenerating ? P.textSoft : `linear-gradient(135deg, ${P.teal}, ${P.tealText})`,
+              border:"none", borderRadius:13, padding:"13px 8px", cursor: shareGenerating ? "default" : "pointer",
               fontFamily:disp, fontSize:13, fontWeight:800, color:"#fff",
               display:"flex", alignItems:"center", justifyContent:"center", gap:6,
-              boxShadow:`0 5px 14px color-mix(in srgb, ${P.teal} 30%, transparent)` }}>
-            📤 Partager
+              boxShadow: shareGenerating ? "none" : `0 5px 14px color-mix(in srgb, ${P.teal} 30%, transparent)`,
+              opacity: shareGenerating ? 0.85 : 1 }}>
+            {shareGenerating ? (
+              <>
+                <span style={{ width:14, height:14, border:"2px solid rgba(255,255,255,0.4)",
+                  borderTopColor:"#fff", borderRadius:"50%", animation:"acr-spin 0.7s linear infinite",
+                  display:"inline-block" }} />
+                Génération...
+              </>
+            ) : "📤 Partager"}
           </button>
           <button onClick={handleCopy}
             style={{ background: copied
