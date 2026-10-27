@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-90";
+const APP_VERSION = "2026.08.15-94";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -527,13 +527,24 @@ function initials(nom, prenom) {
 }
 
 function loadArchives() {
-  try { return JSON.parse(localStorage.getItem(ARCHIVE_KEY) || "[]"); }
+  try {
+    const raw = localStorage.getItem(ARCHIVE_KEY) || "[]";
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list)) return [];
+    // Anonymisation systématique : les archives créées avant cette règle sont
+    // réduites aux initiales dès la première lecture (opération idempotente).
+    const anon = list.map(redactArchiveForExport);
+    const out = JSON.stringify(anon);
+    if (out !== raw) { try { localStorage.setItem(ARCHIVE_KEY, out); } catch {} }
+    return anon;
+  }
   catch { return []; }
 }
 function saveArchive(snapshot) {
   try {
     const list = loadArchives();
-    list.unshift(snapshot);                 // plus récent en tête
+    list.unshift(redactArchiveForExport(snapshot)); // initiales seulement, jamais le nom complet
+    // plus récent en tête
     const capped = list.slice(0, ARCHIVE_CAP);
     localStorage.setItem(ARCHIVE_KEY, JSON.stringify(capped));
     return capped;
@@ -1139,14 +1150,14 @@ function GuideApp({ onClose }) {
         { icon:"➕", title:"Grille d'actions repliable", desc:"Les gestes les plus fréquents restent toujours visibles. Un bouton \"+ Plus d'actions\" révèle les gestes secondaires (Planche à masser, Fast-écho, Soins post-RACS, Constat de décès) pour garder l'écran principal lisible." },
         { icon:"📞", title:"Appel régulation", desc:"Bandeau toujours accessible pour horodater un appel à la régulation, avec un champ libre pour noter ce qui a été dit et la destination du patient." },
         { icon:"📝", title:"Note libre", desc:"Un encart de texte libre, entre les Soins post-RACS et la chronologie, pour consigner une information qui ne rentre dans aucune case." },
-        { icon:"📄", title:"Compte-rendu automatique", desc:"Un rapport structuré façon SBAR est généré en continu à partir de la chronologie — prêt à copier, imprimer ou partager en fin de réanimation, sans ressaisie." },
+        { icon:"📄", title:"Compte-rendu automatique", desc:"Un compte-rendu en rubriques SMUR (résumé, circonstances, ATCD, pré-SMUR, prise en charge, évolution, conclusion) est généré en continu à partir de la chronologie — prêt à copier, imprimer ou partager en fin de réanimation, sans ressaisie." },
         { icon:"📷", title:"Photos & tracés", desc:"Carte disponible dans tous les modules (Adulte, Traumatique, Pédiatrique, VLI) pour joindre des ECG (numérotés automatiquement dans l'ordre) ou des photos circonstancielles (lieu, contexte de l'intervention). Un titre est pré-rempli et modifiable avant l'enregistrement. Toutes les photos sont compressées automatiquement pour ne pas alourdir le téléphone, et apparaissent à la toute fin du PDF avec leur titre et leur heure de prise — conservées dans l'archive du cas." },
         { icon:"🕐", title:"Frise chronologique visuelle", desc:"Graduation en minutes (0 min = début de la RCP), avec chaque geste positionné proportionnellement au temps écoulé. Si plusieurs gestes ont lieu à quelques secondes d'écart (ex : chocs rapprochés), ils s'empilent automatiquement sur des rangées distinctes avec leur heure affichée — jamais superposés ni illisibles." },
         { icon:"📑", title:"Export PDF sans coupure", desc:"Le PDF ne coupe jamais un encart entre deux pages — l'algorithme détecte quand un bloc (identité, bandeau, frise, section détaillée) déborderait sur la page suivante et bascule la coupure juste avant, pour que chaque encart reste toujours entier et lisible." },
         { icon:"🌗", title:"Thème jour / nuit", desc:"Bascule en un tap, en haut de l'écran. Le thème jour est pensé pour la lisibilité en plein soleil, le thème nuit pour ne pas éblouir en intervention de nuit." },
         { icon:"💾", title:"Sauvegarde automatique locale", desc:"Toutes les données sont enregistrées en continu sur l'appareil. Fermeture accidentelle, batterie déchargée, crash de l'app : rien n'est perdu, la session reprend exactement où elle s'est arrêtée." },
         { icon:"🔒", title:"Code d'accès à l'application", desc:"Demandé une seule fois, au tout premier lancement sur un appareil — puis mémorisé, plus jamais redemandé ensuite (sauf effacement des données du navigateur). Sert à limiter la diffusion en dehors de l'équipe, pas une protection informatique à proprement parler. Nécessite un réseau uniquement pour cette toute première vérification." },
-        { icon:"📦", title:"Export / import de sauvegarde", desc:"Depuis Réglages : exportez un fichier contenant toutes les archives et tous les réglages, à conserver ailleurs ou à transférer sur un nouveau téléphone. Utile avant un changement d'appareil, une mise à jour d'OS, ou simplement par précaution — les données restent sinon uniquement sur ce téléphone. Noms et prénoms sont automatiquement réduits à leurs initiales dans le fichier exporté (le fichier peut quitter l'appareil — minimisation des données médicales) ; ils restent en clair dans le détail d'un cas consulté directement sur le téléphone. À l'import, les archives sont fusionnées sans rien effacer ; les réglages, eux, sont remplacés par ceux du fichier importé (une confirmation est demandée avant)." },
+        { icon:"📦", title:"Export / import de sauvegarde", desc:"Depuis Réglages : exportez un fichier contenant toutes les archives et tous les réglages, à conserver ailleurs ou à transférer sur un nouveau téléphone. Utile avant un changement d'appareil, une mise à jour d'OS, ou simplement par précaution — les données restent sinon uniquement sur ce téléphone. Dans les archives (liste, détail et fichier exporté), noms et prénoms sont automatiquement réduits à leurs initiales (minimisation des données médicales) ; le nom complet n'est conservé que pendant la saisie de la réa en cours. À l'import, les archives sont fusionnées sans rien effacer ; les réglages, eux, sont remplacés par ceux du fichier importé (une confirmation est demandée avant)." },
         { icon:"✉️", title:"Contact / Retours", desc:"Depuis Réglages : trois boutons pour signaler un bug, suggérer une amélioration, ou simplement faire un retour positif — chacun ouvre l'app mail avec le sujet et la version de l'app déjà pré-remplis, pour ne rien avoir à taper à la main." },
         { icon:"📊", title:"Dashboard & statistiques", desc:"Chaque réanimation clôturée est archivée localement (durée, issue, données clés) et alimente automatiquement le tableau de bord — accessible depuis la page d'accueil. Filtrable par type (Adulte/Trauma/Pédiatrique) et par période (date de début/fin), tout le reste de l'écran se recalcule instantanément selon le filtre choisi.",
           list: [
@@ -1547,6 +1558,69 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
   const [pdfGenerating, setPdfGenerating] = useState(false);
   const [shareGenerating, setShareGenerating] = useState(false);
 
+  // ── Rubriques SMUR classiques adaptées à l'arrêt cardiaque (remplace l'ancien format SBAR) ──
+  // Source unique pour l'écran, le texte copié et le PDF.
+  const rubriques = (() => {
+    const t = trans || {};
+    const rythmeLabelPre = { choquable:"Choquable", nonChoquable:"Non choquable", nonAnalyse:"Non analysé" };
+    const lieu = LIEUX_INTERVENTION.find(l => l.id === t.lieu)?.label;
+    const mec = MECANISMES_TRAUMA.find(m => m.id === patient?.mecanisme)?.label;
+    const rv = events.find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
+    const cordEvts = events.filter(e => e.id === "cord300" || e.id === "cord150");
+    const startEvt = events.find(e => e.id === "start");
+    const firstChoc = events.find(e => e.id === "choc" || e.id === "doublechoc");
+    const dChoc = (firstChoc && startEvt) ? firstChoc.sec - startEvt.sec : null;
+    const num = (v) => parseFloat(String(v).replace(",", "."));
+    const lastH = (hemo && hemo.length > 0) ? hemo[hemo.length - 1] : null;
+    const lastPam = lastH && lastH.pas && lastH.pad
+      ? Math.round(parseFloat(lastH.pad) + (parseFloat(lastH.pas) - parseFloat(lastH.pad)) / 3) : null;
+    const it = (l, v, extra) => (v || v === 0) ? { l, v: String(v), ...(extra || {}) } : null;
+    const list = [
+      { id:"motif", icon:"🚑", title:"Motif · Circonstances", tone:"rose", items:[
+        it("Lieu de l'intervention", lieu),
+        it("Mécanisme lésionnel", mec),
+        it("Circonstances", patient?.histoire, { long:true }),
+        it("Heure de l'ACR", t.hEffondrement || acrTime || "Inconnue"),
+        it("Température", patient?.temp && `${patient.temp} °C`),
+      ]},
+      { id:"atcd", icon:"📁", title:"Antécédents", tone:"slate", items:[
+        it("ATCD", patient?.atcd, { long:true }),
+      ]},
+      { id:"pre", icon:"🧑‍🚒", title:"Phase pré-SMUR", tone:"amber", items:[
+        it("Témoin de l'effondrement", t.temoin),
+        it("MCE par témoin", t.mceTemoin),
+        it("Arrivée des pompiers", t.hArriveePompiers),
+        it("Pose du DSA", t.hPoseDSA),
+        it("Rythme initial (DSA)", rythmeLabelPre[t.rythmeDSA] || t.rythmeDSA),
+        it("1er choc DSA", t.h1erChoc),
+        (parseInt(t.chocsPompiers)||0) > 0 ? it("Chocs DSA pompiers", t.chocsPompiers) : null,
+        (parseInt(t.chocsPublic)||0) > 0 ? it("Chocs DSA public", t.chocsPublic) : null,
+        it("Gestes des secouristes", t.gestesSecouristes, { long:true }),
+        it("Note pré-SMUR", t.note, { long:true }),
+      ]},
+      { id:"pec", icon:"🫀", title:"Prise en charge SMUR", tone:"blue", items:[
+        it("Rythme initial SMUR", rv?.label && rv.label.replace(/^Rythme initial\s*:\s*/i, "")),
+        it("Délai au 1er choc", dChoc !== null ? fmtSec(dChoc) : null),
+        it("Chocs électriques", chocs || "Aucun"),
+        it("Adrénaline", adrs ? `${adrs} × 1 mg = ${adrs} mg` : "Non administrée"),
+        it("Amiodarone", cordEvts.length > 0 ? cordEvts.map(e => e.label).join(" + ") : null),
+        it("Intubation", iot?.sonde && `sonde ${iot.sonde} mm${iot.repere ? ` · repère ${iot.repere} cm` : ""}${iot.cormack ? ` · Cormack ${iot.cormack}` : ""}${iot.capno ? ` · EtCO₂ initial ${iot.capno} mmHg` : ""}`, { long:true }),
+      ]},
+      { id:"evo", icon:"📈", title:"Évolution", tone:"green", items:[
+        it("Hémocue (Hb)", hemocue && hemocue.length > 0 ? (hemocue.length > 1 ? `${hemocue[0].val} → ${hemocue[hemocue.length-1].val} g/dL` : `${hemocue[0].val} g/dL`) : null),
+        it("EtCO₂", etco2 && etco2.length > 0 ? (etco2.length > 1 ? `${etco2[0].val} → ${etco2[etco2.length-1].val} mmHg` : `${etco2[0].val} mmHg`) : null),
+        it("Hémodynamique post-RACS", lastH && `TA ${lastH.pas||"—"}/${lastH.pad||"—"} mmHg · FC ${lastH.fc||"—"} bpm${lastPam ? ` · PAM ${lastPam} mmHg` : ""}`),
+        it("Amines", amines && amines.length > 0 ? amines.map(a => a.label).join(" + ") : null),
+      ]},
+      { id:"concl", icon:"🏁", title:"Conclusion", tone: rosc ? "green" : deces ? "slate" : "amber", items:[
+        it("Issue", rosc ? `RACS à ${rosc.time}` : deces ? deces.label : "Non renseignée", { color: rosc ? "greenText" : deces ? "textMid" : "amberText" }),
+        it("Durée de réanimation", fmtSec(totalSec)),
+      ]},
+    ].map(r => ({ ...r, items: r.items.filter(Boolean) })).filter(r => r.items.length > 0);
+    void num;
+    return list;
+  })();
+
   // Génère le texte complet du compte-rendu
   const buildText = () => {
     const lines = [];
@@ -1556,37 +1630,25 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     lines.push(`Date : ${new Date().toLocaleDateString("fr-FR")}  Heure : ${getNow()}`);
     lines.push("");
 
-    if (patient?.nom || patient?.prenom) {
-      lines.push("── PATIENT ─────────────────────────");
-      if (patient.nom || patient.prenom)
-        lines.push(`Nom : ${[patient.nom, patient.prenom].filter(Boolean).join(" ")}`);
-      if (patient.ddn)
-        lines.push(`DDN : ${new Date(patient.ddn).toLocaleDateString("fr-FR")}`);
-      if (patient.age)  lines.push(`Âge : ${patient.age}`);
-      if (patient.atcd) lines.push(`ATCD : ${patient.atcd}`);
-      if (patient.histoire) lines.push(`Histoire : ${patient.histoire}`);
+    if (patient?.nom || patient?.prenom || patient?.age || patient?.ddn) {
+      lines.push(`Patient : ${[patient.nom, patient.prenom].filter(Boolean).join(" ") || "—"}` +
+        (patient.ddn ? ` · né(e) le ${new Date(patient.ddn).toLocaleDateString("fr-FR")}` : "") +
+        (patient.age ? ` · ${patient.age}` : ""));
       lines.push("");
     }
 
-    lines.push("── DONNÉES RCP ─────────────────────");
-    lines.push(`Heure ACR      : ${acrTime || "Inconnue"}`);
-    if (patient?.temp) lines.push(`Température     : ${patient.temp} °C`);
-    lines.push(`No-flow        : ${noFlow  ? noFlow + " min" : "Inconnu"}`);
-    lines.push(`Low-flow       : ${lowFlow ? lowFlow + " min" : "—"}`);
-    lines.push(`Durée RCP      : ${fmtSec(totalSec)}`);
-    lines.push(`Chocs élect.   : ${chocs || "Aucun"}`);
-    lines.push(`Adrénaline     : ${adrs ? adrs + " × 1 mg" : "Non administrée"}`);
-    lines.push(`Issue          : ${rosc ? "ROSC à " + rosc.time : deces ? deces.label : "Non renseignée"}`);
+    lines.push("── EN BREF ─────────────────────────");
+    lines.push(`Durée de réanimation : ${fmtSec(totalSec)}`);
+    lines.push(`No-flow : ${noFlow ? noFlow + " min" : "inconnu"} · Low-flow : ${lowFlow ? lowFlow + " min" : "—"}`);
+    lines.push(`Adrénaline : ${adrs ? adrs + " × 1 mg" : "non administrée"} · Chocs : ${chocs || "aucun"}`);
+    lines.push(`Issue : ${rosc ? "RACS à " + rosc.time : deces ? deces.label : "non renseignée"}`);
     lines.push("");
 
-    if (iot?.sonde) {
-      lines.push("── INTUBATION OT ───────────────────");
-      if (iot.cormack) lines.push(`Cormack  : ${iot.cormack}`);
-      lines.push(`Sonde    : ${iot.sonde} mm`);
-      if (iot.repere)  lines.push(`Repère   : ${iot.repere} cm`);
-      if (iot.capno)   lines.push(`EtCO₂    : ${iot.capno} mmHg`);
+    rubriques.filter(r => ["motif","atcd","pre","pec"].includes(r.id)).forEach(r => {
+      lines.push(`── ${r.title.toUpperCase()} ${"─".repeat(Math.max(2, 34 - r.title.length))}`);
+      r.items.forEach(i => lines.push(`${i.l} : ${i.v}`));
       lines.push("");
-    }
+    });
 
     // Hemocue — suivi + tendance
     if (hemocue && hemocue.length > 0) {
@@ -1605,27 +1667,6 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
           lines.push(`Tendance glob. : ${dg > 0 ? "+" : ""}${String(dg).replace(".", ",")} g/dL (${hemocue.length} mesures)`);
         }
       }
-      lines.push("");
-    }
-
-    // Phase pré-SMUR (transmission des équipes en place)
-    const t = trans;
-    const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
-      t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || (parseInt(t.chocsPublic)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
-    if (hasTrans) {
-      const rythmeLabel = { choquable:"choquable", nonChoquable:"non choquable", nonAnalyse:"non analysé" };
-      lines.push("── PHASE PRÉ-SMUR ──────────────────");
-      if (t.hEffondrement)    lines.push(`Heure de l'ACR    : ${t.hEffondrement}`);
-      if (t.temoin)           lines.push(`Témoin            : ${t.temoin}`);
-      if (t.mceTemoin)        lines.push(`MCE par témoin    : ${t.mceTemoin}`);
-      if (t.hArriveePompiers) lines.push(`Arrivée pompiers  : ${t.hArriveePompiers}`);
-      if (t.hPoseDSA)         lines.push(`Pose DSA          : ${t.hPoseDSA}`);
-      if (t.rythmeDSA)        lines.push(`Rythme initial    : ${rythmeLabel[t.rythmeDSA] || t.rythmeDSA}`);
-      if (t.h1erChoc)         lines.push(`1er choc          : ${t.h1erChoc}`);
-      if ((parseInt(t.chocsPompiers)||0) > 0) lines.push(`Chocs DSA pompiers: ${t.chocsPompiers}`);
-      if ((parseInt(t.chocsPublic)||0) > 0)   lines.push(`Chocs DSA public  : ${t.chocsPublic}`);
-      if (t.gestesSecouristes) lines.push(`Gestes secouristes: ${t.gestesSecouristes}`);
-      if (t.note)             lines.push(`Note pré-SMUR     : ${t.note}`);
       lines.push("");
     }
 
@@ -1658,74 +1699,13 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       lines.push("");
     }
 
-    lines.push("── RÉSUMÉ ──────────────────────────");
-    lines.push(
-      `ACR pris en charge le ${new Date().toLocaleDateString("fr-FR")}.` +
-      (patient?.nom ? ` Patient : ${patient.nom}.` : "") +
-      (acrTime ? ` Heure d'arrêt : ${acrTime}.` : "") +
-      (noFlow  ? ` No-flow : ${noFlow} min.` : " No-flow inconnu.") +
-      (lowFlow ? ` Low-flow : ${lowFlow} min.` : "") +
-      ` Durée RCP : ${fmtSec(totalSec)}.` +
-      (chocs ? ` ${chocs} choc(s).` : "") +
-      (adrs  ? ` Adrénaline ${adrs} fois.` : "") +
-      (iot?.sonde ? ` IOT sonde ${iot.sonde} mm.` : "") +
-      (rosc  ? ` ROSC à ${rosc.time}.` : deces ? ` ${deces.label}.` : " Issue non renseignée.")
-    );
-    lines.push("");
-
-    // ── SBAR Transmission au réanimateur ──
-    lines.push("══ TRANSMISSION SBAR ══════════════");
-    // S — Situation
-    lines.push("");
-    lines.push("S — SITUATION");
-    const patientDesc = [
-      patient?.nom && patient?.prenom ? `${patient.nom} ${patient.prenom}` : patient?.nom || null,
-      patient?.age ? `${patient.age}` : patient?.ddn ? calcAge(patient.ddn) : null,
-    ].filter(Boolean).join(", ");
-    lines.push(`Patient : ${patientDesc || "Identité non renseignée"}`);
-    lines.push(`ACR extra-hospitalier — heure d'arrêt : ${acrTime || "inconnue"}`);
-    lines.push(`No-flow : ${noFlow ? noFlow + " min" : "inconnu"} · Low-flow : ${lowFlow ? lowFlow + " min" : "—"} · Durée RCP : ${fmtSec(totalSec)}`);
-    // B — Background
-    lines.push("");
-    lines.push("B — CONTEXTE");
-    if (patient?.atcd) lines.push(`ATCD : ${patient.atcd}`);
-    if (patient?.histoire) lines.push(`Circonstances : ${patient.histoire}`);
-    if (patient?.temp) lines.push(`Température : ${patient.temp} °C`);
-    const tSBAR = trans;
-    if (tSBAR && (tSBAR.temoin || tSBAR.mceTemoin || tSBAR.chocsPompiers || tSBAR.chocsPublic)) {
-      const preSMUR = [
-        tSBAR.temoin && `témoin : ${tSBAR.temoin}`,
-        tSBAR.mceTemoin && `MCE témoin : ${tSBAR.mceTemoin}`,
-        (parseInt(tSBAR.chocsPompiers)||0) > 0 && `${tSBAR.chocsPompiers} choc(s) DSA pompiers`,
-        (parseInt(tSBAR.chocsPublic)||0) > 0 && `${tSBAR.chocsPublic} choc(s) DSA public`,
-        tSBAR.rythmeDSA && `rythme initial : ${tSBAR.rythmeDSA}`,
-      ].filter(Boolean).join(" · ");
-      lines.push(`Pré-SMUR : ${preSMUR}`);
+    const concl = rubriques.find(r => r.id === "concl");
+    if (concl) {
+      lines.push("── CONCLUSION ──────────────────────");
+      concl.items.forEach(i => lines.push(`${i.l} : ${i.v}`));
+      if (!rosc && deces) lines.push("Pas de RACS obtenu.");
+      lines.push("");
     }
-    // A — Assessment
-    lines.push("");
-    lines.push("A — ÉVALUATION");
-    const rv = events.find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
-    if (rv) lines.push(`Rythme initial SMUR : ${rv.label}`);
-    lines.push(`Chocs électriques : ${chocs || "Aucun"}`);
-    lines.push(`Adrénaline : ${adrs ? adrs + " × 1 mg = " + adrs + " mg au total" : "Non administrée"}`);
-    const cordEvts = events.filter(e => e.id === "cord300" || e.id === "cord150");
-    if (cordEvts.length > 0) lines.push(`Amiodarone : ${cordEvts.map(e => e.label).join(" + ")}`);
-    if (iot?.sonde) lines.push(`Intubation : sonde ${iot.sonde} mm, repère ${iot.repere || "—"} cm${iot.capno ? `, EtCO₂ initial ${iot.capno} mmHg` : ""}`);
-    lines.push(`Issue : ${rosc ? "RACS à " + rosc.time : deces ? deces.label : "Non renseignée"}`);
-    // R — Résultat
-    lines.push("");
-    lines.push("R — RÉSULTAT / ÉTAT ACTUEL");
-    if (rosc && hemo && hemo.length > 0) {
-      const lastH = hemo[hemo.length - 1];
-      const pam = (lastH.pas && lastH.pad)
-        ? Math.round(parseFloat(lastH.pad) + (parseFloat(lastH.pas) - parseFloat(lastH.pad)) / 3) : null;
-      lines.push(`Hémodynamique : TA ${lastH.pas||"—"}/${lastH.pad||"—"} mmHg · FC ${lastH.fc||"—"} bpm${pam ? ` · PAM ${pam} mmHg` : ""}`);
-    }
-    if (amines && amines.length > 0) lines.push(`Amines : ${amines.map(a => a.label).join(" + ")}`);
-    if (etco2 && etco2.length > 0) lines.push(`EtCO₂ : ${etco2[etco2.length-1].val} mmHg`);
-    if (!rosc) lines.push("Pas de RACS obtenu à ce stade.");
-    lines.push("");
     lines.push("───────────────────────────────────");
     lines.push("Usage professionnel exclusif");
     lines.push("Outil d'aide cognitive — chaque");
@@ -1842,24 +1822,36 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     // apparaissent en simples pastilles colorées sur la ligne.
     const timelineHtml = () => {
       if (!totalSec || totalSec <= 0) return "";
-      const pct = (sec) => Math.min(100, Math.max(0, ((sec - startSec2) / totalSec) * 100));
+      // Position = heure réelle (HH:MM) écoulée depuis l'heure de début, pour que deux
+      // gestes à des horaires différents ne soient jamais au même endroit (le chrono
+      // se met en pause, l'heure réelle non). Repli sur le chrono si une heure est absente.
+      const okT = (t) => /^\d{1,2}:\d{2}$/.test(String(t || ""));
+      const toMin = (t) => { const [h, m] = String(t).split(":").map(Number); return h * 60 + m; };
+      const startEvt = events.find(e => e.id === "start");
+      const useClock = !!startEvt && okT(startEvt.time) && events.every(e => okT(e.time));
+      const rel = (e) => useClock
+        ? ((toMin(e.time) - toMin(startEvt.time) + 1440) % 1440)
+        : Math.max(0, (e.sec - startSec2) / 60);
+      const finalEvt = rosc2 || deces2;
+      const relEvents = events.filter(e => e.id !== "start").map(rel);
+      const spanMin = Math.max(1, ...relEvents, finalEvt ? rel(finalEvt) : 0, useClock ? 0 : totalSec / 60);
+      const pct = (e) => Math.min(100, Math.max(0, (rel(e) / spanMin) * 100));
       const dots = [];
       events.forEach(e => {
         if (e.id === "start") return;
-        if (e.id === "choc" || e.id === "doublechoc") dots.push({ sec:e.sec, icon:"⚡", color:C.blue, time:e.time });
-        else if (e.id === "adr") dots.push({ sec:e.sec, icon:"💉", color:C.rose, time:e.time });
-        else if (e.id === "cord300" || e.id === "cord150") dots.push({ sec:e.sec, icon:"💊", color:C.amber, time:e.time });
-        else if (e.id === "iot") dots.push({ sec:e.sec, icon:"🫁", color:C.violet, time:e.time });
+        if (e.id === "choc" || e.id === "doublechoc") dots.push({ e, icon:"⚡", color:C.blue, time:e.time });
+        else if (e.id === "adr") dots.push({ e, icon:"💉", color:C.rose, time:e.time });
+        else if (e.id === "cord300" || e.id === "cord150") dots.push({ e, icon:"💊", color:C.amber, time:e.time });
+        else if (e.id === "iot") dots.push({ e, icon:"🫁", color:C.violet, time:e.time });
       });
-      const finalEvt = rosc2 || deces2;
       if (dots.length === 0 && !finalEvt) return "";
 
       // Anti-chevauchement : deux gestes trop proches dans le temps sont empilés
       // sur des rangées différentes plutôt que superposés au même endroit.
-      const minGapPct = 6;
+      const minGapPct = 10;
       const placed_rows = [];
-      const placedDots = [...dots].sort((a, b) => a.sec - b.sec).map(d => {
-        const p = pct(d.sec);
+      const placedDots = [...dots].sort((a, b) => rel(a.e) - rel(b.e)).map(d => {
+        const p = pct(d.e);
         let row = 0;
         while (placed_rows.some(o => o.row === row && Math.abs(o.p - p) < minGapPct)) row++;
         placed_rows.push({ p, row });
@@ -1867,21 +1859,21 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       });
       const maxRow = placed_rows.reduce((m, o) => Math.max(m, o.row), 0);
 
-      const dotsTop = 16, rowH = 22;
+      const dotsTop = 16, rowH = 34;
       const dotsBottom = dotsTop + (maxRow + 1) * rowH;
       const ticksY = dotsBottom + 10;
       const containerH = ticksY + 22;
 
-      let h = `<div style="position:relative;height:${containerH}px;margin:10px 4px 6px">`;
-      const lastPct = finalEvt ? pct(finalEvt.sec) : Math.max(...dots.map(d => pct(d.sec)));
+      let h = `<div style="position:relative;height:${containerH}px;margin:10px 34px 6px">`;
+      const lastPct = finalEvt ? pct(finalEvt) : Math.max(...dots.map(d => pct(d.e)));
       h += `<div style="position:absolute;top:24px;left:0;right:0;height:3px;background:${C.borderSoft};border-radius:2px"></div>`;
       h += `<div style="position:absolute;top:24px;left:0;width:${lastPct.toFixed(1)}%;height:3px;background:${finalEvt===rosc2?C.green:C.textMid};border-radius:2px"></div>`;
 
       // Règle des minutes — 0 = heure de l'arrêt cardiaque (début de la RCP)
-      const totalMin = totalSec / 60;
+      const totalMin = spanMin;
       const tickInterval = totalMin <= 8 ? 1 : totalMin <= 16 ? 2 : totalMin <= 40 ? 5 : 10;
       for (let m = 0; m <= totalMin + 0.01; m += tickInterval) {
-        const p = Math.min(100, (m * 60 / totalSec) * 100);
+        const p = Math.min(100, (m / spanMin) * 100);
         h += `<div style="position:absolute;left:${p.toFixed(1)}%;top:${ticksY}px;width:1px;height:6px;background:${C.border};transform:translateX(-50%)"></div>`;
         h += `<p style="position:absolute;left:${p.toFixed(1)}%;top:${ticksY+7}px;font-size:8px;color:${C.textSoft};transform:translateX(-50%);white-space:nowrap;font-family:'JetBrains Mono',monospace">${Math.round(m)}min</p>`;
       }
@@ -1900,22 +1892,21 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       const firstChoc = placedDots.filter(d => d.icon === "⚡").sort((a,b) => a.sec - b.sec)[0];
       placedDots.forEach(d => {
         const isFirstChoc = d === firstChoc;
-        if (!isFirstChoc && d.row === 0) return; // sur la ligne principale, déjà lisible via la règle des minutes
-        const labelTop = dotsTop + d.row * rowH + 20;
+        const labelTop = dotsTop + d.row * rowH + 21;
         const col = isFirstChoc ? C.blueText : d.color;
         h += `<p style="position:absolute;left:${d.p.toFixed(1)}%;top:${labelTop}px;font-size:8.5px;font-weight:700;color:${col};transform:translateX(-50%);white-space:nowrap">${esc(d.time)}</p>`;
       });
       // Issue finale
       if (finalEvt) {
-        const p = pct(finalEvt.sec).toFixed(1);
+        const p = pct(finalEvt).toFixed(1);
         const isRosc = finalEvt === rosc2;
         const col = isRosc ? C.greenText : C.textSoft;
-        const lbl = isRosc ? `RACS ${finalEvt.time}` : finalEvt.label;
+        const lbl = isRosc ? `RACS ${finalEvt.time}` : `Décès ${finalEvt.time}`;
         h += `<div style="position:absolute;left:${p}%;top:14px;width:23px;height:23px;border-radius:50%;background:${isRosc?C.green:C.textMid};border:2.5px solid ${C.surface};box-shadow:0 2px 6px rgba(10,17,27,0.25);transform:translateX(-50%);display:flex;align-items:center;justify-content:center;font-size:11px">${isRosc?"✅":"⬛"}</div>`;
         h += `<p style="position:absolute;left:${p}%;top:0;font-size:9.5px;font-weight:800;color:${col};transform:translateX(-50%);white-space:nowrap">${esc(lbl)}</p>`;
       }
       h += `</div>`;
-      h += `<p style="margin:4px 0 0;font-size:9.5px;color:${C.textSoft};text-align:center">Minutes écoulées depuis l'arrêt cardiaque (0 min = début RCP)</p>`;
+      h += `<p style="margin:4px 0 0;font-size:9.5px;color:${C.textSoft};text-align:center">Minutes écoulées depuis le début de la RCP${useClock ? " (heures réelles)" : ""}</p>`;
       return h;
     };
 
@@ -1964,11 +1955,11 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         <p style="margin:0;font-size:22px;font-weight:900;color:#fff;font-family:'Archivo',sans-serif;letter-spacing:-0.01em">${esc(rosc2?`RACS obtenu à ${rosc2.time}`:deces2?deces2.label:"Non stabilisé à ce stade")}</p>
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px">
-      ${[["Durée RCP",fmtSec(totalSec)],["No-flow",noFlow?noFlow+" min":"—"],["Low-flow",lowFlow?lowFlow+" min":"—"],["Délai 1er choc",delaiChocSec2!==null?fmtSec(delaiChocSec2):"—"]].map(([l,v])=>`
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">
+      ${[["Durée RCP",fmtSec(totalSec)],["No-flow",noFlow?noFlow+" min":"—"],["Low-flow",lowFlow?lowFlow+" min":"—"],["Adrénaline",adrs2?adrs2+" mg":"0"],["Chocs",String(chocs2||0)]].map(([l,v])=>`
       <div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:8px 6px;text-align:center">
-        <p style="margin:0;font-size:17px;font-weight:800;color:#fff;font-family:'JetBrains Mono',monospace">${esc(v)}</p>
-        <p style="margin:0;font-size:9px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.06em">${esc(l)}</p>
+        <p style="margin:0;font-size:15px;font-weight:800;color:#fff;font-family:'JetBrains Mono',monospace;white-space:nowrap">${esc(v)}</p>
+        <p style="margin:0;font-size:8.5px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.06em">${esc(l)}</p>
       </div>`).join("")}
     </div>
   </div>
@@ -1976,129 +1967,42 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
   <!-- Frise chronologique visuelle -->
   ${(() => { const tl = timelineHtml(); return tl ? section("🕐 Frise chronologique", C.blue, C.blueSoft, tl) : ""; })()}`;
 
-    // SBAR — résumé de transmission, remonté juste après la frise (avant le détail)
-    const sbarRows = [
-      { L:"S", title:"Situation", c:C.rose, soft:C.roseSoft, lines:[
-        `${patientDesc2||"Patient"} · ACR extra-hospitalier${LIEUX_INTERVENTION.find(l => l.id === trans?.lieu)?.label ? " · " + LIEUX_INTERVENTION.find(l => l.id === trans.lieu).label : ""}`,
-        `Heure arrêt : ${acrTime||"inconnue"} · No-flow : ${noFlow||"?"}min · Low-flow : ${lowFlow||"—"}min · Durée : ${fmtSec(totalSec)}`,
-      ]},
-      { L:"B", title:"Contexte", c:C.blue, soft:C.blueSoft, lines:[
-        MECANISMES_TRAUMA.find(m => m.id === patient?.mecanisme)?.label && `Mécanisme : ${MECANISMES_TRAUMA.find(m => m.id === patient.mecanisme).label}`,
-        patient?.atcd && `ATCD : ${patient.atcd}`,
-        patient?.histoire && `Circonstances : ${patient.histoire}`,
-        patient?.temp && `Température : ${patient.temp} °C`,
-        preSMUR2 && `Pré-SMUR : ${preSMUR2}`,
-      ].filter(Boolean)},
-      { L:"A", title:"Évaluation", c:C.amber, soft:C.amberSoft, lines:[
-        rv2 && `Rythme initial SMUR : ${rv2.label}`,
-        chocs2 ? `${chocs2} choc(s) électrique(s)` : "Aucun choc",
-        adrs2 ? `Adrénaline : ${adrs2} × 1 mg = ${adrs2} mg` : "Adrénaline non administrée",
-        cordEvts2.length>0 && cordEvts2.map(e=>e.label).join(" + "),
-        iot?.sonde && `Intubation : sonde ${iot.sonde} mm · repère ${iot.repere||"—"} cm${iot.capno?` · EtCO₂ initial ${iot.capno} mmHg`:""}`,
-        rosc2 ? `RACS à ${rosc2.time}` : deces2 ? deces2.label : "Issue non renseignée",
-      ].filter(Boolean)},
-      { L:"R", title:"Résultat / État actuel", c:C.green, soft:C.greenSoft, lines:[
-        lastH2 && `Hémodynamique : TA ${lastH2.pas||"—"}/${lastH2.pad||"—"} mmHg · FC ${lastH2.fc||"—"} bpm${lastPam2?` · PAM ${lastPam2} mmHg`:""}`,
-        amines&&amines.length>0 && `Amines : ${amines.map(a=>a.label).join(" + ")}`,
-        etco2&&etco2.length>0 && `EtCO₂ : ${etco2[etco2.length-1].val} mmHg`,
-        !rosc2 && "Pas de RACS obtenu à ce stade.",
-      ].filter(Boolean)},
-    ];
-    html += `<div style="margin-bottom:14px">
-      <p style="margin:0 0 10px;font-size:13px;font-weight:800;color:${C.text};font-family:'Archivo',sans-serif">
-        📢 Résumé de transmission (SBAR)</p>
-      ${sbarRows.map(r => `
-        <div class="pdf-card" style="display:flex;gap:10px;background:${r.soft};border:1px solid ${r.c}33;border-radius:11px;
-          padding:11px 13px;margin-bottom:8px">
-          <div style="width:28px;height:28px;border-radius:9px;background:${r.c};flex-shrink:0;
-            display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;
-            font-family:'JetBrains Mono',monospace;font-size:13px">${r.L}</div>
-          <div style="flex:1;min-width:0">
-            <p style="margin:0 0 3px;font-size:10px;font-weight:700;color:${r.c};text-transform:uppercase;
-              letter-spacing:0.1em;font-family:'JetBrains Mono',monospace">${r.title}</p>
-            ${r.lines.length>0 ? r.lines.map((l,i)=>`<p style="margin:${i===0?0:"2px"} 0 0;font-size:13px;
-              font-weight:${i===0?700:400};color:${C.text};line-height:1.5">${esc(l)}</p>`).join("")
-              : `<p style="margin:0;font-size:12px;color:${C.textSoft};font-style:italic">Non renseigné</p>`}
-          </div>
-        </div>`).join("")}
-    </div>
-    <p style="text-align:center;font-size:10.5px;color:${C.textSoft};margin:0 0 16px;text-transform:uppercase;letter-spacing:0.08em;font-family:'JetBrains Mono',monospace">— Détail complet ci-dessous —</p>`;
+    // Rubriques SMUR classiques adaptées à l'ACR (remplace l'ancien format SBAR)
+    const toneCol = (tn) => tn === "slate" ? { c:C.textMid, soft:C.surfaceAlt } : { c:C[tn], soft:C[tn + "Soft"] };
+    const itemsHtml = (items) => items.map(i => i.long
+      ? `<div style="padding:5px 0;border-bottom:1px solid ${C.borderSoft}">
+           <p style="margin:0 0 2px;font-size:11px;color:${C.textSoft}">${esc(i.l)}</p>
+           <p style="margin:0;font-size:13px;color:${C.text};line-height:1.55">${esc(i.v)}</p></div>`
+      : row(i.l, i.v, i.color ? C[i.color] : undefined)).join("");
+    const subT = (t) => `<p style="margin:14px 0 4px;font-size:11px;font-weight:800;color:${C.textMid}">${t}</p>`;
+    const rubHtml = (id, extra = "") => {
+      const r = rubriques.find(x => x.id === id);
+      if (!r && !extra) return "";
+      const rr = r || { icon:"📈", title:"Évolution", tone:"green", items:[] };
+      const { c, soft } = toneCol(rr.tone);
+      return section(`${rr.icon} ${rr.title}`, c, soft, itemsHtml(rr.items) + extra);
+    };
 
-    // Identité
-    if (patient?.nom || patient?.prenom || patient?.age || patient?.atcd || patient?.histoire || patient?.mecanisme) {
-      const mecLabel = MECANISMES_TRAUMA.find(m => m.id === patient.mecanisme)?.label;
-      html += section("🪪 Identité patient", C.blue, C.blueSoft, `
-        ${(patient.nom||patient.prenom) ? row("Nom", [patient.nom,patient.prenom].filter(Boolean).join(" ")) : ""}
-        ${patient.age ? row("Âge", patient.age) : ""}
-        ${mecLabel ? row("Mécanisme lésionnel", mecLabel) : ""}
-        ${patient.atcd ? row("ATCD", patient.atcd) : ""}
-        ${patient.histoire ? row("Circonstances", patient.histoire) : ""}
-      `);
-    }
+    html += rubHtml("motif") + rubHtml("atcd") + rubHtml("pre") + rubHtml("pec");
 
-    // Contexte de transmission (lieu, témoin) — affiché dès qu'une info est renseignée
-    const lieuLabel2 = LIEUX_INTERVENTION.find(l => l.id === trans?.lieu)?.label;
-    if (lieuLabel2 || trans?.temoin || trans?.mceTemoin) {
-      html += section("📻 Contexte de transmission", C.amber, C.amberSoft, `
-        ${lieuLabel2 ? row("Lieu de l'intervention", lieuLabel2) : ""}
-        ${trans.temoin ? row("Témoin de l'effondrement", trans.temoin) : ""}
-        ${trans.mceTemoin ? row("MCE par témoin", trans.mceTemoin) : ""}
-      `);
-    }
-
-    // Données RCP
-    html += section("🫀 Données de réanimation", C.rose, C.roseSoft, `
-      ${row("Heure ACR", acrTime || "Inconnue")}
-      ${row("No-flow", noFlow ? noFlow+" min" : "Inconnu")}
-      ${row("Low-flow", lowFlow ? lowFlow+" min" : "—")}
-      ${row("Durée RCP", fmtSec(totalSec))}
-      ${row("Chocs électriques", chocs2 || "Aucun")}
-      ${row("Adrénaline", adrs2 ? adrs2+" × 1 mg = "+adrs2+" mg" : "Non administrée")}
-      ${row("Issue", rosc2 ? "RACS à "+rosc2.time : deces2 ? deces2.label : "Non renseignée", rosc2?C.greenText:deces2?C.textSoft:C.amberText)}
-    `);
-
-    // Intubation
-    if (iot?.sonde) {
-      html += section("🫁 Intubation oro-trachéale", C.violet, C.violetSoft, `
-        ${iot.cormack ? row("Cormack", iot.cormack) : ""}
-        ${row("Sonde", iot.sonde+" mm")}
-        ${iot.repere ? row("Repère", iot.repere+" cm") : ""}
-        ${iot.capno ? row("EtCO₂ initial", iot.capno+" mmHg") : ""}
-      `);
-    }
-
-    // Hemocue
+    // Évolution : tendances Hb / EtCO₂ / hémodynamique
+    let evoExtra = "";
     if (hemocue && hemocue.length > 0) {
       const hPts = hemocue.map(h => ({ v: parseFloat(String(h.val).replace(",",".")) })).filter(p=>!isNaN(p.v));
-      html += section("🩸 Hemocue (Hb)", C.rose, C.roseSoft,
-        sparkline(hPts, { color:C.rose, threshold:7, unit:" g/dL" }) +
-        `<div style="margin-top:8px">` + hemocue.map(h => row(h.time, h.val+" g/dL")).join("") + `</div>`
-      );
+      evoExtra += subT("🩸 Hemocue (Hb)") + sparkline(hPts, { color:C.rose, threshold:7, unit:" g/dL" }) +
+        `<div style="margin-top:6px">` + hemocue.map(h => row(h.time, h.val+" g/dL")).join("") + `</div>`;
     }
-
-    // Pré-SMUR
-    if (preSMUR2) {
-      html += section("📋 Phase pré-SMUR", C.slate || C.textSoft, C.surfaceAlt, `
-        <p style="margin:0;font-size:13px;color:${C.textMid};line-height:1.6">${esc(preSMUR2)}</p>
-      `);
-    }
-
-    // EtCO2
     if (etco2 && etco2.length > 0) {
       const ePts = etco2.map(e => ({ v: parseFloat(String(e.val).replace(",",".")) })).filter(p=>!isNaN(p.v));
-      html += section("📈 EtCO₂ — capnographie", C.teal, C.tealSoft,
-        sparkline(ePts, { color:C.teal, threshold:10, unit:" mmHg" })
-      );
+      evoExtra += subT("📈 EtCO₂ — capnographie") + sparkline(ePts, { color:C.teal, threshold:10, unit:" mmHg" });
     }
-
-    // Hémodynamique post-RACS
     if (hemo && hemo.length > 0) {
-      html += section("💓 Hémodynamique post-RACS", C.green, C.greenSoft,
-        hemoSvg(hemo, amines) +
+      evoExtra += subT("💓 Hémodynamique post-RACS") + hemoSvg(hemo, amines) +
         (lastPam2 !== null ? `<p style="margin:8px 0 0;font-size:13px;font-weight:700;color:${lastPam2<65?C.roseText:C.greenText}">PAM actuelle : ${lastPam2} mmHg</p>` : "") +
-        (amines && amines.length>0 ? `<div style="margin-top:8px">` + amines.map(a=>row(a.time, a.label)).join("") + `</div>` : "")
-      );
+        (amines && amines.length>0 ? `<div style="margin-top:8px">` + amines.map(a=>row(a.time, a.label)).join("") + `</div>` : "");
     }
+    html += rubHtml("evo", evoExtra);
+    html += rubHtml("concl");
 
     // Chronologie
     html += section(`🕐 Chronologie (${events.length} événements)`, C.blue, C.blueSoft,
@@ -2324,69 +2228,45 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
           </div>
         )}
 
-        {/* Données RCP */}
-        <Section title="Données RCP">
-          <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:12, padding:"4px 14px" }}>
-            <Field label="Heure ACR"    value={acrTime || "Inconnue"} />
-            <Field label="No-flow"      value={noFlow  ? `${noFlow} min` : "Inconnu"} />
-            <Field label="Low-flow"     value={lowFlow ? `${lowFlow} min` : null} />
-            <Field label="Durée RCP"    value={fmtSec(totalSec)} />
-            <Field label="Chocs électriques" value={chocs ? `${chocs} choc(s)` : "Aucun"} />
-            <Field label="Adrénaline"   value={adrs ? `${adrs} × 1 mg` : "Non administrée"} />
-            <Field label="Issue"        value={rosc ? `✓ ROSC — ${rosc.time}` : deces ? deces.label : "Non renseignée"} />
+        {/* En bref */}
+        <div style={{ background: rosc ? P.greenSoft : deces ? P.surfaceAlt : P.amberSoft,
+          border:`1px solid ${P.border}`, borderRadius:14, padding:"12px 12px 10px", marginBottom:14 }}>
+          <p style={{ margin:"0 0 8px", fontSize:9, fontWeight:700, color:P.textSoft, textTransform:"uppercase",
+            letterSpacing:"0.1em", fontFamily:mono }}>En bref</p>
+          <p style={{ margin:"0 0 10px", fontSize:15, fontWeight:800, color:P.text }}>
+            {rosc ? `✅ RACS à ${rosc.time}` : deces ? `⬛ ${deces.label}` : "❓ Issue non renseignée"}
+          </p>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(5, 1fr)", gap:6 }}>
+            {[["Durée RCP", fmtSec(totalSec)], ["No-flow", noFlow ? `${noFlow} min` : "—"],
+              ["Low-flow", lowFlow ? `${lowFlow} min` : "—"], ["Adré", adrs ? `${adrs} mg` : "0"],
+              ["Chocs", String(chocs || 0)]].map(([l, v]) => (
+              <div key={l} style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:9,
+                padding:"7px 2px", textAlign:"center" }}>
+                <p style={{ margin:0, fontSize:13, fontWeight:800, color:P.text, fontFamily:mono, whiteSpace:"nowrap" }}>{v}</p>
+                <p style={{ margin:"1px 0 0", fontSize:8, color:P.textSoft, textTransform:"uppercase", letterSpacing:"0.04em" }}>{l}</p>
+              </div>
+            ))}
           </div>
-        </Section>
+        </div>
 
-        {/* IOT */}
-        {iot?.sonde && (
-          <Section title="Intubation oro-trachéale">
-            <div style={{ background:P.violetSoft, border:`1px solid #C4BBEE`, borderRadius:12, padding:"4px 14px" }}>
-              {iot.cormack && <Field label="Cormack" value={iot.cormack} />}
-              <Field label="Sonde"  value={`${iot.sonde} mm`} />
-              {iot.repere && <Field label="Repère"  value={`${iot.repere} cm`} />}
-              {iot.capno  && <Field label="EtCO₂"   value={`${iot.capno} mmHg`} />}
-            </div>
-          </Section>
-        )}
-
-        {/* Antécédents / Histoire */}
-        {patient?.atcd && (
-          <Section title="Antécédents">
-            <p style={{ margin:0, fontSize:13, color:P.textMid, background:P.surfaceAlt,
-              borderRadius:9, padding:"9px 12px", lineHeight:1.6 }}>{patient.atcd}</p>
-          </Section>
-        )}
-        {patient?.histoire && (
-          <Section title="Histoire de la maladie">
-            <p style={{ margin:0, fontSize:13, color:P.textMid, background:P.surfaceAlt,
-              borderRadius:9, padding:"9px 12px", lineHeight:1.6 }}>{patient.histoire}</p>
-          </Section>
-        )}
-
-        {/* Phase pré-SMUR — transmission équipes */}
-        {(() => {
-          const t = trans;
-          const hasTrans = t && (t.saved || t.hEffondrement || t.hArriveePompiers || t.hPoseDSA ||
-            t.h1erChoc || t.temoin || t.mceTemoin || (parseInt(t.chocsPompiers)||0) > 0 || (parseInt(t.chocsPublic)||0) > 0 || t.rythmeDSA || t.gestesSecouristes || t.note);
-          if (!hasTrans) return null;
-          const rythmeLabel = { choquable:"Choquable", nonChoquable:"Non choquable", nonAnalyse:"Non analysé" };
+        {/* Rubriques SMUR adaptées à l'ACR */}
+        {rubriques.filter(r => r.id !== "concl").map(r => {
+          const c = r.tone === "slate" ? P.textMid : P[r.tone];
+          const soft = r.tone === "slate" ? P.surfaceAlt : P[r.tone + "Soft"];
           return (
-            <Section title="Phase pré-SMUR (équipes en place)">
-              <div style={{ background:P.amberSoft, border:`1px solid #F5C99E`, borderRadius:12, padding:"4px 14px" }}>
-                {t.hEffondrement    && <Field label="Heure de l'ACR"     value={t.hEffondrement} />}
-                {t.temoin           && <Field label="Témoin"             value={t.temoin} />}
-                {t.mceTemoin        && <Field label="MCE par témoin"     value={t.mceTemoin} />}
-                {t.hArriveePompiers && <Field label="Arrivée pompiers"   value={t.hArriveePompiers} />}
-                {t.hPoseDSA         && <Field label="Pose DSA"           value={t.hPoseDSA} />}
-                {t.rythmeDSA        && <Field label="Rythme initial"     value={rythmeLabel[t.rythmeDSA] || t.rythmeDSA} />}
-                {t.h1erChoc         && <Field label="1er choc"           value={t.h1erChoc} />}
-                {(parseInt(t.chocsPompiers)||0) > 0 && <Field label="Chocs DSA pompiers" value={String(t.chocsPompiers)} />}
-                {(parseInt(t.chocsPublic)||0) > 0 && <Field label="Chocs DSA public" value={String(t.chocsPublic)} />}
-                {t.note             && <Field label="Note pré-SMUR"      value={t.note} />}
+            <Section key={r.id} title={`${r.icon} ${r.title}`}>
+              <div style={{ background:soft, border:`1px solid color-mix(in srgb, ${c} 28%, transparent)`,
+                borderRadius:12, padding:"4px 14px" }}>
+                {r.items.map((i, k) => i.long ? (
+                  <div key={k} style={{ padding:"7px 0", borderBottom:`1px solid ${P.borderSoft}` }}>
+                    <p style={{ margin:"0 0 2px", fontSize:11, color:P.textSoft }}>{i.l}</p>
+                    <p style={{ margin:0, fontSize:13, color:P.text, lineHeight:1.55 }}>{i.v}</p>
+                  </div>
+                ) : <Field key={k} label={i.l} value={i.v} />)}
               </div>
             </Section>
           );
-        })()}
+        })}
 
         {/* Hemocue — suivi Hb */}
         {hemocue && hemocue.length > 0 && (
@@ -2505,77 +2385,19 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
           </div>
         </Section>
 
-        {/* Résumé texte */}
-        <Section title="Transmission SBAR — au réanimateur">
-          {(() => {
-            const patientDesc = [
-              patient?.nom && patient?.prenom ? `${patient.nom} ${patient.prenom}` : patient?.nom,
-              patient?.age || (patient?.ddn ? calcAge(patient.ddn) : null),
-            ].filter(Boolean).join(", ");
-            const cordEvts = events.filter(e => e.id==="cord300"||e.id==="cord150");
-            const rv = events.find(e => ["rv_fvtv","rv_aesp","rv_asy"].includes(e.id));
-            const lastH = (hemo&&hemo.length>0) ? hemo[hemo.length-1] : null;
-            const lastPam = lastH&&lastH.pas&&lastH.pad
-              ? Math.round(parseFloat(lastH.pad)+(parseFloat(lastH.pas)-parseFloat(lastH.pad))/3) : null;
-            const t = trans;
-            const preSMUR = t && [
-              t.temoin && `Témoin : ${t.temoin}`,
-              t.mceTemoin && `MCE témoin : ${t.mceTemoin}`,
-              (parseInt(t.chocsPompiers)||0)>0 && `${t.chocsPompiers} choc(s) DSA pompiers`,
-              (parseInt(t.chocsPublic)||0)>0 && `${t.chocsPublic} choc(s) DSA public`,
-              t.rythmeDSA && `Rythme initial : ${t.rythmeDSA}`,
-            ].filter(Boolean).join(" · ");
-            const rows = [
-              { label:"S", title:"Situation", c:P.rose, soft:P.roseSoft, lines:[
-                `${patientDesc||"Patient"} · ACR extra-hospitalier`,
-                `Heure arrêt : ${acrTime||"inconnue"} · No-flow : ${noFlow||"?"}min · Low-flow : ${lowFlow||"—"}min · Durée : ${fmtSec(totalSec)}`,
-              ]},
-              { label:"B", title:"Contexte", c:P.blue, soft:P.blueSoft, lines:[
-                patient?.atcd && `ATCD : ${patient.atcd}`,
-                patient?.histoire && `Circonstances : ${patient.histoire}`,
-                patient?.temp && `Température : ${patient.temp} °C`,
-                preSMUR && `Pré-SMUR : ${preSMUR}`,
-              ].filter(Boolean)},
-              { label:"A", title:"Évaluation", c:P.amber, soft:P.amberSoft, lines:[
-                rv && `Rythme initial SMUR : ${rv.label}`,
-                chocs ? `${chocs} choc(s) électrique(s)` : "Aucun choc",
-                adrs ? `Adrénaline : ${adrs} × 1 mg = ${adrs} mg` : "Adrénaline non administrée",
-                cordEvts.length>0 && cordEvts.map(e=>e.label).join(" + "),
-                iot?.sonde && `Intubation : sonde ${iot.sonde} mm · repère ${iot.repere||"—"} cm${iot.capno?` · EtCO₂ initial ${iot.capno} mmHg`:""}`,
-                rosc ? `RACS à ${rosc.time}` : deces ? deces.label : "Issue non renseignée",
-              ].filter(Boolean)},
-              { label:"R", title:"Résultat / État actuel", c:P.green, soft:P.greenSoft, lines:[
-                lastH && `Hémodynamique : TA ${lastH.pas||"—"}/${lastH.pad||"—"} mmHg · FC ${lastH.fc||"—"} bpm${lastPam?` · PAM ${lastPam} mmHg`:""}`,
-                amines&&amines.length>0 && `Amines : ${amines.map(a=>a.label).join(" + ")}`,
-                etco2&&etco2.length>0 && `EtCO₂ : ${etco2[etco2.length-1].val} mmHg`,
-                !rosc && "Pas de RACS obtenu à ce stade.",
-              ].filter(Boolean)},
-            ];
-            return (
-              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                {rows.map(r => (
-                  <div key={r.label} style={{ display:"flex", gap:10, background:r.soft,
-                    borderRadius:11, padding:"10px 12px", border:`1px solid color-mix(in srgb, ${r.c} 30%, transparent)` }}>
-                    <div style={{ width:28, height:28, borderRadius:9, background:r.c,
-                      display:"flex", alignItems:"center", justifyContent:"center",
-                      color:"#fff", fontSize:13, fontWeight:900, fontFamily:mono, flexShrink:0, marginTop:1 }}>
-                      {r.label}
-                    </div>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <p style={{ margin:"0 0 4px", fontSize:10, fontWeight:700, color:r.c,
-                        textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>{r.title}</p>
-                      {r.lines.map((l, i) => (
-                        <p key={i} style={{ margin:i===0?"0":"2px 0 0", fontSize:12, fontWeight:i===0?700:400,
-                          color:P.text, lineHeight:1.5 }}>{l}</p>
-                      ))}
-                      {r.lines.length===0 && <p style={{ margin:0, fontSize:12, color:P.textSoft, fontStyle:"italic" }}>Non renseigné</p>}
-                    </div>
-                  </div>
-                ))}
+        {/* Conclusion */}
+        {rubriques.filter(r => r.id === "concl").map(r => {
+          const c = r.tone === "slate" ? P.textMid : P[r.tone];
+          const soft = r.tone === "slate" ? P.surfaceAlt : P[r.tone + "Soft"];
+          return (
+            <Section key={r.id} title={`${r.icon} ${r.title}`}>
+              <div style={{ background:soft, border:`1px solid color-mix(in srgb, ${c} 28%, transparent)`,
+                borderRadius:12, padding:"4px 14px" }}>
+                {r.items.map((i, k) => <Field key={k} label={i.l} value={i.v} />)}
               </div>
-            );
-          })()}
-        </Section>
+            </Section>
+          );
+        })}
 
         <p style={{ textAlign:"center", fontSize:9, color:P.textSoft, marginTop:8, fontStyle:"italic" }}>
           Usage professionnel exclusif · Outil d'aide cognitive — chaque professionnel demeure responsable de ses prescriptions
@@ -3131,11 +2953,11 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
 
   const [modalDecesPed, setModalDecesPed] = useState(false);
   const [omlStepPed,    setOmlStepPed]    = useState(0);
-  const [minPositionPed, setMinPositionPed] = useState("");
-  const [minContextePed, setMinContextePed] = useState("");
+  const [minPositionPed, setMinPositionPed] = useLocalState("acr_ped_minPosition", "");
+  const [minContextePed, setMinContextePed] = useLocalState("acr_ped_minContexte", "");
   const [modalCriteresPed, setModalCriteresPed] = useState(false);
-  const [omlTxtPed,     setOmlTxtPed]     = useState("");
-  const [decesRemisAPed, setDecesRemisAPed] = useState("");
+  const [omlTxtPed,     setOmlTxtPed]     = useLocalState("acr_ped_omlTxt", "");
+  const [decesRemisAPed, setDecesRemisAPed] = useLocalState("acr_ped_decesRemisA", "");
   const [showPatPed,    setShowPatPed]    = useState(false);
   const [patPed, setPatPed] = useLocalState("acr_ped_pat", { nom:"", prenom:"", ddn:"", age:"", poids:"", temp:"", atcd:"", traitement:"", histoire:"", lieu:"" });
   const spf = k => v => setPatPed(p => ({ ...p, [k]: v }));
@@ -3255,20 +3077,20 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
 
   // Données saisies
   const [joules,       setJoules]       = useState(mat ? String(mat.defibJ) : "4");
-  const [fastTxt,      setFastTxt]      = useState("");
-  const [regulTxt,     setRegulTxt]     = useState("");
-  const [regulDest,    setRegulDest]    = useState("");
-  const [ecgTxt,       setEcgTxt]       = useState("");
-  const [iotSonde,     setIotSonde]     = useState(mat?.sondeAvecBallonnet || "");
-  const [iotRepere,    setIotRepere]    = useState(localMat?.repereLab ? String(localMat.repereLab) : "");
-  const [iotCapno,     setIotCapno]     = useState("");
-  const [iotDifficilePed, setIotDifficilePed] = useState(false);
-  const [iotTechDifficilePed, setIotTechDifficilePed] = useState([]);
-  const [iotNbTentativesPed, setIotNbTentativesPed] = useState("");
-  const [iotInhalationPed, setIotInhalationPed] = useState(false);
+  const [fastTxt,      setFastTxt]      = useLocalState("acr_ped_fastTxt", "");
+  const [regulTxt,     setRegulTxt]     = useLocalState("acr_ped_regulTxt", "");
+  const [regulDest,    setRegulDest]    = useLocalState("acr_ped_regulDest", "");
+  const [ecgTxt,       setEcgTxt]       = useLocalState("acr_ped_ecgTxt", "");
+  const [iotSonde,     setIotSonde]     = useLocalState("acr_ped_iotSonde", mat?.sondeAvecBallonnet || "");
+  const [iotRepere,    setIotRepere]    = useLocalState("acr_ped_iotRepere", localMat?.repereLab ? String(localMat.repereLab) : "");
+  const [iotCapno,     setIotCapno]     = useLocalState("acr_ped_iotCapno", "");
+  const [iotDifficilePed, setIotDifficilePed] = useLocalState("acr_ped_iotDifficile", false);
+  const [iotTechDifficilePed, setIotTechDifficilePed] = useLocalState("acr_ped_iotTechDifficile", []);
+  const [iotNbTentativesPed, setIotNbTentativesPed] = useLocalState("acr_ped_iotNbTentatives", "");
+  const [iotInhalationPed, setIotInhalationPed] = useLocalState("acr_ped_iotInhalation", false);
   const [racsTabPed,   setRacsTabPed]   = useState("ventil");
   const [showDopee,    setShowDopee]    = useState(false);
-  const [racsPed, setRacsPed] = useState({
+  const [racsPed, setRacsPed] = useLocalState("acr_ped_racs", {
     fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"",
     tas:"", tad:"", fc:"", tempRacs:"", glycemie:"", glasgow:"", pupilles:"", noradrV:"",
     midazolamV:"", sufentaV:"", autresHemo:"",
@@ -3277,12 +3099,12 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const srp = k => v => setRacsPed(p => ({ ...p, [k]: v }));
 
   // Valeurs hémodynamique éditables — pré-remplies depuis localMat
-  const [adrPalier,   setAdrPalier]   = useState(0); // index 0-3
-  const [adrVitesse,  setAdrVitesse]  = useState("");
-  const [rempliVol,   setRempliVol]   = useState("");
-  const [rempliDebit, setRempliDebit] = useState("");
-  const [nimbex1Val,  setNimbex1Val]  = useState("");
-  const [nimbex2Val,  setNimbex2Val]  = useState("");
+  const [adrPalier,   setAdrPalier]   = useLocalState("acr_ped_adrPalier", 0); // index 0-3
+  const [adrVitesse,  setAdrVitesse]  = useLocalState("acr_ped_adrVitesse", "");
+  const [rempliVol,   setRempliVol]   = useLocalState("acr_ped_rempliVol", "");
+  const [rempliDebit, setRempliDebit] = useLocalState("acr_ped_rempliDebit", "");
+  const [nimbex1Val,  setNimbex1Val]  = useLocalState("acr_ped_nimbex1", "");
+  const [nimbex2Val,  setNimbex2Val]  = useLocalState("acr_ped_nimbex2", "");
 
   const alertRef = useRef(null);
 
@@ -3602,7 +3424,16 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
     setRunning(true);
     setEvents([{ id:"start", label:"Début RCP médicalisée", icon:"🫀", time:lf, sec:0 }]);
   };
-  useEffect(() => { window.scrollTo(0, 0); start(); }, []);
+  useEffect(() => {
+    window.scrollTo(0, 0);
+    // Reprise d'une réanimation non clôturée (app rouverte, retour depuis l'écran de
+    // poids, etc.) : on ne réinitialise SURTOUT PAS la chronologie ni l'heure de début —
+    // tout est restauré depuis la sauvegarde locale, et le chrono repart en pause
+    // (bouton « ▶ Reprendre »), comme dans le module Adulte.
+    if ((events && events.length > 0) || secStored > 0) return;
+    start();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Clôturer & archiver la réa pédiatrique
   const cloturerEtArchiver = () => {
@@ -7170,10 +7001,23 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
 }
 
 function ModulePediatrique({ onBack, theme, setTheme, isVLI = false }) {
+  // Session pédiatrique non clôturée (ex : app fermée / téléphone verrouillé pendant
+  // plusieurs heures) : on rouvre directement la réanimation en cours, avec le poids
+  // sauvegardé, au lieu de repasser par l'écran de choix du poids (qui repartait du
+  // premier poids de la liste et faussait les valeurs par défaut du matériel).
+  const [resumeIdx] = useState(() => {
+    try {
+      const ev = JSON.parse(localStorage.getItem("acr_ped_events") || "[]");
+      const s  = JSON.parse(localStorage.getItem("acr_ped_sec") || "0");
+      if (!((ev && ev.length > 0) || s > 0)) return null;
+      const i = JSON.parse(localStorage.getItem("acr_ped_poidsIdx"));
+      return (Number.isInteger(i) && PED_TABLE[i]) ? i : null;
+    } catch { return null; }
+  });
   const [acrTime,  setAcrTime]  = useState("");
   const [mode,     setMode]     = useState("poids"); // "poids" | "age"
-  const [idx,      setIdx]      = useState(0);
-  const [showRcp,  setShowRcp]  = useState(false);
+  const [idx,      setIdx]      = useState(resumeIdx !== null ? resumeIdx : 0);
+  const [showRcp,  setShowRcp]  = useState(resumeIdx !== null);
   const [pedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
   const [pedDiluMode]    = useLocalState("acr_ped_dilu_mode", "2");
 
@@ -9271,11 +9115,11 @@ function App() {
   const [modalCord,   setModalCord]   = useState(false);
   const [modalDeces,  setModalDeces]  = useState(false);
   const [omlStep,     setOmlStep]     = useState(0); // 0=choix, 1=oml
-  const [decesRemisA, setDecesRemisA] = useState(""); // champ libre sans OML
+  const [decesRemisA, setDecesRemisA] = useLocalState("acr_adulte_decesRemisA", ""); // champ libre sans OML
 
   // Wake Lock — empêche le verrouillage écran pendant la réa
   useWakeLock(started);
-  const [omlTxt,      setOmlTxt]      = useState("");
+  const [omlTxt,      setOmlTxt]      = useLocalState("acr_adulte_omlTxt", "");
   const [modalIot,    setModalIot]    = useState(false);
   const [modalFast,   setModalFast]   = useState(false);
   const [modalNote,   setModalNote]   = useState(false);
@@ -9312,7 +9156,7 @@ function App() {
   const [modalEcmo,      setModalEcmo]      = useState(false);
   const [modalDdac,      setModalDdac]      = useState(false);
 
-  const [fastResult,  setFastResult]  = useState("");
+  const [fastResult,  setFastResult]  = useLocalState("acr_adulte_fastResult", "");
   const [modalRythme, setModalRythme] = useState(false);
   const [modalVvp,    setModalVvp]    = useState(false);
   const [modalElectrodes, setModalElectrodes] = useState(false);
@@ -9322,12 +9166,12 @@ function App() {
   const [modalRegul,  setModalRegul]  = useState(false);
   const [modalReset,  setModalReset]  = useState(false);
   const [modalPat,    setModalPat]    = useState(false);
-  const [regulText,   setRegulText]   = useState("");
-  const [regulDest,   setRegulDest]   = useState("");
-  const [ecgText,     setEcgText]     = useState("");
+  const [regulText,   setRegulText]   = useLocalState("acr_adulte_regulText", "");
+  const [regulDest,   setRegulDest]   = useLocalState("acr_adulte_regulDest", "");
+  const [ecgText,     setEcgText]     = useLocalState("acr_adulte_ecgText", "");
   const [joules,      setJoules]      = useState("200");
   const [racsTab,     setRacsTab]     = useState("ventil");
-  const [racs, setRacs] = useState({
+  const [racs, setRacs] = useLocalState("acr_adulte_racs", {
     fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"",
     hypnovelV:"", sufentaV:"", curare:"", autresDrogues:"",
     tas:"", tad:"", fc:"", tempRacs:"", glycemie:"", glasgow:"", pupilles:"", noradrV:"", dobut:"", autresHemo:"",
@@ -9884,7 +9728,7 @@ function App() {
     clearSession("acr_adulte_");
     setModalCord(false); setModalDeces(false); setModalIot(false); setModalFast(false);
     setModalRythme(false); setModalVvp(false); setModalElectrodes(false); setModalRacs(false); setModalChoc(false); setModalEcg(false); setModalRegul(false);
-    setJoules("200"); setEcgText(""); setRegulText(""); setRegulDest("");
+    setJoules("200"); setEcgText(""); setRegulText(""); setRegulDest(""); setOmlTxt(""); setDecesRemisA("");
     setRacs({ fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"", hypnovelV:"", sufentaV:"", curare:"", autresDrogues:"", tas:"", tad:"", fc:"", tempRacs:"", noradrV:"", dobut:"", autresHemo:"", remplissages:[] });
     setActiveTab("actions");
     setFastResult("");
@@ -10029,11 +9873,11 @@ function App() {
   const [hemocueVal, setHemocueVal] = useState("");
   const [hemocueHist, setHemocueHist] = useLocalState("acr_adulte_hemocueHist", []); // [{val, time}]
   const [modalTransfu, setModalTransfu] = useState(false);
-  const [transfu, setTransfu] = useState({ cgr:"", pfc:"", plaq:"" });
+  const [transfu, setTransfu] = useLocalState("acr_adulte_transfu", { cgr:"", pfc:"", plaq:"" });
   const [modalExacyl, setModalExacyl] = useState(false);
   const [modalHemoExt, setModalHemoExt] = useState(false);
-  const [garrotSite, setGarrotSite] = useState("");
-  const [garrotHeure, setGarrotHeure] = useState("");
+  const [garrotSite, setGarrotSite] = useLocalState("acr_adulte_garrotSite", "");
+  const [garrotHeure, setGarrotHeure] = useLocalState("acr_adulte_garrotHeure", "");
   const [hottManualExpand, setHottManualExpand] = useState(false); // ré-ouvrir la carte HOTT une fois réduite
 
   // Détection sessions sauvegardées
@@ -10188,14 +10032,19 @@ function App() {
             ⚠ Session non clôturée
           </p>
           <p style={{ margin:"0 0 10px", fontSize:13, color:P.amberText }}>
-            Une réa {sessionAdulte ? "adulte" : "pédiatrique"} est en cours de saisie.
+            {sessionAdulte && sessionPed ? "Une réa adulte et une réa pédiatrique sont en cours de saisie." : `Une réa ${sessionAdulte ? "adulte" : "pédiatrique"} est en cours de saisie.`}
           </p>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
-            <button onClick={() => setModule(sessionAdulte ? "adulte_extra" : "pediatrique")}
+            {sessionAdulte && (<button onClick={() => setModule("adulte_extra")}
               style={{ background:P.amber, border:"none", borderRadius:9, color:"#fff",
                 fontSize:12, fontWeight:600, padding:"9px 8px", cursor:"pointer", fontFamily:sans }}>
-              ↻ Reprendre
-            </button>
+              ↻ Reprendre adulte
+            </button>)}
+            {sessionPed && (<button onClick={() => setModule("pediatrique")}
+              style={{ background:P.amber, border:"none", borderRadius:9, color:"#fff",
+                fontSize:12, fontWeight:600, padding:"9px 8px", cursor:"pointer", fontFamily:sans }}>
+              ↻ Reprendre pédiatrique
+            </button>)}
             <button onClick={() => {
               if (confirm("Effacer définitivement la session en cours ?")) {
                 clearSession("acr_adulte_"); clearSession("acr_ped_");
