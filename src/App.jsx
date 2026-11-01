@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-116";
+const APP_VERSION = "2026.08.15-117";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -5436,7 +5436,10 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         </div>
 
         {/* Chronomètre — style moniteur */}
-        <div style={{textAlign:"center",marginBottom:12}}>
+        <div style={{textAlign:"center",marginBottom:12,position:"relative"}}>
+          {events.some(e => e.id === "start") && !events.some(e => e.id === "rosc") && (
+            <RacsHoldButton P={P} mono={mono} disp={disp} onConfirm={() => addEvent("rosc", "RACS — Retour activité cardiaque spontanée", "📈")} />
+          )}
           <p style={{margin:"0 0 2px",fontSize:9.5,color:P.textSoft,letterSpacing:"0.14em",
             textTransform:"uppercase",fontFamily:mono,fontWeight:700,
             display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
@@ -10606,6 +10609,49 @@ const ORIENT_OPTIONS = [
   { id:"usic",    label:"USIC",            sub:"Soins intensifs cardio", color:"blue"   },
   { id:"scanner", label:"Scanner",         sub:"Cause non cardiaque",   color:"violet" },
 ];
+// ── Bouton RACS à appui maintenu (2 s) : visible à côté du chrono, protégé contre l'appui accidentel ──
+function RacsHoldButton({ P, mono, disp, onConfirm, ms = 2000 }) {
+  const [holding, setHolding] = useState(false);
+  const [hint, setHint] = useState(false);
+  const timer = useRef(null), hintTimer = useRef(null), t0 = useRef(0);
+  const cancel = (short) => {
+    clearTimeout(timer.current); timer.current = null;
+    if (short && t0.current && Date.now() - t0.current < ms - 60) { setHint(true); clearTimeout(hintTimer.current); hintTimer.current = setTimeout(() => setHint(false), 1600); }
+    t0.current = 0; setHolding(false);
+  };
+  const start = (e) => {
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+    setHint(false); setHolding(true); t0.current = Date.now();
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      timer.current = null; t0.current = 0; setHolding(false);
+      try { if (navigator.vibrate) navigator.vibrate([60, 40, 60]); } catch (err) {}
+      onConfirm();
+    }, ms);
+  };
+  useEffect(() => () => { clearTimeout(timer.current); clearTimeout(hintTimer.current); }, []);
+  const C = 2 * Math.PI * 28;
+  return (
+    <div style={{ position:"absolute", right:0, top:2, width:74, display:"flex", flexDirection:"column", alignItems:"center", gap:2, userSelect:"none", WebkitUserSelect:"none" }}>
+      <button aria-label="RACS — maintenir 2 secondes"
+        onPointerDown={start} onPointerUp={() => cancel(true)} onPointerCancel={() => cancel(false)} onContextMenu={e => e.preventDefault()}
+        onPointerLeave={() => { if (timer.current) cancel(true); }}
+        style={{ position:"relative", width:62, height:62, borderRadius:"50%", border:"none", padding:0, cursor:"pointer", touchAction:"none",
+          background:`linear-gradient(135deg, ${P.green}, color-mix(in srgb, ${P.green} 65%, #000))`, color:"#fff",
+          boxShadow:`0 4px 14px color-mix(in srgb, ${P.green} 42%, transparent)`, transform: holding ? "scale(0.94)" : "scale(1)", transition:"transform .12s" }}>
+        <svg width="62" height="62" viewBox="0 0 62 62" style={{ position:"absolute", inset:0, transform:"rotate(-90deg)", pointerEvents:"none" }}>
+          <circle cx="31" cy="31" r="28" fill="none" stroke="rgba(255,255,255,0.28)" strokeWidth="4" />
+          <circle cx="31" cy="31" r="28" fill="none" stroke="#fff" strokeWidth="4" strokeLinecap="round"
+            strokeDasharray={C} strokeDashoffset={holding ? 0 : C} style={{ transition: holding ? `stroke-dashoffset ${ms}ms linear` : "none" }} />
+        </svg>
+        <span style={{ position:"relative", fontSize:12.5, fontWeight:800, fontFamily:disp, letterSpacing:"0.02em" }}>💚<br />RACS</span>
+      </button>
+      <span style={{ fontSize:8.5, fontWeight:700, fontFamily:mono, letterSpacing:"0.04em", textAlign:"center", lineHeight:1.15, minHeight:20,
+        color: hint ? P.amberText : P.textSoft }}>{holding ? "Maintenir…" : hint ? "Maintenir 2 s" : "maintenir 2 s"}</span>
+    </div>
+  );
+}
+
 function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoList, etco2List, suspectedAd,
   orient, onOrient, tc, onTc, mesures, vasoLog, onSaveMesure, onDeleteMesure, dest, onDest, onBack, onRecidive, renderBody, enCours, onEcg, onFast, onCause, onTransmission,
   pamTarget, fcSub, glyLo, orientOptions, subtitle, soinsSub, remMin, onRemMin, neuroLog, onSaveNeuro, onDeleteNeuro, ventLog, onEditMesure }) {
@@ -15411,7 +15457,10 @@ function App() {
         )}
 
         {/* Grand timer — style moniteur */}
-        <div style={{ textAlign:"center", marginBottom:14 }}>
+        <div style={{ textAlign:"center", marginBottom:14, position:"relative" }}>
+          {events.some(e => e.id === "start") && !events.some(e => e.id === "rosc") && (
+            <RacsHoldButton P={P} mono={mono} disp={disp} onConfirm={() => addEvent("rosc", "RACS — Retour activité cardiaque spontanée", "📈")} />
+          )}
           <p style={{ margin:"0 0 2px", fontSize:9.5, color:P.textSoft, letterSpacing:"0.14em",
             textTransform:"uppercase", fontFamily:mono, fontWeight:700,
             display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
