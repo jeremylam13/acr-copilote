@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-119";
+const APP_VERSION = "2026.08.15-120";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -1867,7 +1867,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
   };
 
   // ── Génération d'un rapport HTML autonome, structuré et coloré (pour le partage) ──
-  const buildHtml = () => {
+  const buildHtml = (onlyFrise = false) => {
     const esc = (s) => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 
     // Palette jour (fixe, fidèle au thème clair de l'app)
@@ -2046,7 +2046,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
 
       // Début (= 0 min = heure de l'arrêt cardiaque)
       h += `<div style="position:absolute;left:0%;top:16px;width:19px;height:19px;border-radius:50%;background:${C.textMid};border:2px solid ${C.surface};box-shadow:0 1px 4px rgba(10,17,27,0.2);transform:translateX(-50%)"></div>`;
-      h += `<p style="position:absolute;left:0%;top:0;font-size:9px;font-weight:700;color:${C.textMid};transform:translateX(-50%);white-space:nowrap">Début (0 min)</p>`;
+      if (!finalEvt || pct(finalEvt) >= 16) h += `<p style="position:absolute;left:0%;top:0;font-size:9px;font-weight:700;color:${C.textMid};transform:translateX(-50%);white-space:nowrap">Début (0 min)</p>`;
 
       // Gestes intermédiaires, empilés verticalement si trop proches
       placedDots.forEach(d => {
@@ -2075,6 +2075,8 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       h += `<p style="margin:4px 0 0;font-size:9.5px;color:${C.textSoft};text-align:center">Minutes écoulées depuis le début de la RCP${useClock ? " (heures réelles)" : ""}</p>`;
       return h;
     };
+
+    if (onlyFrise) { const tl = timelineHtml(); return tl ? section("🕐 Frise chronologique", C.blue, C.blueSoft, tl) : ""; }
 
     let html = `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -2424,6 +2426,9 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
             ))}
           </div>
         </div>
+
+        {/* Frise chronologique visuelle (même rendu que le PDF) */}
+        {(() => { const fr = buildHtml(true); return fr ? <div style={{ fontFamily:sans }} dangerouslySetInnerHTML={{ __html: fr }} /> : null; })()}
 
         {/* Rubriques SMUR adaptées à l'ACR */}
         {rubriques.filter(r => r.id !== "concl").map(r => {
