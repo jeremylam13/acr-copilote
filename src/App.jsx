@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-118";
+const APP_VERSION = "2026.08.15-119";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -1759,6 +1759,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         it("EtCO₂", etco2 && etco2.length > 0 ? (etco2.length > 1 ? `${etco2[0].val} → ${etco2[etco2.length-1].val} mmHg` : `${etco2[0].val} mmHg`) : null),
         it("Hémodynamique post-RACS", lastH && `TA ${lastH.pas||"—"}/${lastH.pad||"—"} mmHg · FC ${lastH.fc||"—"} bpm${lastPam ? ` · PAM ${lastPam} mmHg` : ""}`),
         it("Amines", amines && amines.length > 0 ? amines.map(a => a.label).join(" + ") : null),
+        (() => { const rs = events.filter(e => e.id === "racs_rass" && e.rassLvl != null); return rs.length ? it("RASS", rs.map(e => `${e.time} ${rassFmt(e.rassLvl)}`).join(" → ")) : null; })(),
       ]},
       { id:"concl", icon:"🏁", title:"Conclusion", tone: rosc ? "green" : deces ? "slate" : "amber", items:[
         it("Issue", rosc ? `RACS à ${rosc.time}` : deces ? deces.label : "Non renseignée", { color: rosc ? "greenText" : deces ? "textMid" : "amberText" }),
@@ -3957,6 +3958,15 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [remMinPed, setRemMinPed] = useLocalState("acr_remesure_min", 0);
   const remPed = remesureState(mesuresPed, events.find(e => e.id === "rosc"), sec, remMinPed);
   useRemesureAlert(remPed.due);
+  const [rassLogPed, setRassLogPed] = useLocalState("acr_ped_rass", []);
+  const saveRassPed = (lvl, t) => {
+    const id = Date.now();
+    const ctx = enCoursListPed.filter(c => c.tone === "violet" && c.k !== "rass").map(c => `${c.label} ${c.v}`).join(" · ");
+    setRassLogPed(prev => [...prev, { id, sec, time:t, lvl, ctx }]);
+    setEvents(prev => [...prev, { id:"racs_rass", rid:id, rassLvl:lvl, label:`RASS ${rassFmt(lvl)}${ctx ? ` · ${ctx}` : ""}`, icon:"🎚️", time:t, sec }]);
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(e) {}
+  };
+  const deleteRassPed = (id) => { setRassLogPed(prev => prev.filter(r => r.id !== id)); setEvents(prev => prev.filter(e => e.rid !== id)); };
   const [neuroLogPed, setNeuroLogPed] = useLocalState("acr_ped_neuro", []);
   const [ventLogPed, setVentLogPed] = useLocalState("acr_ped_ventlog", []);
   const saveNeuroPed = (v, t) => {
@@ -4614,6 +4624,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
     mesNum(racsPed.sufentaV) > 0 && { k:"suf", label:"Sufentanyl", v:`${fmRatePed(racsPed.sufentaV)} mL/h`, tone:"violet" },
     (racsPed.fio2 || racsPed.fr || racsPed.pep) && { k:"vent", label:"Ventilation", v: racsPed.fio2 ? `FiO₂ ${racsPed.fio2} %` : racsPed.fr ? `FR ${racsPed.fr}` : `PEP ${racsPed.pep}`,
       sub:[racsPed.fr && `FR ${racsPed.fr}`, racsPed.pep && `PEP ${racsPed.pep}`].filter(Boolean).join(" · ") || undefined, tone:"teal" },
+    rassLogPed.length > 0 && { k:"rass", label:"RASS", v:rassFmt(rassLogPed[rassLogPed.length - 1].lvl), sec:rassLogPed[rassLogPed.length - 1].sec, tone:"violet" },
   ].filter(Boolean);
   const bannerPamPed = livePamPed != null ? livePamPed : (pamPtsPed.length ? pamPtsPed[pamPtsPed.length - 1].pam : null);
   const bannerTextPed0 = [bannerPamPed != null && `PAM ${bannerPamPed}`, mesNum(adrVitesse) > 0 && `ADR ${fmRatePed(adrVitesse)} mL/h`, mesNum(racsPed.sat) != null && `SpO₂ ${racsPed.sat}`].filter(Boolean).join(" · ") || "Constantes à renseigner";
@@ -5214,6 +5225,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           orient={orientListPed} onOrient={setOrientPed} tc={tcOnPed} onTc={setTcPed} mesures={mesuresPed} vasoLog={vasoLogPed}
           onSaveMesure={saveMesurePed} onDeleteMesure={deleteMesurePed} dest={regulDest} onDest={setRegulDest}
           remMin={remMinPed} onRemMin={setRemMinPed} neuroLog={neuroLogPed} onSaveNeuro={saveNeuroPed} onDeleteNeuro={deleteNeuroPed} ventLog={ventLogPed} onEditMesure={editMesurePed} setEvents={setEvents} onReport={() => { closeRacsPagePed(); setShowPdf(true); }}
+          rassLog={rassLogPed} onSaveRass={saveRassPed} onDeleteRass={deleteRassPed} curarise={nimbex1Val !== "" || nimbex2Val !== ""} ped
           pamTarget={tcOnPed ? localMat.pamTC : localMat.pamHTC} fcSub={`≈ ${localMat.fcN} /min pour l'âge`} glyLo={0.7}
           orientOptions={ORIENT_PED} subtitle={`Pédiatrie · ${localPoids} kg`} soinsSub={soinsSubPed}
           onBack={closeRacsPagePed}
@@ -5239,7 +5251,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             orientLabels: orientListPed.map(id => ORIENT_PED.find(o => o.id === id)?.label).filter(Boolean), dest:regulDest,
             causeLabels: suspectedPed.map(id => CAUSES_PED.find(c => c.id === id)?.label || CAUSES_HOTT.find(c => c.id === id)?.label).filter(Boolean),
             ident: `${patPed.sexe === "H" || patPed.sexe === "Garçon" ? "Garçon" : patPed.sexe === "F" || patPed.sexe === "Fille" ? "Fille" : "Enfant"} ${patPed.age || calcAge(patPed.ddn) || localRow.age} · ${localPoids} kg`,
-            extra: null, pamTarget: tcOnPed ? localMat.pamTC : localMat.pamHTC, glyLo: 0.7 })}
+            extra: null, pamTarget: tcOnPed ? localMat.pamTC : localMat.pamHTC, glyLo: 0.7, rass: rassLogPed.length ? rassLogPed[rassLogPed.length - 1] : null })}
           onClose={() => setShowLecturePed(false)}
           onFreeze={(txt, t) => setEvents(prev => [...prev, { id:"transmission", label:`Transmission figée : ${txt}`, icon:"🔍", time:t, sec }])} />
       )}
@@ -10652,9 +10664,122 @@ function RacsHoldButton({ P, mono, disp, onConfirm, ms = 2000 }) {
   );
 }
 
+// ── Échelle RASS (Richmond Agitation-Sedation Scale) : évaluation horodatée de la sédation ──
+const RASS_LEVELS = [
+  { n:4,  t:"Combatif",           d:"Danger immédiat pour l'équipe",                                  c:"rose"   },
+  { n:3,  t:"Très agité",         d:"Tire ou arrache tubes et cathéters",                            c:"rose"   },
+  { n:2,  t:"Agité",              d:"Mouvements fréquents sans but, lutte contre le respirateur",    c:"rose"   },
+  { n:1,  t:"Ne tient pas en place", d:"Anxieux, mais mouvements non agressifs",                     c:"rose"   },
+  { n:0,  t:"Éveillé et calme",   d:"",                                                              c:"green"  },
+  { n:-1, t:"Somnolent",          d:"Ouvre les yeux à l'appel (> 10 s)",                             c:"blue"   },
+  { n:-2, t:"Sédation légère",    d:"Ouvre brièvement les yeux à l'appel (< 10 s)",                  c:"blue"   },
+  { n:-3, t:"Sédation modérée",   d:"Mouvement ou ouverture des yeux à l'appel, sans contact visuel", c:"blue"  },
+  { n:-4, t:"Sédation profonde",  d:"Aucune réponse à la voix, mouvement à la stimulation physique", c:"violet" },
+  { n:-5, t:"Non réveillable",    d:"Aucune réponse à la voix ni à la stimulation physique",         c:"violet" },
+];
+const rassFmt = n => (n > 0 ? `+${n}` : n < 0 ? `−${Math.abs(n)}` : "0");
+
+function RassSheet({ P, mono, sans, disp, ped, curarise, target, onTarget, onSave, onClose }) {
+  const [lvl, setLvl] = useState(null);
+  const [time, setTime] = useState(getNow());
+  const [force, setForce] = useState(false);
+  const [showTarget, setShowTarget] = useState(false);
+  const blocked = curarise && !force;
+  const opts = [4, 3, 2, 1, 0, -1, -2, -3, -4, -5];
+  const sel = { fontFamily:sans, fontSize:12, fontWeight:700, borderRadius:9, border:`1.5px solid ${P.border}`, background:P.surface, color:P.text, padding:"6px 6px" };
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:70, background:"rgba(10,17,27,0.6)", display:"flex", flexDirection:"column", justifyContent:"flex-end" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background:P.surface, borderRadius:"20px 20px 0 0", padding:"16px 14px 20px", maxHeight:"94vh", overflowY:"auto", fontFamily:sans, boxShadow:"0 -12px 40px rgba(0,0,0,0.25)" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+          <div style={{ width:38, height:38, borderRadius:12, background:`linear-gradient(135deg, ${P.violet}, ${P.violetText})`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:19 }}>🎚️</div>
+          <div>
+            <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.14em", color:P.violet, fontFamily:mono, textTransform:"uppercase" }}>Évaluation</div>
+            <div style={{ fontSize:17, fontWeight:800, fontFamily:disp, color:P.text }}>RASS</div>
+          </div>
+          <input type="time" value={time} onChange={e => setTime(e.target.value)}
+            style={{ marginLeft:"auto", background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:10, padding:"6px 8px", fontSize:13, fontWeight:800, fontFamily:mono, color:P.text, outline:"none" }} />
+          <button onClick={onClose} style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:22, cursor:"pointer", padding:2 }}>×</button>
+        </div>
+        {ped && <p style={{ margin:"0 0 8px", fontSize:10.5, fontFamily:mono, color:P.textSoft }}>Échelle RASS adaptée à l'enfant — à interpréter selon l'âge.</p>}
+        {blocked ? (
+          <div style={{ background:P.amberSoft, border:`1.5px solid ${P.amber}`, borderRadius:12, padding:"11px 12px", color:P.amberText, fontSize:12.5, lineHeight:1.45 }}>
+            <b>Curare administré : RASS non évaluable</b> tant que l'effet persiste.
+            <button onClick={() => setForce(true)} style={{ display:"block", marginTop:8, background:P.surface, border:`1.5px solid ${P.amber}`, borderRadius:10, padding:"8px 10px", fontSize:12, fontWeight:800, color:P.amberText, cursor:"pointer", fontFamily:sans }}>L'effet est terminé — évaluer</button>
+          </div>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+            {RASS_LEVELS.map(l => {
+              const on = lvl === l.n;
+              return (
+                <button key={l.n} onClick={() => setLvl(l.n)}
+                  style={{ display:"flex", alignItems:"center", gap:9, textAlign:"left", cursor:"pointer", fontFamily:sans, borderRadius:11, padding:"7px 10px",
+                    border:`${on ? 2 : 1.5}px solid ${P[l.c]}`, background:P[l.c + "Soft"], boxShadow: on ? `0 0 0 3px color-mix(in srgb, ${P.blue} 30%, transparent)` : "none" }}>
+                  <span style={{ width:34, flexShrink:0, textAlign:"center", fontSize:17, fontWeight:800, fontFamily:mono, color:P[l.c + "Text"] }}>{rassFmt(l.n)}</span>
+                  <span style={{ minWidth:0 }}>
+                    <span style={{ display:"block", fontSize:12.5, fontWeight:700, color:P.text }}>{l.t}</span>
+                    {l.d && <span style={{ display:"block", fontSize:10.5, color:P.textSoft, lineHeight:1.25 }}>{l.d}</span>}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <button onClick={() => setShowTarget(v => !v)} style={{ marginTop:10, background:"transparent", border:"none", color:P.blueText, fontSize:11.5, fontWeight:700, cursor:"pointer", fontFamily:sans, padding:0 }}>
+          Objectif RASS (facultatif) : {target ? `${rassFmt(target.hi)} à ${rassFmt(target.lo)}` : "non défini"} {showTarget ? "▴" : "▾"}
+        </button>
+        {showTarget && (
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:6, flexWrap:"wrap" }}>
+            <span style={{ fontSize:11.5, color:P.textMid }}>de</span>
+            <select value={target ? target.hi : ""} onChange={e => { const hi = e.target.value === "" ? null : Number(e.target.value); onTarget(hi == null ? null : { hi, lo: Math.min(hi, target ? target.lo : hi) }); }} style={sel}>
+              <option value="">aucun</option>{opts.map(n => <option key={n} value={n}>{rassFmt(n)}</option>)}
+            </select>
+            <span style={{ fontSize:11.5, color:P.textMid }}>à</span>
+            <select value={target ? target.lo : ""} disabled={!target} onChange={e => onTarget({ hi: target.hi, lo: Math.min(Number(e.target.value), target.hi) })} style={sel}>
+              {opts.filter(n => !target || n <= target.hi).map(n => <option key={n} value={n}>{rassFmt(n)}</option>)}
+            </select>
+            <span style={{ fontSize:10.5, fontFamily:mono, color:P.textSoft }}>choisi par toi · l'appli ne propose aucune cible</span>
+          </div>
+        )}
+        <button disabled={lvl == null || blocked} onClick={() => onSave(lvl, time)}
+          style={{ width:"100%", marginTop:12, border:"none", borderRadius:14, padding:13, fontSize:14, fontWeight:800, fontFamily:disp, color: lvl != null && !blocked ? "#fff" : P.textSoft, cursor: lvl != null && !blocked ? "pointer" : "default",
+            background: lvl != null && !blocked ? `linear-gradient(135deg, ${P.violet}, color-mix(in srgb, ${P.violet} 70%, #000))` : P.surfaceAlt }}>
+          ✓ Enregistrer{lvl != null ? ` RASS ${rassFmt(lvl)}` : ""}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RassCard({ P, mono, sans, disp, rassLog, sec, target, onOpen, onDelete }) {
+  const last = rassLog.length ? rassLog[rassLog.length - 1] : null;
+  const out = (n) => target && (n > target.hi || n < target.lo);
+  return (
+    <div style={{ marginTop:10, border:`1.5px solid ${P.violet}`, borderRadius:14, padding:"10px 12px", background:P.surface }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom: rassLog.length ? 6 : 0 }}>
+        <span style={{ fontFamily:disp, fontSize:13.5, fontWeight:800, color:P.text }}>🎚️ RASS</span>
+        {last && <span style={{ fontSize:11, fontWeight:800, fontFamily:mono, borderRadius:99, padding:"3px 9px",
+          background: out(last.lvl) ? P.amberSoft : P.violetSoft, color: out(last.lvl) ? P.amberText : P.violetText,
+          border:`1px solid ${out(last.lvl) ? P.amber : P.violet}` }}>{rassFmt(last.lvl)} · il y a {Math.max(0, Math.round((sec - last.sec) / 60))} min</span>}
+      </div>
+      {target && <p style={{ margin:"0 0 6px", fontSize:10, fontFamily:mono, color:P.textSoft }}>Objectif : {rassFmt(target.hi)} à {rassFmt(target.lo)}</p>}
+      {[...rassLog].reverse().slice(0, 6).map(r => (
+        <div key={r.id} style={{ display:"flex", gap:8, alignItems:"baseline", padding:"4px 0", borderTop:`1px solid ${P.borderSoft}`, fontSize:11.5, fontFamily:mono, fontWeight:700 }}>
+          <span style={{ width:38, color:P.textSoft, flexShrink:0 }}>{r.time}</span>
+          <span style={{ color: out(r.lvl) ? P.amberText : P.text, width:26, flexShrink:0 }}>{rassFmt(r.lvl)}</span>
+          <span style={{ flex:1, minWidth:0, color:P.textMid, fontWeight:600 }}>{r.ctx ? `· ${r.ctx}` : ""}</span>
+          <button onClick={() => { if (window.confirm(`Supprimer l'évaluation RASS de ${r.time} ?`)) onDelete(r.id); }} aria-label="Supprimer"
+            style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:14, cursor:"pointer", padding:"0 2px" }}>×</button>
+        </div>
+      ))}
+      <button onClick={onOpen} style={{ width:"100%", marginTop:8, border:"none", borderRadius:12, padding:11, fontSize:13, fontWeight:800, fontFamily:disp, color:"#fff", cursor:"pointer",
+        background:`linear-gradient(135deg, ${P.violet}, color-mix(in srgb, ${P.violet} 70%, #000))` }}>+ Évaluer la RASS</button>
+    </div>
+  );
+}
+
 function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoList, etco2List, suspectedAd,
   orient, onOrient, tc, onTc, mesures, vasoLog, onSaveMesure, onDeleteMesure, dest, onDest, onBack, onRecidive, renderBody, enCours, onEcg, onFast, onCause, onTransmission,
-  pamTarget, fcSub, glyLo, orientOptions, subtitle, soinsSub, remMin, onRemMin, neuroLog, onSaveNeuro, onDeleteNeuro, ventLog, onEditMesure, setEvents, onReport }) {
+  pamTarget, fcSub, glyLo, orientOptions, subtitle, soinsSub, remMin, onRemMin, neuroLog, onSaveNeuro, onDeleteNeuro, ventLog, onEditMesure, setEvents, onReport, rassLog, onSaveRass, onDeleteRass, curarise, ped }) {
   const tgt = pamTarget ?? (tc ? 80 : 65);
   const gLo = glyLo ?? 1.0;
   const num = v => { const n = parseFloat(String(v ?? "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
@@ -10665,6 +10790,8 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
   const [transport, setTransport] = useState(false);
   useWakeLock(transport);
   const [logOpen, setLogOpen] = useState(false);
+  const [rassSheet, setRassSheet] = useState(false);
+  const [rassTarget, setRassTarget] = useLocalState("acr_rass_target", null);
   const [logFilter, setLogFilter] = useState("racs"); // racs | tout | perf
   const [flash, setFlash] = useState(false);
   const prevN = useRef(events.length);
@@ -11039,9 +11166,17 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
                   <span style={{ display:"block", fontFamily:disp, fontSize:13, fontWeight:800, color:P.text }}>{r.t}</span>
                   <span style={{ display:"block", fontSize:10.5, fontFamily:mono, color:P.textSoft, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.s}</span>
                 </span>
+                {r.tab === "sedat" && (rassLog || []).length > 0 && (
+                  <span style={{ fontSize:11, fontWeight:800, fontFamily:mono, color:P.violetText, background:P.violetSoft, border:`1px solid ${P.violet}`, borderRadius:99, padding:"2px 8px", flexShrink:0 }}>RASS {rassFmt(rassLog[rassLog.length - 1].lvl)}</span>
+                )}
                 <span style={{ fontSize:15, color:P.textSoft }}>{openAcc === r.tab ? "▴" : "▾"}</span>
               </button>
-              {openAcc === r.tab && renderBody && <div style={{ padding:"0 12px 14px" }}>{renderBody(r.tab)}</div>}
+              {openAcc === r.tab && renderBody && (
+                <div style={{ padding:"0 12px 14px" }}>
+                  {renderBody(r.tab)}
+                  {r.tab === "sedat" && onSaveRass && <RassCard P={P} mono={mono} sans={sans} disp={disp} rassLog={rassLog || []} sec={sec} target={rassTarget} onOpen={() => setRassSheet(true)} onDelete={onDeleteRass} />}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -11120,7 +11255,7 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
                     <div style={{ flex:1, overflowY:"auto" }}>
                       {list.length === 0 && <p style={{ margin:"10px 0", fontSize:12, color:P.textSoft }}>Aucun événement.</p>}
                       {list.map(({ e, i }, k) => {
-                        const linked = e.mid != null || e.sid != null || e.nid != null || e.id === "start" || e.id === "rosc";
+                        const linked = e.mid != null || e.sid != null || e.nid != null || e.rid != null || e.id === "start" || e.id === "rosc";
                         return (
                           <div key={i} style={{ display:"flex", gap:9, alignItems:"baseline", padding:"6px 0", borderTop:`1px solid ${P.borderSoft}`, background: k === 0 && flash ? P.greenSoft : "transparent" }}>
                             <span style={{ width:40, flexShrink:0, fontSize:10.5, fontWeight:700, fontFamily:mono, color:P.textSoft }}>{e.time}</span>
@@ -11204,6 +11339,10 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
           </div>
         </div>
       )}
+      {rassSheet && (
+        <RassSheet P={P} mono={mono} sans={sans} disp={disp} ped={ped} curarise={curarise} target={rassTarget} onTarget={setRassTarget}
+          onSave={(l, t) => { onSaveRass(l, t); setRassSheet(false); }} onClose={() => setRassSheet(false)} />
+      )}
       {neuroSheet && (
         <NeuroSheet P={P} mono={mono} sans={sans} disp={disp} prefill={{}}
           onSave={(v, t) => { onSaveNeuro(v, t); setNeuroSheet(false); }} onClose={() => setNeuroSheet(false)} />
@@ -11229,7 +11368,7 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
 
 // ── Mode lecture : résumé court à dire à voix haute lors de la remise du patient ──
 function buildLecture(o) {
-  const { ped, sec, events, racs, hemoList, etco2List, enCours, orientLabels, dest, causeLabels, ident, extra, pamTarget, glyLo } = o;
+  const { ped, sec, events, racs, hemoList, etco2List, enCours, orientLabels, dest, causeLabels, ident, extra, pamTarget, glyLo, rass } = o;
   const num = v => { const n = parseFloat(String(v ?? "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
   const fm = v => String(v).replace(".", ",");
   const ros = events.find(e => e.id === "rosc");
@@ -11267,6 +11406,7 @@ function buildLecture(o) {
   if (etco2 != null) { const bad = etco2 < 35 || etco2 > 45; st.push({ t:`EtCO₂ ${etco2}${etco2 > 45 ? " ↑" : etco2 < 35 ? " ↓" : ""}`, w:bad }); }
   if (temp != null) { const bad = temp > 37.5; st.push({ t:`${fm(temp)} °C`, w:bad }); }
   if (gly != null) { const bad = gly < glyLo || gly > 1.8; st.push({ t:`glycémie ${fm(gly)}`, w:bad }); }
+  if (rass) st.push({ t:`RASS ${rassFmt(rass.lvl)}` });
   lines.push({ id:"etat", k:"État", parts: st.length ? st : [{ t:"constantes non saisies" }], tone: st.some(x => x.w) ? "warn" : "" });
   if (enCours && enCours.length) {
     lines.push({ id:"encours", k:"En cours", parts: enCours.map(c => ({ t:`${c.label} ${c.v}${c.sec != null ? ` (depuis ${Math.max(0, Math.round((sec - c.sec) / 60))} min)` : ""}` })) });
@@ -12094,7 +12234,7 @@ function App() {
     setEtco2List([]);
     setCcfPausedTotal(0); setCcfPausedSince(null);
     setHemoList([]); setAmineList([]); setVasoLog([]); setVasoExtra([]); setTempMode("");
-    setOrientList([]); setTcOn(false); setMesures([]); setNeuroLog([]); setVentLog([]); setSedLog([]); setSedExtra([]); setShowRacsPage(false);
+    setOrientList([]); setTcOn(false); setMesures([]); setNeuroLog([]); setVentLog([]); setRassLog([]); setSedLog([]); setSedExtra([]); setShowRacsPage(false);
     setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"", lieu:"" });
   };
 
@@ -12175,6 +12315,15 @@ function App() {
   const [remMin, setRemMin] = useLocalState("acr_remesure_min", 0);
   const remAdult = remesureState(mesures, events.find(e => e.id === "rosc"), sec, remMin);
   useRemesureAlert(remAdult.due);
+  const [rassLog, setRassLog] = useLocalState("acr_adulte_rass", []);
+  const saveRass = (lvl, t) => {
+    const id = Date.now();
+    const ctx = enCoursList.filter(c => c.tone === "violet" && c.k !== "rass").map(c => `${c.label} ${c.v}`).join(" · ");
+    setRassLog(prev => [...prev, { id, sec, time:t, lvl, ctx }]);
+    setEvents(prev => [...prev, { id:"racs_rass", rid:id, rassLvl:lvl, label:`RASS ${rassFmt(lvl)}${ctx ? ` · ${ctx}` : ""}`, icon:"🎚️", time:t, sec }]);
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(e) {}
+  };
+  const deleteRass = (id) => { setRassLog(prev => prev.filter(r => r.id !== id)); setEvents(prev => prev.filter(e => e.rid !== id)); };
   const [neuroLog, setNeuroLog] = useLocalState("acr_adulte_neuro", []);
   const [ventLog, setVentLog] = useLocalState("acr_adulte_ventlog", []);
   const saveNeuro = (v, t) => {
@@ -12792,6 +12941,7 @@ function App() {
     ...sedExtra.filter(x => mesNum(x.rate) > 0).map(x => ({ k:x.id, label:x.name, v:`${fmRate(x.rate)} mL/h`, sec:lastLogOf(sedLog, x.id)?.sec, tone:"violet" })),
     (racs.fio2 || racs.fr || racs.pep) && { k:"vent", label:"Ventilation", v: racs.fio2 ? `FiO₂ ${racs.fio2} %` : racs.fr ? `FR ${racs.fr}` : `PEP ${racs.pep}`,
       sub:[racs.fr && `FR ${racs.fr}`, racs.pep && `PEP ${racs.pep}`].filter(Boolean).join(" · ") || undefined, tone:"teal" },
+    rassLog.length > 0 && { k:"rass", label:"RASS", v:rassFmt(rassLog[rassLog.length - 1].lvl), sec:rassLog[rassLog.length - 1].sec, tone:"violet" },
   ].filter(Boolean);
   const bannerPam = livePam != null ? livePam : (pamPts.length ? pamPts[pamPts.length - 1].pam : null);
   const bannerText0 = [bannerPam != null && `PAM ${bannerPam}`, mesNum(racs.noradrV) > 0 && `NAD ${fmRate(racs.noradrV)} mL/h`, mesNum(racs.sat) != null && `SpO₂ ${racs.sat}`].filter(Boolean).join(" · ") || "Constantes à renseigner";
@@ -15227,6 +15377,7 @@ function App() {
           hemoList={hemoList} etco2List={etco2List} suspectedAd={suspectedAd}
           orient={orientList} onOrient={setOrient} tc={tcOn} onTc={setTc} mesures={mesures} vasoLog={vasoLog} onSaveMesure={saveMesure} onDeleteMesure={deleteMesure} dest={regulDest} onDest={setRegulDest}
           remMin={remMin} onRemMin={setRemMin} neuroLog={neuroLog} onSaveNeuro={saveNeuro} onDeleteNeuro={deleteNeuro} ventLog={ventLog} onEditMesure={editMesure} setEvents={setEvents} onReport={() => { closeRacsPage(); setShowPdf(true); }}
+          rassLog={rassLog} onSaveRass={saveRass} onDeleteRass={deleteRass} curarise={!!racs.curare}
           onBack={closeRacsPage}
           onRecidive={() => {
             commitRacsMesures(); flushRacsLog();
@@ -15251,7 +15402,7 @@ function App() {
             causeLabels: suspectedAd.map(id => CAUSES_HOTT.find(c => c.id === id)?.label).filter(Boolean),
             ident: [pat.sexe === "H" ? "H" : pat.sexe === "F" ? "F" : null, pat.age ? (/^\d+$/.test(String(pat.age).trim()) ? `${String(pat.age).trim()} ans` : pat.age) : null].filter(Boolean).join(" ") || "Adulte",
             extra: isTrauma ? (pat.mecanisme ? `trauma : ${pat.mecanisme}` : "trauma") : null,
-            pamTarget: tcOn ? 80 : 65, glyLo: 1.0 })}
+            pamTarget: tcOn ? 80 : 65, glyLo: 1.0, rass: rassLog.length ? rassLog[rassLog.length - 1] : null })}
           onClose={() => setShowLecture(false)}
           onFreeze={(txt, t) => setEvents(prev => [...prev, { id:"transmission", label:`Transmission figée : ${txt}`, icon:"🔍", time:t, sec }])} />
       )}
