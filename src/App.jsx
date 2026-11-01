@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-120";
+const APP_VERSION = "2026.08.15-121";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -9993,13 +9993,13 @@ function SedationTab({ P, mono, sans, disp, racs, dil, onDil, log, extra, poids,
       <div style={card}>
         <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:8 }}>
           <span style={{ width:30, height:30, borderRadius:9, background:P.amberSoft, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15 }}>🧪</span>
-          <span style={{ fontFamily:disp, fontSize:14, fontWeight:800, color:P.text }}>Curare</span>
+          <span style={{ fontFamily:disp, fontSize:14, fontWeight:800, color:P.text }}>Nimbex <span style={{ fontWeight:500, fontSize:10, fontStyle:"italic", color:P.violetText }}>Cisatracurium · curare</span></span>
         </div>
         {curareLast
           ? <div style={{ fontSize:10.5, fontFamily:mono, color:P.textMid, background:P.surfaceAlt, borderRadius:9, padding:"6px 9px" }}>Dernier bolus : {curareLast.dose} mg à {curareLast.time} · <b>{ago(curareLast)}</b></div>
           : <div style={{ fontSize:10.5, fontFamily:mono, color:P.textSoft }}>Aucun bolus enregistré</div>}
         <div style={{ display:"flex", gap:7, marginTop:8 }}>
-          <button style={btn(true)} onClick={() => setSheet({ kind:"bolus", drug:"curare", name:"Curare", unit:"mg", steps:[-10,-5,5,10] })}>+ Bolus</button>
+          <button style={btn(true)} onClick={() => setSheet({ kind:"bolus", drug:"curare", name:"Nimbex", unit:"mg", steps:[-10,-5,5,10] })}>+ Bolus</button>
         </div>
       </div>
 
@@ -10708,7 +10708,7 @@ function RassSheet({ P, mono, sans, disp, ped, curarise, target, onTarget, onSav
         {ped && <p style={{ margin:"0 0 8px", fontSize:10.5, fontFamily:mono, color:P.textSoft }}>Échelle RASS adaptée à l'enfant — à interpréter selon l'âge.</p>}
         {blocked ? (
           <div style={{ background:P.amberSoft, border:`1.5px solid ${P.amber}`, borderRadius:12, padding:"11px 12px", color:P.amberText, fontSize:12.5, lineHeight:1.45 }}>
-            <b>Curare administré : RASS non évaluable</b> tant que l'effet persiste.
+            <b>Nimbex (curare) administré : RASS non évaluable</b> tant que l'effet persiste.
             <button onClick={() => setForce(true)} style={{ display:"block", marginTop:8, background:P.surface, border:`1.5px solid ${P.amber}`, borderRadius:10, padding:"8px 10px", fontSize:12, fontWeight:800, color:P.amberText, cursor:"pointer", fontFamily:sans }}>L'effet est terminé — évaluer</button>
           </div>
         ) : (
@@ -10856,7 +10856,7 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
   const nbDone = checks.filter(c => c.done).length;
 
   const ventParts = [racs.volume && `Vt ${racs.volume}`, racs.fr && `FR ${racs.fr}`, racs.pep && `PEP ${racs.pep}`, racs.fio2 && `FiO₂ ${racs.fio2}`].filter(Boolean);
-  const sedParts = [racs.hypnovelV && "Hypnovel", racs.sufentaV && "Sufentanyl", racs.curare && "Curare"].filter(Boolean);
+  const sedParts = [racs.hypnovelV && "Hypnovel", racs.sufentaV && "Sufentanyl", racs.curare && "Nimbex"].filter(Boolean);
   const remp = (racs.remplissages || []).reduce((s, r) => s + (r.vol || 0), 0);
   const hemoParts = [racs.noradrV && "Noradrénaline", racs.dobut && "Dobutamine", remp > 0 && `Remplissage ${remp} mL`].filter(Boolean);
 
@@ -12884,7 +12884,7 @@ function App() {
           if (racs.capno)         p.push(`EtCO₂ ${racs.capno} mmHg`);
           if (racs.hypnovelV)     p.push(`Hypnovel ${racs.hypnovelV} mL/h → ${hypnovelDose} mg/h`);
           if (racs.sufentaV)      p.push(`Sufentanyl ${racs.sufentaV} mL/h → ${sufentaDose} μg/h`);
-          if (racs.curare)        p.push(`Curare ${racs.curare} mg`);
+          if (racs.curare)        p.push(`Nimbex ${racs.curare} mg`);
           sedExtra.forEach(x => { const _p = sedPerHour(x.rate, x); if (mesNum(x.rate) > 0) p.push(`${x.name} ${x.rate} mL/h${_p != null ? ` → ${sedFmt(_p, 2)} ${x.unit}/h` : ""}`); });
           if (racs.autresDrogues) p.push(racs.autresDrogues);
           if (racs.tas && racs.tad) p.push(`TA ${racs.tas}/${racs.tad} mmHg (PAM ${Math.round((parseFloat(racs.tas)+2*parseFloat(racs.tad))/3)} mmHg)`);
