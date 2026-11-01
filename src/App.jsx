@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-94";
+const APP_VERSION = "2026.08.15-116";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -119,6 +119,7 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
   };
 
   const startSession = async () => {
+    if (isTraining()) throw new Error("Mode équipe désactivé pendant l'entraînement");
     const code = genSessionCode();
     await supabaseTeam.from("acr_team_sessions")
       .upsert({ code, state: buildState(), updated_at: new Date().toISOString() });
@@ -128,6 +129,7 @@ function useTeamSync({ events, setEvents, acrTime, setAcrTime, noFlowMin, setNoF
   };
 
   const joinSession = async (code) => {
+    if (isTraining()) return { ok: false, error: "Mode équipe désactivé pendant l'entraînement" };
     const { data, error } = await supabaseTeam.from("acr_team_sessions")
       .select("state").eq("code", code).maybeSingle();
     if (error || !data) return { ok: false, error: "Code introuvable" };
@@ -512,6 +514,61 @@ function clearSession(prefix) {
   } catch {}
 }
 
+// ── MODE ENTRAÎNEMENT ──────────────────────────────────────────────────────────
+// Drapeau global : tant qu'il est actif, rien n'est archivé, le mode équipe est
+// désactivé et les comptes-rendus portent la mention ENTRAÎNEMENT. Le drapeau est
+// exclu des sauvegardes (export/import) pour qu'un fichier ne puisse pas l'activer.
+const TRAINING_KEY = "acr_training";
+const TRAINING_EVENT = "acr-training-change";
+function isTraining() {
+  try { return localStorage.getItem(TRAINING_KEY) === "true"; } catch { return false; }
+}
+function setTrainingFlag(on) {
+  try { localStorage.setItem(TRAINING_KEY, on ? "true" : "false"); } catch {}
+  try { window.dispatchEvent(new Event(TRAINING_EVENT)); } catch {}
+}
+function useTraining() {
+  const [t, setT] = useState(isTraining);
+  useEffect(() => {
+    const f = () => setT(isTraining());
+    window.addEventListener(TRAINING_EVENT, f);
+    window.addEventListener("storage", f);
+    return () => { window.removeEventListener(TRAINING_EVENT, f); window.removeEventListener("storage", f); };
+  }, []);
+  return t;
+}
+// Quitte l'entraînement : efface la session d'essai (sans archive) puis recharge l'app.
+function quitTraining() {
+  if (typeof window !== "undefined" &&
+      !window.confirm("Quitter l'entraînement ?\nLa réanimation d'essai sera effacée, sans archive.")) return;
+  clearSession("acr_adulte_"); clearSession("acr_ped_");
+  setTrainingFlag(false);
+  try { window.location.reload(); } catch {}
+}
+// Cadre violet + pastille fixes, par-dessus tous les écrans ; ne bloque aucun bouton de l'app.
+function TrainingOverlay() {
+  const on = useTraining();
+  if (!on) return null;
+  const violet = "#6433C9";
+  return (
+    <>
+      <div aria-hidden="true" style={{ position:"fixed", inset:0, zIndex:9998, pointerEvents:"none",
+        boxShadow:`inset 0 0 0 3px ${violet}` }} />
+      <div style={{ position:"fixed", top:"env(safe-area-inset-top, 0px)", left:"50%",
+        transform:"translateX(-50%)", zIndex:9999, display:"flex", alignItems:"center", gap:6,
+        background:violet, color:"#fff", borderRadius:"0 0 11px 11px", padding:"0 4px 1px 10px", height:17,
+        boxShadow:"0 2px 8px rgba(0,0,0,0.25)", fontFamily:"'JetBrains Mono', ui-monospace, monospace" }}>
+        <span style={{ fontSize:8.5, fontWeight:800, letterSpacing:"0.1em", whiteSpace:"nowrap" }}>🎓 ENTRAÎNEMENT</span>
+        <button onClick={quitTraining}
+          style={{ background:"rgba(255,255,255,0.22)", border:"1px solid rgba(255,255,255,0.55)", color:"#fff",
+            borderRadius:99, fontSize:8.5, fontWeight:700, padding:"1px 7px", cursor:"pointer", fontFamily:"inherit", lineHeight:1.2 }}>
+          Quitter
+        </button>
+      </div>
+    </>
+  );
+}
+
 // ── ARCHIVES LOCALES DES ARRÊTS ────────────────────────────────────────────────
 const ARCHIVE_KEY = "acr_archives";
 const ARCHIVE_CAP = 200; // au-delà, prévenir plutôt que supprimer silencieusement (voir Dashboard)
@@ -541,6 +598,7 @@ function loadArchives() {
   catch { return []; }
 }
 function saveArchive(snapshot) {
+  if (isTraining()) return loadArchives(); // entraînement : jamais archivé
   try {
     const list = loadArchives();
     list.unshift(redactArchiveForExport(snapshot)); // initiales seulement, jamais le nom complet
@@ -553,6 +611,13 @@ function saveArchive(snapshot) {
 function deleteArchive(key) {
   try {
     const list = loadArchives().filter(a => a.key !== key);
+    localStorage.setItem(ARCHIVE_KEY, JSON.stringify(list));
+    return list;
+  } catch { return loadArchives(); }
+}
+function updateArchive(key, patch) {
+  try {
+    const list = loadArchives().map(a => a.key === key ? { ...a, ...patch } : a);
     localStorage.setItem(ARCHIVE_KEY, JSON.stringify(list));
     return list;
   } catch { return loadArchives(); }
@@ -585,10 +650,13 @@ function redactArchiveForExport(a) {
   };
 }
 
+const LAST_EXPORT_KEY = "acr_last_export";
+const BACKUP_SNOOZE_KEY = "acr_backup_snooze";
+const BACKUP_EVERY_DAYS = 30;
 function exportBackup() {
   const data = {};
   Object.keys(localStorage).forEach(k => {
-    if (!k.startsWith("acr_")) return;
+    if (!k.startsWith("acr_") || k === TRAINING_KEY) return;
     const raw = localStorage.getItem(k);
     let parsed;
     try { parsed = JSON.parse(raw); } catch { parsed = raw; }
@@ -611,6 +679,18 @@ function exportBackup() {
   a.download = `copilote-acr-sauvegarde-${new Date().toISOString().slice(0, 10)}.json`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  try { localStorage.setItem(LAST_EXPORT_KEY, String(Date.now())); } catch {}
+}
+
+// Demande au navigateur de ne pas purger le stockage local (iOS/Safari peut le
+// vider si l'appli reste inutilisée). Silencieux : le refus n'est pas bloquant.
+async function requestPersistentStorage() {
+  try {
+    if (navigator.storage?.persist) {
+      const already = await navigator.storage.persisted?.();
+      if (!already) await navigator.storage.persist();
+    }
+  } catch {}
 }
 
 // Importe un fichier de sauvegarde. Les archives sont FUSIONNÉES (dédupliquées
@@ -625,7 +705,7 @@ function importBackup(file) {
         if (!payload || typeof payload.data !== "object") throw new Error("format invalide");
         Object.entries(payload.data).forEach(([k, v]) => {
           if (!k.startsWith("acr_")) return; // jamais en dehors du périmètre de l'app
-          if (k === ARCHIVE_KEY) return; // traité séparément ci-dessous (fusion)
+          if (k === ARCHIVE_KEY || k === TRAINING_KEY) return; // fusion séparée / jamais importé
           localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v));
         });
         if (Array.isArray(payload.data[ARCHIVE_KEY])) {
@@ -789,7 +869,7 @@ function stopAlarm() {
 }
 
 // ── COMPOSANT TIMER ADRÉNALINE (option C : discret puis impossible à manquer) ──
-function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, onCancel, running, P, mono, sans, fmtSec }) {
+function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdjust, onAdminister, onCancel, running, P, mono, sans, fmtSec }) {
   // startSec = valeur de `sec` au moment où l'adré a été donnée
   // intervalMin = 3 / 4 / 5
   const [now, setNow] = useState(Date.now());
@@ -805,6 +885,9 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
   const remaining = Math.max(0, total - elapsed);
   const expired = elapsed >= total;
   const [played, setPlayed] = useState(false);
+  const [showAdjust, setShowAdjust] = useState(false);
+  // Réarme l'alarme dès que le minuteur n'est plus expiré (nouvelle dose, ou délai prolongé)
+  useEffect(() => { if (!expired) setPlayed(false); }, [expired]);
 
   useEffect(() => {
     if (expired && !played) {
@@ -819,12 +902,45 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
   }, [expired]);
   const ack = (fn) => () => { stopAlarm(); fn && fn(); };
 
+  const adjBtn = { background:P.surface, border:`1px solid ${P.border}`, borderRadius:9, color:P.text,
+    fontSize:13, fontWeight:700, padding:"9px 0", cursor:"pointer", fontFamily:mono, flex:1, minWidth:0 };
+  const adjustPanel = (
+    <div style={{ pointerEvents:"auto", width:"min(100%, 320px)", background:P.surface,
+      border:`1.5px solid ${P.rose}`, borderRadius:14, padding:"10px 12px",
+      boxShadow:"0 8px 24px rgba(0,0,0,0.18)" }}>
+      <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:700, color:P.textSoft, fontFamily:mono,
+        textTransform:"uppercase", letterSpacing:"0.08em" }}>Décaler le minuteur en cours</p>
+      <div style={{ display:"flex", gap:6 }}>
+        {[[-60,"−1 min"],[-30,"−30 s"],[30,"+30 s"],[60,"+1 min"]].map(([d,l]) => (
+          <button key={d} onClick={() => onAdjust && onAdjust(d)} style={adjBtn}>{l}</button>
+        ))}
+      </div>
+      {setIntervalMin && (
+        <>
+          <p style={{ margin:"10px 0 6px", fontSize:10, fontWeight:700, color:P.textSoft, fontFamily:mono,
+            textTransform:"uppercase", letterSpacing:"0.08em" }}>Intervalle entre les doses</p>
+          <div style={{ display:"flex", gap:6 }}>
+            {[3,4,5].map(m => (
+              <button key={m} onClick={() => setIntervalMin(m)}
+                style={{ ...adjBtn, background: intervalMin===m ? P.rose : P.surface,
+                  color: intervalMin===m ? "#fff" : P.text,
+                  border:`1.5px solid ${intervalMin===m ? P.rose : P.border}` }}>{m} min</button>
+            ))}
+          </div>
+        </>
+      )}
+      <button onClick={() => setShowAdjust(false)}
+        style={{ marginTop:10, width:"100%", background:"transparent", border:"none", color:P.textSoft,
+          fontSize:12, cursor:"pointer", fontFamily:sans, padding:"4px 0" }}>Fermer</button>
+    </div>
+  );
+
   if (!expired) {
     // Mode DISCRET : petite chip en haut à droite
     return (
       <div style={{
         position:"sticky", top:0, zIndex:8,
-        display:"flex", justifyContent:"flex-end", padding:"4px 0",
+        display:"flex", flexDirection:"column", alignItems:"flex-end", gap:6, padding:"4px 0",
         pointerEvents:"none",
       }}>
         <div style={{
@@ -832,19 +948,24 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
           padding:"4px 10px", display:"flex", alignItems:"center", gap:6,
           pointerEvents:"auto", boxShadow:"0 1px 4px rgba(0,0,0,0.06)",
         }}>
-          <span style={{ fontSize:11, color:P.roseText, fontFamily:mono, fontWeight:600 }}>
-            ⏱ Prochaine adré
-          </span>
-          <span style={{ fontSize:13, color:P.roseText, fontFamily:mono, fontWeight:700 }}>
-            {fmtSec(remaining)}
-          </span>
-          <span style={{ fontSize:10, color:P.roseText, fontFamily:mono, opacity:0.7 }}>
-            ({intervalMin} min)
-          </span>
+          <button onClick={() => setShowAdjust(v => !v)} aria-label="Régler le minuteur adrénaline"
+            style={{ background:"transparent", border:"none", padding:0, cursor:"pointer",
+              display:"flex", alignItems:"center", gap:6 }}>
+            <span style={{ fontSize:11, color:P.roseText, fontFamily:mono, fontWeight:600 }}>
+              ⏱ Prochaine adré
+            </span>
+            <span style={{ fontSize:13, color:P.roseText, fontFamily:mono, fontWeight:700 }}>
+              {fmtSec(remaining)}
+            </span>
+            <span style={{ fontSize:10, color:P.roseText, fontFamily:mono, opacity:0.7 }}>
+              ({intervalMin} min) ⚙
+            </span>
+          </button>
           <button onClick={onCancel}
             style={{ background:"transparent", border:"none", color:P.roseText,
               fontSize:13, cursor:"pointer", padding:"0 2px", lineHeight:1, opacity:0.6 }}>×</button>
         </div>
+        {showAdjust && adjustPanel}
       </div>
     );
   }
@@ -868,6 +989,11 @@ function AdrenalineTimer({ startSec, intervalMin, setIntervalMin, onAdminister, 
           {intervalMin} min écoulées depuis la précédente
         </p>
       </div>
+      <button onClick={ack(() => onAdjust && onAdjust(60))}
+        style={{ background:"rgba(255,255,255,0.2)", border:"1px solid rgba(255,255,255,0.6)", borderRadius:9,
+          padding:"8px 9px", fontSize:12, fontWeight:700, color:"#fff", cursor:"pointer", fontFamily:sans }}>
+        +1 min
+      </button>
       <button onClick={ack(onAdminister)}
         style={{
           background:"#fff", border:"none", borderRadius:9,
@@ -1146,7 +1272,7 @@ function GuideApp({ onClose }) {
         { icon:"⏱", title:"Chronomètre & minuteur adrénaline", desc:"Le chrono démarre au lancement de la réa. Un minuteur dédié rappelle l'échéance de la prochaine adrénaline avec une alarme sonore, et se relance automatiquement à chaque administration." },
         { icon:"🔄", title:"Cycle RCP · 2 min", desc:"Une barre de progression affiche le temps restant avant la prochaine analyse de rythme (cycle de 2 minutes, remis à zéro automatiquement à chaque nouveau cycle). Le bouton \"↺\" à côté permet de recaler manuellement ce cycle sur la réanimation réellement en cours — utile si vous reprenez une RCP déjà démarrée par une autre équipe et que le décompte affiché ne correspond plus au rythme réel des compressions. Le recalage est aussi tracé dans la chronologie." },
         { icon:"📋", title:"Chronologie complète", desc:"Chaque geste (choc, adrénaline, intubation, RACS...) est horodaté automatiquement. La liste est repliée par défaut pour ne pas encombrer l'écran — dépliez-la à tout moment. Un geste ajouté par erreur peut être annulé juste après (toast \"Annuler\")." },
-        { icon:"🔴", title:"Badges & vibrations sur les boutons", desc:"Un badge \"!\" rouge clignote sur Adrénaline dès que le délai avant la prochaine dose est dépassé, \"FV\" apparaît sur Défibrillation après un rythme choquable, \"✓\" sur Intubation une fois faite. Chaque geste a aussi sa propre vibration (longue pour l'adrénaline, double pour le choc) pour le reconnaître sans regarder l'écran." },
+        { icon:"🔴", title:"Badges & vibrations sur les boutons", desc:"Un badge \"!\" rouge clignote sur Adrénaline dès que le délai avant la prochaine dose est dépassé, \"FV\" apparaît sur Défibrillation après un rythme choquable, \"✓\" sur Intubation et Voie d'abord une fois faites. Chaque geste a aussi sa propre vibration (longue pour l'adrénaline, double pour le choc) pour le reconnaître sans regarder l'écran." },
         { icon:"➕", title:"Grille d'actions repliable", desc:"Les gestes les plus fréquents restent toujours visibles. Un bouton \"+ Plus d'actions\" révèle les gestes secondaires (Planche à masser, Fast-écho, Soins post-RACS, Constat de décès) pour garder l'écran principal lisible." },
         { icon:"📞", title:"Appel régulation", desc:"Bandeau toujours accessible pour horodater un appel à la régulation, avec un champ libre pour noter ce qui a été dit et la destination du patient." },
         { icon:"📝", title:"Note libre", desc:"Un encart de texte libre, entre les Soins post-RACS et la chronologie, pour consigner une information qui ne rentre dans aucune case." },
@@ -1557,6 +1683,8 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
   const [copied, setCopied] = useState(false);
   const [pdfGenerating, setPdfGenerating] = useState(false);
   const [shareGenerating, setShareGenerating] = useState(false);
+  const training = isTraining();
+  const filePrefix = training ? "ENTRAINEMENT_" : "";
 
   // ── Rubriques SMUR classiques adaptées à l'arrêt cardiaque (remplace l'ancien format SBAR) ──
   // Source unique pour l'écran, le texte copié et le PDF.
@@ -1606,6 +1734,26 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
         it("Amiodarone", cordEvts.length > 0 ? cordEvts.map(e => e.label).join(" + ") : null),
         it("Intubation", iot?.sonde && `sonde ${iot.sonde} mm${iot.repere ? ` · repère ${iot.repere} cm` : ""}${iot.cormack ? ` · Cormack ${iot.cormack}` : ""}${iot.capno ? ` · EtCO₂ initial ${iot.capno} mmHg` : ""}`, { long:true }),
       ]},
+      { id:"delais", icon:"⏱️", title:"Délais · Utstein", tone:"blue", items:(() => {
+        const hm = (s) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || "")); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+        const dmin = (a, b) => { const x = hm(a), y = hm(b); if (x == null || y == null) return null; let d = y - x; if (d < -720) d += 1440; return d >= 0 ? d : null; };
+        const firstAdr = events.find(e => e.id === "adr");
+        const iotEv = events.find(e => e.id === "iot");
+        const fromStart = (ev) => ev && startEvt ? ` (+${fmtSec(Math.max(0, ev.sec - startEvt.sec))})` : "";
+        const hEff = t.hEffondrement || acrTime || "";
+        const gap = dmin(hEff, startEvt?.time);
+        return [
+          it("Effondrement", hEff),
+          it("Début de la RCP SMUR", startEvt?.time),
+          gap != null ? it("Effondrement → RCP SMUR", `${gap} min`) : null,
+          it("1er choc SMUR", firstChoc ? `${firstChoc.time}${fromStart(firstChoc)}` : null),
+          it("1re adrénaline", firstAdr ? `${firstAdr.time}${fromStart(firstAdr)}` : null),
+          it("Intubation", iotEv ? `${iotEv.time}${fromStart(iotEv)}` : null),
+          it("RACS", rosc ? `${rosc.time}${startEvt ? ` · ${fmtSec(Math.max(0, rosc.sec - startEvt.sec))} de RCP SMUR` : ""}` : null),
+          it("No-flow", noFlow ? `${noFlow} min` : null),
+          it("Low-flow", lowFlow ? `${lowFlow} min` : null),
+        ];
+      })() },
       { id:"evo", icon:"📈", title:"Évolution", tone:"green", items:[
         it("Hémocue (Hb)", hemocue && hemocue.length > 0 ? (hemocue.length > 1 ? `${hemocue[0].val} → ${hemocue[hemocue.length-1].val} g/dL` : `${hemocue[0].val} g/dL`) : null),
         it("EtCO₂", etco2 && etco2.length > 0 ? (etco2.length > 1 ? `${etco2[0].val} → ${etco2[etco2.length-1].val} mmHg` : `${etco2[0].val} mmHg`) : null),
@@ -1626,6 +1774,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     const lines = [];
     lines.push("═══════════════════════════════════");
     lines.push("       COMPTE-RENDU DE SMUR");
+    if (training) lines.push("   *** ENTRAÎNEMENT — NON PATIENT ***");
     lines.push("═══════════════════════════════════");
     lines.push(`Date : ${new Date().toLocaleDateString("fr-FR")}  Heure : ${getNow()}`);
     lines.push("");
@@ -1633,7 +1782,9 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     if (patient?.nom || patient?.prenom || patient?.age || patient?.ddn) {
       lines.push(`Patient : ${[patient.nom, patient.prenom].filter(Boolean).join(" ") || "—"}` +
         (patient.ddn ? ` · né(e) le ${new Date(patient.ddn).toLocaleDateString("fr-FR")}` : "") +
-        (patient.age ? ` · ${patient.age}` : ""));
+        (patient.age ? ` · ${patient.age}` : "") +
+        (patient.sexe ? ` · ${patient.sexe === "H" ? "Homme" : patient.sexe === "F" ? "Femme" : patient.sexe}` : "") +
+        (patient.taille ? ` · ${patient.taille} cm` : ""));
       lines.push("");
     }
 
@@ -1644,7 +1795,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     lines.push(`Issue : ${rosc ? "RACS à " + rosc.time : deces ? deces.label : "non renseignée"}`);
     lines.push("");
 
-    rubriques.filter(r => ["motif","atcd","pre","pec"].includes(r.id)).forEach(r => {
+    rubriques.filter(r => ["motif","atcd","pre","pec","delais"].includes(r.id)).forEach(r => {
       lines.push(`── ${r.title.toUpperCase()} ${"─".repeat(Math.max(2, 34 - r.title.length))}`);
       r.items.forEach(i => lines.push(`${i.l} : ${i.v}`));
       lines.push("");
@@ -1828,13 +1979,27 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
       const okT = (t) => /^\d{1,2}:\d{2}$/.test(String(t || ""));
       const toMin = (t) => { const [h, m] = String(t).split(":").map(Number); return h * 60 + m; };
       const startEvt = events.find(e => e.id === "start");
-      const useClock = !!startEvt && okT(startEvt.time) && events.every(e => okT(e.time));
-      const rel = (e) => useClock
-        ? ((toMin(e.time) - toMin(startEvt.time) + 1440) % 1440)
-        : Math.max(0, (e.sec - startSec2) / 60);
+      let useClock = !!startEvt && okT(startEvt.time) && events.every(e => okT(e.time));
+      // Écart signé en minutes (gère le passage de minuit) ; un geste antérieur au début
+      // de la RCP (heure saisie à la main, ex : heure de l'ACR) ne doit JAMAIS faire
+      // « boucler » l'axe sur 24 h : il est ramené à 0 plutôt que projeté à +23 h.
+      const rel = (e) => {
+        if (!useClock) return Math.max(0, (e.sec - startSec2) / 60);
+        let d = toMin(e.time) - toMin(startEvt.time);
+        if (d < -720) d += 1440;
+        else if (d > 720) d -= 1440;
+        return Math.max(0, d);
+      };
       const finalEvt = rosc2 || deces2;
+      // Garde-fou : si l'axe en heures réelles dépasse largement la durée chrono de la RCP
+      // (heure saisie à la main incohérente), on retombe sur le chrono plutôt qu'un axe absurde.
+      if (useClock) {
+        const clockSpan = Math.max(0, ...events.filter(e => e.id !== "start").map(rel));
+        if (clockSpan > totalSec / 60 * 1.5 + 10) useClock = false;
+      }
       const relEvents = events.filter(e => e.id !== "start").map(rel);
       const spanMin = Math.max(1, ...relEvents, finalEvt ? rel(finalEvt) : 0, useClock ? 0 : totalSec / 60);
+      if (!isFinite(spanMin)) return "";
       const pct = (e) => Math.min(100, Math.max(0, (rel(e) / spanMin) * 100));
       const dots = [];
       events.forEach(e => {
@@ -1934,6 +2099,8 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     </div>
   </div>
 
+  ${training ? `<div class="pdf-card" style="background:#6433C9;color:#fff;border-radius:12px;padding:10px 14px;margin-bottom:14px;text-align:center;font-weight:800;letter-spacing:0.12em;font-family:'JetBrains Mono',monospace;font-size:13px">🎓 ENTRAÎNEMENT — DOCUMENT FICTIF, NON PATIENT</div>` : ""}
+
   <!-- Identité patient compacte, tout en haut -->
   ${(patient?.nom || patient?.prenom || patient?.age || patient?.ddn) ? `
   <div class="pdf-card" style="background:${C.surface};border:1px solid ${C.border};border-radius:12px;padding:12px 16px;margin-bottom:14px;
@@ -1941,7 +2108,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     <span style="font-size:20px;flex-shrink:0">🪪</span>
     <div style="flex:1;min-width:0">
       <p style="margin:0;font-size:16px;font-weight:800;color:${C.text};font-family:'Archivo',sans-serif;letter-spacing:-0.01em">${esc([patient.nom,patient.prenom].filter(Boolean).join(" ") || "Patient non identifié")}</p>
-      <p style="margin:0;font-size:12px;color:${C.textSoft};font-family:'JetBrains Mono',monospace">${[patient.age && `${esc(patient.age)}`, patient.ddn && `né(e) le ${esc(new Date(patient.ddn).toLocaleDateString("fr-FR"))}`].filter(Boolean).join(" · ") || "—"}</p>
+      <p style="margin:0;font-size:12px;color:${C.textSoft};font-family:'JetBrains Mono',monospace">${[patient.age && `${esc(patient.age)}`, patient.sexe && (patient.sexe === "H" ? "Homme" : patient.sexe === "F" ? "Femme" : esc(patient.sexe)), patient.taille && `${esc(patient.taille)} cm`, patient.ddn && `né(e) le ${esc(new Date(patient.ddn).toLocaleDateString("fr-FR"))}`].filter(Boolean).join(" · ") || "—"}</p>
     </div>
   </div>` : ""}
 
@@ -2098,7 +2265,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
     if (shareGenerating) return;
     const date = new Date().toISOString().slice(0,10);
     const nom  = patient?.nom ? `_${patient.nom}` : "";
-    const filenamePdf = `CR-SMUR${nom}_${date}.pdf`;
+    const filenamePdf = `${filePrefix}CR-SMUR${nom}_${date}.pdf`;
 
     setShareGenerating(true);
     try {
@@ -2222,9 +2389,17 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
               {[
                 patient.ddn && `Né(e) le ${new Date(patient.ddn).toLocaleDateString("fr-FR")}`,
                 patient.age && `${patient.age}`,
-                patient.sexe
+                patient.sexe && (patient.sexe === "H" ? "Homme" : patient.sexe === "F" ? "Femme" : patient.sexe),
+                patient.taille && `${patient.taille} cm`
               ].filter(Boolean).join(" · ")}
             </p>
+          </div>
+        )}
+
+        {training && (
+          <div style={{ background:"#6433C9", color:"#fff", borderRadius:12, padding:"9px 12px", marginBottom:12,
+            textAlign:"center", fontSize:12, fontWeight:800, letterSpacing:"0.1em", fontFamily:mono }}>
+            🎓 ENTRAÎNEMENT — DOCUMENT FICTIF
           </div>
         )}
 
@@ -2417,7 +2592,7 @@ function PdfView({ patient, noFlow, lowFlow, acrTime, iot, events, totalSec, tra
             try {
               const pdf = await buildPdf();
               const nom = patient?.nom ? `_${patient.nom}` : '';
-              pdf.save(`CR-SMUR${nom}_${new Date().toISOString().slice(0,10)}.pdf`);
+              pdf.save(`${filePrefix}CR-SMUR${nom}_${new Date().toISOString().slice(0,10)}.pdf`);
             } catch(e) {
               // Fallback : impression navigateur
               window.print();
@@ -2494,8 +2669,10 @@ function RemplissageSection({ racs, setRacs }) {
     if (sol === "Autre") setAutre("");
   };
 
-  const retirer = (i) =>
+  const retirer = (i) => {
+    if (!window.confirm("Retirer ce remplissage ?")) return;
     setRacs(p => ({ ...p, remplissages: p.remplissages.filter((_,idx) => idx !== i) }));
+  };
 
   return (
     <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px", marginBottom:10 }}>
@@ -2777,8 +2954,10 @@ function RemplissageVasculairePed({ racs, setRacs, localMat }) {
     if (sol === "Autre") setAutre("");
   };
 
-  const retirer = (i) =>
+  const retirer = (i) => {
+    if (!window.confirm("Retirer ce remplissage ?")) return;
     setRacs(p => ({ ...p, remplissagesPed: (p.remplissagesPed||[]).filter((_,idx) => idx !== i) }));
+  };
 
   return (
     <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px", marginBottom:10 }}>
@@ -2924,7 +3103,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
       `${pendingImagePed.type === "ecg" ? "📈" : "📷"} ${title} ajouté${pendingImagePed.type==="ecg"?"":"e"}`, pendingImagePed.type === "ecg" ? "📈" : "📷");
     setPendingImagePed(null); setPendingTitlePed(""); setPhotoStepPed("choice");
   };
-  const deletePhotoPed = (id) => setImagesPed(prev => prev.filter(im => im.id !== id));
+  const deletePhotoPed = (id) => { if (!window.confirm("Supprimer cette photo / ce tracé ?")) return; setImagesPed(prev => prev.filter(im => im.id !== id)); };
   const [pupillesInitExpandedPed, setPupillesInitExpandedPed] = useState(false);
   const [racsPupillesExpandedPed, setRacsPupillesExpandedPed] = useState(false);
   const [modalVliTransitionPed, setModalVliTransitionPed] = useState(false);
@@ -3004,7 +3183,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [pedDiluEnabled] = useLocalState("acr_ped_dilu_enabled", false);
   const [pedDiluMode] = useLocalState("acr_ped_dilu_mode", "2");
   const [metronomeEnabled] = useLocalState("acr_metronome_enabled", false);
-  const [adrIntervalGlobal] = useLocalState("acr_adr_interval", 4);
+  const [adrIntervalGlobal, setAdrIntervalGlobal] = useLocalState("acr_adr_interval", 4);
   const [voiceWakeWord] = useLocalState("acr_voice_wakeword", "Alpha");
   // Métronome pédiatrique — le scheduler précis (Web Audio lookahead) est plus
   // bas dans le fichier ; l'ancien système ici a été retiré (il faisait doublon
@@ -3088,7 +3267,6 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const [iotTechDifficilePed, setIotTechDifficilePed] = useLocalState("acr_ped_iotTechDifficile", []);
   const [iotNbTentativesPed, setIotNbTentativesPed] = useLocalState("acr_ped_iotNbTentatives", "");
   const [iotInhalationPed, setIotInhalationPed] = useLocalState("acr_ped_iotInhalation", false);
-  const [racsTabPed,   setRacsTabPed]   = useState("ventil");
   const [showDopee,    setShowDopee]    = useState(false);
   const [racsPed, setRacsPed] = useLocalState("acr_ped_racs", {
     fr:"", volume:"", pep:"", sat:"", fio2:"", capno:"",
@@ -3101,6 +3279,54 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   // Valeurs hémodynamique éditables — pré-remplies depuis localMat
   const [adrPalier,   setAdrPalier]   = useLocalState("acr_ped_adrPalier", 0); // index 0-3
   const [adrVitesse,  setAdrVitesse]  = useLocalState("acr_ped_adrVitesse", "");
+  // Paliers horodatés avec PAM, dilution (règle selon le poids, modifiable pour cette réanimation), autres vasopresseurs
+  const [vasoLogPed,   setVasoLogPed]   = useLocalState("acr_ped_vasolog", []);
+  const [vasoExtraPed, setVasoExtraPed] = useLocalState("acr_ped_vasoextra", []);
+  const [adrDilPed,    setAdrDilPed]    = useLocalState("acr_ped_adrdil", null);
+  const [tempModePed,  setTempModePed]  = useLocalState("acr_ped_tempmode", "");
+  const adrDilAutoPed = localPoids <= 10 ? { qty:"1", vol:"50" } : { qty:"5", vol:"50" };
+  const adrDilEff = adrDilPed || adrDilAutoPed;
+  const pamPtsPed = pamPoints([], hemoListPed);
+  const livePamPed = (() => { const a = mesNum(racsPed.tas), d = mesNum(racsPed.tad); return a > 0 && d > 0 ? Math.round((a + 2 * d) / 3) : null; })();
+  const vasoMarksPed = vasoLogPed.filter(e => e.drug === "adr").map(e => ({ type:`ADR ${e.rate}`, sec:e.sec }));
+  const vasoDebitPed = (drugKey, name, rate, time) => {
+    const r = String(rate).replace(",", ".");
+    let dl, unit, before;
+    if (drugKey === "adr") { dl = adrDilEff; unit = "mg"; before = adrVitesse; setAdrVitesse(r); }
+    else {
+      const x = vasoExtraPed.find(z => z.id === drugKey); if (!x) return;
+      dl = { qty:x.qty, vol:x.vol }; unit = x.unit; before = x.rate;
+      setVasoExtraPed(list => list.map(z => z.id === drugKey ? { ...z, rate:r } : z));
+    }
+    const pam = livePamPed != null ? livePamPed : (pamPtsPed.length ? pamPtsPed[pamPtsPed.length - 1].pam : null);
+    const ugh = vasoUg(r, dl, unit);
+    const dose = ugh == null ? "" : ` (${sedFmt(ugh / 60 / localPoids, 3)} µg/kg/min)`;
+    const fm = v => String(v).replace(".", ",");
+    const text = `${name} ${mesNum(before) > 0 ? `${fm(before)} → ` : ""}${fm(r)} mL/h${dose}`;
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    setVasoLogPed(list => [...list, { id, sec, time, drug:drugKey, name, rate:r, prev:mesNum(before) > 0 ? String(before) : "", pam, text }]);
+    setEvents(list => [...list, { id:"racs_vaso", sid:id, label:`${text}${pam != null ? ` · PAM ${pam}` : ""}`, icon:"💉", time, sec }]);
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(err) {}
+  };
+  const vasoDeleteLogPed = (id) => {
+    const e = vasoLogPed.find(z => z.id === id);
+    const isLast = e && vasoLogPed.filter(z => z.drug === e.drug).sort((a, b) => a.sec - b.sec).pop()?.id === id;
+    if (e && isLast) {
+      if (e.drug === "adr") setAdrVitesse(e.prev || "");
+      else setVasoExtraPed(list => list.map(z => z.id === e.drug ? { ...z, rate: e.prev || "" } : z));
+    }
+    setVasoLogPed(list => list.filter(z => z.id !== id));
+    setEvents(list => list.filter(z => z.sid !== id));
+  };
+  const setTempControlPed = (v) => {
+    const nv = tempModePed === v ? "" : v;
+    setTempModePed(nv);
+    setEvents(list => {
+      const rest = list.filter(z => z.id !== "racs_temp");
+      if (!nv) return rest;
+      return [...rest, { id:"racs_temp", label:`Contrôle de la température : ${nv === "couverture" ? "couverture" : "refroidissement actif"}`, icon:"🌡️", time:getNow(), sec }];
+    });
+  };
   const [rempliVol,   setRempliVol]   = useLocalState("acr_ped_rempliVol", "");
   const [rempliDebit, setRempliDebit] = useLocalState("acr_ped_rempliDebit", "");
   const [nimbex1Val,  setNimbex1Val]  = useLocalState("acr_ped_nimbex1", "");
@@ -3109,10 +3335,12 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
   const alertRef = useRef(null);
 
   useEffect(() => {
-    if (!running || sec === 0 || sec % 120 !== 0) return;
+    // Synchronisé avec le cycle RCP (bip + flash rythme) : tient compte de la remise à zéro du cycle
+    if (!running || sec <= cycleOffset || (sec - cycleOffset) % 120 !== 0) return;
     setAlert("Analyser le rythme · Changer le masseur");
     clearTimeout(alertRef.current);
     alertRef.current = setTimeout(() => setAlert(null), 7000);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sec, running]);
 
   const [confirmAdd, setConfirmAdd] = useState(null); // { label, key }
@@ -3459,7 +3687,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         recidive,
         props: {
           patient: { nom:patPed.nom, prenom:patPed.prenom, ddn:patPed.ddn,
-            age: patPed.age || calcAge(patPed.ddn) || localRow?.age || "", sexe:"",
+            age: patPed.age || calcAge(patPed.ddn) || localRow?.age || "", sexe:patPed.sexe || "", taille:patPed.taille || "",
             temp:patPed.temp, atcd:patPed.atcd, histoire:patPed.histoire },
           noFlow: noFlowMin, lowFlow: lowFlowMin, acrTime: localAcrTime,
           iot: { cormack:"", sonde:localMat?.sondeAvecBallonnet||"", repere:localMat?.repereLab||"", capno:"" },
@@ -3677,6 +3905,725 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
       </div>
     </div>
   );
+
+
+  // ── Page post-RACS pédiatrique : même page plein écran que l'adulte, avec les repères de l'âge ──
+  const [racsAutoPed] = useLocalState("acr_racs_auto", true);
+  const [showRacsPagePed, setShowRacsPagePed] = useState(false);
+  const [showLecturePed, setShowLecturePed] = useState(false);
+  const [orientListPed, setOrientListPed] = useLocalState("acr_ped_orient", []);
+  const [tcOnPed, setTcOnPed] = useLocalState("acr_ped_tc", false);
+  const [mesuresPed, setMesuresPed] = useLocalState("acr_ped_mesures", []);
+  const MES_TO_RACS_PED = { pas:"tas", pad:"tad", fc:"fc", sat:"sat", capno:"capno", fio2:"fio2", temp:"tempRacs", gly:"glycemie" };
+  const saveMesurePed = (vals, timeStr) => {
+    const t = timeStr || getNow();
+    const clean = {};
+    MES_KEYS.forEach(k => { if (mesHas(vals[k])) clean[k] = String(vals[k]).replace(",", "."); });
+    if (!Object.keys(clean).length) return;
+    const id = Date.now();
+    setMesuresPed(prev => [...prev, { id, sec, time: t, ...clean }]);
+    const patch = {};
+    Object.keys(clean).forEach(k => { patch[MES_TO_RACS_PED[k]] = clean[k]; });
+    setRacsPed(p => ({ ...p, ...patch }));
+    if (clean.pas != null || clean.pad != null || clean.fc != null)
+      setHemoListPed(prev => [...prev, { sec, time: t, pas: clean.pas ?? racsPed.tas, pad: clean.pad ?? racsPed.tad, fc: clean.fc ?? racsPed.fc }]);
+    if (clean.capno != null) setEtco2ListPed(prev => [...prev, { val: clean.capno, sec, time: t }]);
+    const pasV = mesNum(clean.pas ?? racsPed.tas), padV = mesNum(clean.pad ?? racsPed.tad);
+    const parts = [];
+    if ((clean.pas != null || clean.pad != null) && pasV != null && padV != null) parts.push(`TA ${pasV}/${padV} (PAM ${Math.round((pasV + 2 * padV) / 3)})`);
+    else { if (clean.pas != null) parts.push(`TAs ${clean.pas}`); if (clean.pad != null) parts.push(`TAd ${clean.pad}`); }
+    if (clean.fc != null) parts.push(`FC ${clean.fc}`);
+    if (clean.sat != null) parts.push(`SpO₂ ${clean.sat}%`);
+    if (clean.capno != null) parts.push(`EtCO₂ ${clean.capno}`);
+    if (clean.fio2 != null) parts.push(`FiO₂ ${clean.fio2}%`);
+    if (clean.temp != null) parts.push(`T° ${clean.temp}`);
+    if (clean.gly != null) parts.push(`Glycémie ${clean.gly} g/L`);
+    setEvents(prev => [...prev, { id:"racs_mesure", mid:id, label:`Mesure post-RACS : ${parts.join(" · ")}`, icon:"📋", time:t, sec }]);
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(e) {}
+  };
+  const deleteMesurePed = (id) => {
+    const m = mesuresPed.find(x => x.id === id);
+    if (!m) return;
+    const rest = mesuresPed.filter(x => x.id !== id);
+    setMesuresPed(rest);
+    setEvents(prev => prev.filter(e => e.mid !== id));
+    setHemoListPed(prev => prev.filter(h => !(h.sec === m.sec && h.time === m.time)));
+    setEtco2ListPed(prev => prev.filter(e => !(e.sec === m.sec && e.time === m.time)));
+    const carried = carryVals(rest), patch = {};
+    MES_KEYS.forEach(k => { if (mesHas(m[k])) patch[MES_TO_RACS_PED[k]] = carried[k] ?? ""; });
+    setRacsPed(p => ({ ...p, ...patch }));
+  };
+  const editMesurePed = (id, vals, timeStr) => doEditMesure({ mesures:mesuresPed, id, vals, timeStr, setMesures:setMesuresPed, setEvents, setHemoList:setHemoListPed, setEtco2List:setEtco2ListPed, setRacs:setRacsPed, map:MES_TO_RACS_PED });
+  const [remMinPed, setRemMinPed] = useLocalState("acr_remesure_min", 0);
+  const remPed = remesureState(mesuresPed, events.find(e => e.id === "rosc"), sec, remMinPed);
+  useRemesureAlert(remPed.due);
+  const [neuroLogPed, setNeuroLogPed] = useLocalState("acr_ped_neuro", []);
+  const [ventLogPed, setVentLogPed] = useLocalState("acr_ped_ventlog", []);
+  const saveNeuroPed = (v, t) => {
+    const id = Date.now();
+    setNeuroLogPed(prev => [...prev, { id, sec, time:t, glasgow:v.glasgow, pupilles:v.pupilles }]);
+    setRacsPed(p => ({ ...p, ...(v.glasgow ? { glasgow:v.glasgow } : {}), ...(v.pupilles ? { pupilles:v.pupilles } : {}) }));
+    const parts = [v.glasgow && `Glasgow ${v.glasgow}`, v.pupilles && `pupilles : ${v.pupilles}`].filter(Boolean);
+    setEvents(prev => [...prev, { id:"racs_neuro", nid:id, label:`Réévaluation neuro : ${parts.join(" · ")}`, icon:"🧠", time:t, sec }]);
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(e) {}
+  };
+  const deleteNeuroPed = (id) => {
+    const rest = neuroLogPed.filter(n => n.id !== id);
+    setNeuroLogPed(rest);
+    setEvents(prev => prev.filter(e => e.nid !== id));
+    const lastG = [...rest].reverse().find(n => n.glasgow), lastP = [...rest].reverse().find(n => n.pupilles);
+    setRacsPed(p => ({ ...p, glasgow: lastG?.glasgow || "", pupilles: lastP?.pupilles || "" }));
+  };
+  const commitVentLogPed = () => {
+    const cur = { volume:racsPed.volume, fr:racsPed.fr, pep:racsPed.pep, fio2:racsPed.fio2 };
+    if (!["volume", "fr", "pep", "fio2"].some(k => mesHas(cur[k]))) return;
+    const last = ventLogPed.length ? ventLogPed[ventLogPed.length - 1].vals : {};
+    if (["volume", "fr", "pep", "fio2"].every(k => String(cur[k] ?? "") === String(last[k] ?? ""))) return;
+    const text = [mesHas(cur.volume) && `Vt ${cur.volume}`, mesHas(cur.fr) && `FR ${cur.fr}`, mesHas(cur.pep) && `PEP ${cur.pep}`, mesHas(cur.fio2) && `FiO₂ ${cur.fio2} %`].filter(Boolean).join(" · ");
+    const t = getNow();
+    setVentLogPed(prev => [...prev, { id:Date.now(), sec, time:t, vals:{ ...cur }, text }]);
+    setEvents(prev => [...prev, { id:"racs_vent", label:`Réglages ventilatoires : ${text}`, icon:"🫁", time:t, sec }]);
+  };
+  const setTcPed = (on) => {
+    setTcOnPed(on);
+    setEvents(prev => {
+      const rest = prev.filter(e => e.id !== "tc");
+      return on ? [...rest, { id:"tc", label:`Traumatisme crânien — objectif PAM ≥ ${localMat.pamTC} mmHg`, icon:"🧠", time:getNow(), sec }] : rest;
+    });
+  };
+  const ORIENT_PED = [
+    { id:"rea_ped", label:"Réanimation pédiatrique", sub:"Soins intensifs",     color:"green"  },
+    { id:"scanner", label:"Scanner",                  sub:"Cause non cardiaque", color:"violet" },
+    { id:"autre",   label:"Autre",                    sub:"à préciser en destination", color:"slate" },
+  ];
+  const setOrientPed = (arr) => {
+    setOrientListPed(arr);
+    setEvents(prev => {
+      const rest = prev.filter(e => e.id !== "orientation");
+      if (!arr.length) return rest;
+      const lbl = arr.map(id => ORIENT_PED.find(o => o.id === id)?.label).filter(Boolean).join(" + ");
+      return [...rest, { id:"orientation", label:`Orientation : ${lbl}`, icon:"🧭", time:getNow(), sec }];
+    });
+  };
+
+  // Ouverture automatique ~3 s après le RACS (sauf si annulé entre-temps)
+  const roscEvtPed = events.find(e => e.id === "rosc");
+  const roscKeyPed = roscEvtPed ? `${roscEvtPed.sec}|${roscEvtPed.time}` : "";
+  const roscSeenPed = useRef(null);
+  const eventsLiveRefPed = useRef(events);
+  eventsLiveRefPed.current = events;
+  const secLiveRefPed = useRef(sec);
+  secLiveRefPed.current = sec;
+  const racsPageTimerRefPed = useRef(null);
+  useEffect(() => {
+    if (roscSeenPed.current === null) { roscSeenPed.current = roscKeyPed; return; }
+    if (roscKeyPed === roscSeenPed.current) return;
+    roscSeenPed.current = roscKeyPed;
+    clearTimeout(racsPageTimerRefPed.current);
+    if (!roscKeyPed || !racsAutoPed || (isVLI && !vliUnlockedPed)) return;
+    if (Math.abs(secLiveRefPed.current - (roscEvtPed?.sec || 0)) > 8) return; // RACS reçu d'un autre appareil / ancien : pas d'ouverture
+    racsPageTimerRefPed.current = setTimeout(() => {
+      if (eventsLiveRefPed.current.some(e => e.id === "rosc" && `${e.sec}|${e.time}` === roscKeyPed)) setShowRacsPagePed(true);
+    }, 3100);
+  }, [roscKeyPed]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => clearTimeout(racsPageTimerRefPed.current), []);
+
+  // Contenu des soins (déplié dans la page)
+  const renderRacsBodyPed = (racsTabPed) => (
+    <>
+              {racsTabPed==="ventil" && (
+                <div style={{width:"100%"}}>
+                  {/* Encadré normes ventilation */}
+                  {localMat && (
+                    <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,
+                      borderRadius:10,padding:"10px 12px",marginBottom:12}}>
+                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:600,color:P.amberText,
+                        textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
+                        Objectifs ventilation — {localPoids} kg · {localRow.age}
+                      </p>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 10px"}}>
+                        {[
+                          ["Vt cible",  `${localMat.vtR} mL`],
+                          ["FR",        `${localMat.frR} /min`],
+                          ["I/E",       localMat.ie],
+                          ["PEEP",      `${localMat.peep} cmH₂O`],
+                          ["FiO₂",      "100% puis ↓"],
+                          ["SpO₂",      "94–98%"],
+                          ["EtCO₂",     "35–40 mmHg"],
+                        ].map(([l,v])=>(
+                          <div key={l} style={{display:"flex",justifyContent:"space-between",
+                            alignItems:"center",padding:"1px 0"}}>
+                            <span style={{fontSize:10,color:P.amberText}}>{l}</span>
+                            <span style={{fontSize:11,fontWeight:700,color:P.amberText,fontFamily:mono}}>{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <p style={{margin:"6px 0 0",fontSize:8,color:P.amberText,fontStyle:"italic",lineHeight:1.4}}>
+                        {localMat.p <= 8
+                          ? "< 8 kg : ventilation pression contrôlée · débuter 20-25 cmH₂O"
+                          : "> 8 kg : ventilation volume contrôlé · gonfler ballonnet sonde IOT"}
+                      </p>
+                    </div>
+                  )}
+                  {[
+                    [["fr","FR","/min"],["volume","Vol. Vt","mL"]],
+                    [["pep","PEP","cmH₂O"],["fio2","FiO₂","%"]],
+                    [["sat","SpO₂","%"],["capno","EtCO₂","mmHg"]],
+                  ].map((pair,ri)=>(
+                    <div key={ri} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+                      {pair.map(([k,l,u])=>{
+                        const isSpo2 = k === "sat";
+                        const isEtco2 = k === "capno";
+                        const val = parseFloat(String(racsPed[k]).replace(",","."));
+                        const spo2Out = isSpo2 && !isNaN(val) && (val < 94 || val > 98);
+                        const etco2Out = isEtco2 && !isNaN(val) && (val < 35 || val > 45);
+                        const alertColor = spo2Out || etco2Out ? P.rose : isEtco2 && !isNaN(val) ? P.green : null;
+                        const lastEtco2 = isEtco2 && etco2ListPed.length > 0 ? etco2ListPed[etco2ListPed.length-1].val : null;
+                        return (
+                        <div key={k} style={{minWidth:0, position:"relative"}}>
+                          <p style={{margin:"0 0 4px",fontSize:9,fontWeight:500,color:P.textSoft,
+                            textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>{l}</p>
+                          {isEtco2 && lastEtco2 != null && <TrendBadge current={racsPed.capno} last={lastEtco2} P={P} goodDir="up" />}
+                          <div style={{display:"flex",alignItems:"center",gap:4}}>
+                            <input type="number" inputMode="decimal" value={racsPed[k]} onChange={e=>srp(k)(e.target.value)}
+                              style={{flex:1,minWidth:0,
+                                background: alertColor ? (alertColor===P.rose?P.roseSoft:P.greenSoft) : P.surfaceAlt,
+                                border:`1.5px solid ${alertColor || P.border}`,
+                                borderRadius:8,padding:"9px 4px",fontSize:15,
+                                color: alertColor ? (alertColor===P.rose?P.roseText:P.greenText) : P.text,
+                                fontFamily:mono, outline:"none",textAlign:"center",
+                                fontWeight: alertColor ? 800 : 600, boxSizing:"border-box"}}
+                              onFocus={e=>e.target.style.borderColor=P.blue}
+                              onBlur={e=>e.target.style.borderColor=alertColor || P.border}/>
+                            <span style={{fontSize:9, color: alertColor ? (alertColor===P.rose?P.roseText:P.greenText) : P.textSoft,
+                              flexShrink:0, whiteSpace:"nowrap", fontWeight: alertColor ? 700 : 400}}>{u}</span>
+                          </div>
+                        </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                  {(() => {
+                    const spo2 = parseFloat(String(racsPed.sat).replace(",","."));
+                    const spo2Out = !isNaN(spo2) && (spo2 < 94 || spo2 > 98);
+                    const etco2 = parseFloat(String(racsPed.capno).replace(",","."));
+                    const etco2Out = !isNaN(etco2) && (etco2 < 35 || etco2 > 45);
+                    if (spo2Out) return <p style={{margin:"2px 0 10px",fontSize:9.5,color:P.roseText,fontWeight:700,textAlign:"right"}}>⚠️ SpO₂ {spo2>98?"> 98% — risque d'hyperoxie":"< 94% — hypoxie"}</p>;
+                    if (etco2Out) return <p style={{margin:"2px 0 10px",fontSize:9.5,color:P.roseText,fontWeight:700,textAlign:"right"}}>⚠️ EtCO₂ hors cible (35–45 mmHg)</p>;
+                    return <p style={{margin:"2px 0 10px",fontSize:9,color:P.textSoft,fontStyle:"italic",textAlign:"right"}}>SpO₂ 94–98 % · EtCO₂ 35–45 mmHg</p>;
+                  })()}
+
+                  {/* Graphique live EtCO2 */}
+                  {etco2ListPed.length > 0 && (
+                    <div style={{background:P.surfaceAlt,borderRadius:12,padding:"10px 12px",marginBottom:12}}>
+                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:700,color:P.textMid,
+                        textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
+                        EtCO₂ — {etco2ListPed.length} mesure{etco2ListPed.length>1?"s":""}
+                      </p>
+                      <Etco2Curve data={etco2ListPed} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />
+                    </div>
+                  )}
+
+                  {/* Accordéon DOPÉE */}
+                  <div style={{marginTop:12}}>
+                    <button onClick={()=>setShowDopee(v=>!v)}
+                      style={{width:"100%",background:showDopee?P.amberSoft:P.amberSoft,
+                        border:`1.5px solid ${P.amber}`,
+                        borderRadius:10,padding:"10px 14px",cursor:"pointer",fontFamily:sans,
+                        display:"flex",alignItems:"center",justifyContent:"space-between",
+                        transition:"all 0.15s"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:16}}>⚠️</span>
+                        <div style={{textAlign:"left"}}>
+                          <p style={{margin:0,fontSize:13,fontWeight:600,color:P.amberText}}>
+                            Vérifier DOPÉE
+                          </p>
+                          <p style={{margin:0,fontSize:9,color:P.amberText,fontStyle:"italic"}}>
+                            Problème de ventilation
+                          </p>
+                        </div>
+                      </div>
+                      <span style={{fontSize:12,color:P.amberText,fontWeight:600}}>
+                        {showDopee?"▲":"▼"}
+                      </span>
+                    </button>
+
+                    {showDopee && (
+                      <div style={{background:P.amberSoft,border:`1.5px solid ${P.amber}`,
+                        borderTop:"none",borderRadius:"0 0 10px 10px",
+                        padding:"4px 12px 12px",marginTop:-2}}>
+                        {[
+                          { letter:"D", label:"Déplacement de la sonde",   detail:"Vérifier la position — Auscultation · Capno · RX",    color:"#DC2626" },
+                          { letter:"O", label:"Obstruction",                detail:"Sonde bouchée — Aspiration · Changement de sonde",    color:"#EA580C" },
+                          { letter:"P", label:"Pb pulmonaire",              detail:"Pneumothorax — Auscultation · FAST-écho thoracique",  color:"#D97706" },
+                          { letter:"É", label:"Équipement à vérifier",      detail:"Respirateur · Circuit · Connexions · O₂",            color:"#65A30D" },
+                          { letter:"E", label:"Estomac à vider",            detail:"SNG en aspiration · Décompression gastrique",         color:"#0891B2" },
+                        ].map((item,i)=>(
+                          <div key={item.letter} style={{
+                            display:"flex",alignItems:"flex-start",gap:10,
+                            padding:"8px 0",
+                            borderBottom: i<4 ? "1px solid #FDE68A" : "none"}}>
+                            <div style={{width:28,height:28,borderRadius:8,
+                              background:item.color,flexShrink:0,
+                              display:"flex",alignItems:"center",justifyContent:"center"}}>
+                              <span style={{fontSize:14,fontWeight:800,color:"#fff",fontFamily:mono}}>
+                                {item.letter}
+                              </span>
+                            </div>
+                            <div style={{minWidth:0}}>
+                              <p style={{margin:0,fontSize:13,fontWeight:600,color:"#78350F",lineHeight:1.3}}>
+                                {item.label}
+                              </p>
+                              <p style={{margin:"2px 0 0",fontSize:11,color:P.amberText,lineHeight:1.4}}>
+                                {item.detail}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {racsTabPed==="sedat" && (
+                <div style={{width:"100%"}}>
+                  {/* Encadré rappel doses calculées */}
+                  {localMat && (
+                    <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,
+                      borderRadius:10,padding:"10px 12px",marginBottom:12}}>
+                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:600,color:P.amberText,
+                        textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
+                        Doses sédation — {localPoids} kg · {localRow.age}
+                      </p>
+                      {/* Midazolam */}
+                      <div style={{marginBottom:8,paddingBottom:8,borderBottom:`1px solid color-mix(in srgb, ${P.amber} 20%, transparent)`}}>
+                        <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.amberText}}>
+                          Midazolam — 50 mg / 50 mL (1 mg/mL)
+                        </p>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 10px"}}>
+                          {[
+                            ["PSE 0,1 mg/kg/h", `${localMat.midPSE} mL/h`],
+                            ["Plage PSE",        `${localMat.midPSE}–${(localMat.midPSE*3).toFixed(1)} mL/h`],
+                          ].map(([l,v])=>(
+                            <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                              <span style={{fontSize:9,color:P.amberText}}>{l}</span>
+                              <span style={{fontSize:11,fontWeight:700,color:P.amberText,fontFamily:mono}}>{v}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <p style={{margin:"3px 0 0",fontSize:8,color:P.amberText,fontStyle:"italic"}}>
+                          Diluer 50 mg dans 50 mL NaCl 0,9% → 1 mg/mL
+                        </p>
+                      </div>
+                      {/* Sufentanyl */}
+                      <div>
+                        <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.amberText}}>
+                          Sufentanyl — 50 μg / 50 mL (1 μg/mL)
+                        </p>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 10px"}}>
+                          {[
+                            ["Bolus IVD 0,2 μg/kg", `${localMat.sufBolus} mL`],
+                            ["PSE 0,2 μg/kg/h",     `${localMat.sufPSE} mL/h`],
+                            ["Plage PSE",            `${localMat.sufPSE}–${(localMat.sufPSE*5).toFixed(1)} mL/h`],
+                          ].map(([l,v])=>(
+                            <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                              <span style={{fontSize:9,color:P.amberText}}>{l}</span>
+                              <span style={{fontSize:11,fontWeight:700,color:P.amberText,fontFamily:mono}}>{v}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <p style={{margin:"3px 0 0",fontSize:8,color:P.amberText,fontStyle:"italic"}}>
+                          Diluer 50 μg dans 50 mL NaCl 0,9% → 1 μg/mL
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Midazolam — champ vitesse + posologie calculée */}
+                  <div style={{background:P.surfaceAlt,borderRadius:10,padding:"10px",marginBottom:10}}>
+                    <p style={{margin:"0 0 6px",fontSize:9,fontWeight:500,color:P.textSoft,
+                      textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
+                      Midazolam — 50 mg / 50 mL (1 mg/mL)
+                    </p>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:7}}>
+                      <input type="number" inputMode="decimal" value={racsPed.midazolamV||""}
+                        onChange={e=>srp("midazolamV")(e.target.value)} placeholder={String(localMat?.midPSE||"")}
+                        style={{flex:1,minWidth:0,background:P.surface,border:`1.5px solid ${P.border}`,
+                          borderRadius:8,padding:"9px 4px",fontSize:15,color:P.text,fontFamily:mono,
+                          outline:"none",textAlign:"center",fontWeight:600,boxSizing:"border-box"}}
+                        onFocus={e=>e.target.style.borderColor=P.violet}
+                        onBlur={e=>e.target.style.borderColor=P.border}/>
+                      <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>mL/h</span>
+                    </div>
+                    {(()=>{
+                      const v=parseFloat(racsPed.midazolamV||""),ok=!isNaN(v)&&v>0,dose=ok?(v*1).toFixed(2):null;
+                      return (
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                          background:ok?P.violet+"22":P.borderSoft,borderRadius:7,padding:"7px 10px",
+                          border:`1.5px solid ${ok?P.violet:P.border}`}}>
+                          <span style={{fontSize:11,color:P.textSoft}}>→ Posologie</span>
+                          <span style={{fontSize:17,fontWeight:700,color:ok?P.violetText:P.textSoft,fontFamily:mono}}>
+                            {ok?`${dose} mg/h`:"—"}
+                          </span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Sufentanyl — champ vitesse + posologie calculée */}
+                  <div style={{background:P.surfaceAlt,borderRadius:10,padding:"10px"}}>
+                    <p style={{margin:"0 0 6px",fontSize:9,fontWeight:500,color:P.textSoft,
+                      textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
+                      Sufentanyl — 50 μg / 50 mL (1 μg/mL)
+                    </p>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:7}}>
+                      <input type="number" inputMode="decimal" value={racsPed.sufentaV||""}
+                        onChange={e=>srp("sufentaV")(e.target.value)} placeholder={String(localMat?.sufPSE||"")}
+                        style={{flex:1,minWidth:0,background:P.surface,border:`1.5px solid ${P.border}`,
+                          borderRadius:8,padding:"9px 4px",fontSize:15,color:P.text,fontFamily:mono,
+                          outline:"none",textAlign:"center",fontWeight:600,boxSizing:"border-box"}}
+                        onFocus={e=>e.target.style.borderColor=P.violet}
+                        onBlur={e=>e.target.style.borderColor=P.border}/>
+                      <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>mL/h</span>
+                    </div>
+                    {(()=>{
+                      const v=parseFloat(racsPed.sufentaV||""),ok=!isNaN(v)&&v>0,dose=ok?(v*1).toFixed(2):null;
+                      return (
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                          background:ok?P.violet+"22":P.borderSoft,borderRadius:7,padding:"7px 10px",
+                          border:`1.5px solid ${ok?P.violet:P.border}`}}>
+                          <span style={{fontSize:11,color:P.textSoft}}>→ Posologie</span>
+                          <span style={{fontSize:17,fontWeight:700,color:ok?P.violetText:P.textSoft,fontFamily:mono}}>
+                            {ok?`${dose} μg/h`:"—"}
+                          </span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* NIMBEX dans sédation */}
+                  {localMat && (
+                    <div style={{background:P.violetSoft,border:`1px solid color-mix(in srgb, ${P.violet} 27%, transparent)`,borderRadius:10,padding:"10px 12px"}}>
+                      <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.violetText}}>
+                        Nimbex <span style={{fontWeight:400,fontSize:9,color:P.violet,fontStyle:"italic"}}>Cisatracurium — Curare non dépolarisant</span>
+                      </p>
+                      <p style={{margin:"0 0 8px",fontSize:9,color:P.violetText,fontStyle:"italic"}}>
+                        {localPoids<20?"0,5 mg/mL — 10 mg dans 20 mL NaCl 0,9%":"PUR 2 mg/mL"}
+                      </p>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                        <div>
+                          <p style={{margin:"0 0 4px",fontSize:9,color:P.textSoft,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>1re dose (0,15 mg/kg)</p>
+                          <div style={{display:"flex",alignItems:"center",gap:5}}>
+                            <input type="number" inputMode="decimal"
+                              value={nimbex1Val !== "" ? nimbex1Val : String(localMat.nimbex1)}
+                              onChange={e=>setNimbex1Val(e.target.value)}
+                              style={{flex:1,minWidth:0,background:P.surface,border:`1.5px solid ${P.border}`,borderRadius:8,
+                                padding:"9px 4px",fontSize:16,color:P.text,fontFamily:mono,outline:"none",
+                                textAlign:"center",fontWeight:700,boxSizing:"border-box"}}
+                              onFocus={e=>{if(nimbex1Val==="")setNimbex1Val(String(localMat.nimbex1));e.target.style.borderColor=P.violet;}}
+                              onBlur={e=>e.target.style.borderColor=P.border}/>
+                            <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>mL</span>
+                          </div>
+                        </div>
+                        <div>
+                          <p style={{margin:"0 0 4px",fontSize:9,color:P.textSoft,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>2e dose à 20 min</p>
+                          <div style={{display:"flex",alignItems:"center",gap:5}}>
+                            <input type="number" inputMode="decimal"
+                              value={nimbex2Val !== "" ? nimbex2Val : String(localMat.nimbex2)}
+                              onChange={e=>setNimbex2Val(e.target.value)}
+                              style={{flex:1,minWidth:0,background:P.surface,border:`1.5px solid ${P.border}`,borderRadius:8,
+                                padding:"9px 4px",fontSize:16,color:P.text,fontFamily:mono,outline:"none",
+                                textAlign:"center",fontWeight:700,boxSizing:"border-box"}}
+                              onFocus={e=>{if(nimbex2Val==="")setNimbex2Val(String(localMat.nimbex2));e.target.style.borderColor=P.violet;}}
+                              onBlur={e=>e.target.style.borderColor=P.border}/>
+                            <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>mL</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {racsTabPed==="hemo" && (
+                <div style={{width:"100%"}}>
+                  {/* Encadré normes */}
+                  {localMat && (
+                    <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,borderRadius:10,padding:"10px 12px",marginBottom:12}}>
+                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:600,color:P.amberText,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
+                        Objectifs — {localPoids} kg · {localRow.age}
+                      </p>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 10px"}}>
+                        {[["FC",`≈ ${localMat.fcN} /min`],["PAS cible",`> ${localMat.pasN} mmHg`],["PAM hors TC",`> ${localMat.pamHTC} mmHg`],["PAM si TC",`> ${localMat.pamTC} mmHg`]].map(([l,v])=>(
+                          <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"1px 0"}}>
+                            <span style={{fontSize:10,color:P.amberText}}>{l}</span>
+                            <span style={{fontSize:12,fontWeight:700,color:P.amberText,fontFamily:mono}}>{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <p style={{margin:"5px 0 0",fontSize:8,color:P.amberText,fontStyle:"italic"}}>ACSOS : normotout · O₂/EtCO₂/Hb {">"} 7g/L · T°/Glycémie</p>
+                    </div>
+                  )}
+                  {/* TAs / TAd / FC — 3 colonnes compactes sans overflow, avec tendance */}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:4}}>
+                    {[["tas","TAs",P.rose,"up"],["tad","TAd",P.rose,"up"],["fc","FC",P.rose,"down"]].map(([k,l,a,goodDir])=>{
+                      const lastVal = hemoListPed.length > 0 ? hemoListPed[hemoListPed.length - 1][k] : null;
+                      return (
+                      <div key={k} style={{minWidth:0, position:"relative"}}>
+                        <p style={{margin:"0 0 3px",fontSize:9,fontWeight:500,color:P.textSoft,
+                          textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:mono}}>{l}</p>
+                        {lastVal != null && <TrendBadge current={racsPed[k]} last={lastVal} P={P} goodDir={goodDir} />}
+                        <input type="number" inputMode="decimal" value={racsPed[k]} onChange={e=>srp(k)(e.target.value)}
+                          style={{width:"100%",minWidth:0,background:P.surfaceAlt,border:`1.5px solid ${P.border}`,
+                            borderRadius:8,padding:"8px 2px",fontSize:14,color:P.text,fontFamily:mono,
+                            outline:"none",textAlign:"center",fontWeight:600,boxSizing:"border-box"}}
+                          onFocus={e=>e.target.style.borderColor=a} onBlur={e=>e.target.style.borderColor=P.border}/>
+                      </div>
+                      );
+                    })}
+                  </div>
+                  {hemoListPed.length > 0 && (
+                    <p style={{margin:"6px 0 10px",fontSize:9,color:P.textSoft,textAlign:"right",fontStyle:"italic"}}>
+                      vs dernière mesure enregistrée
+                    </p>
+                  )}
+                  {/* PAM calculée */}
+                  {(()=>{
+                    const sys=parseFloat(racsPed.tas),dia=parseFloat(racsPed.tad);
+                    const pam=(!isNaN(sys)&&!isNaN(dia)&&sys>0&&dia>0)?Math.round((sys+2*dia)/3):null;
+                    const pamOk=localMat&&pam!==null&&pam>=localMat.pamHTC;
+                    return (
+                      <div style={{marginBottom:14}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2}}>
+                          <span style={{fontSize:9,color:P.textSoft,fontFamily:mono,textTransform:"uppercase",letterSpacing:"0.08em"}}>PAM calculée</span>
+                          <span style={{fontSize:16,fontWeight:700,fontFamily:mono,color:pam!==null?(pamOk?P.greenText:P.roseText):P.textSoft}}>{pam!==null?`${pam} mmHg`:"—"}</span>
+                        </div>
+                        {pam!==null&&localMat&&(<p style={{margin:0,fontSize:9,color:P.textSoft,fontStyle:"italic"}}>Objectif hors TC {">"} {localMat.pamHTC} · si TC {">"} {localMat.pamTC} mmHg</p>)}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Graphique live — évolution TA/FC (mesures déjà enregistrées) */}
+                  {hemoListPed.length > 0 && (
+                    <div style={{background:P.surfaceAlt,borderRadius:12,padding:"10px 12px",marginBottom:14}}>
+                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:700,color:P.textMid,
+                        textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
+                        Évolution — {hemoListPed.length} mesure{hemoListPed.length>1?"s":""}
+                      </p>
+                      <HemoCurve hemoList={hemoListPed} amineList={[...amineListPed, ...vasoMarksPed]} P={P} mono={mono}
+                        refSec={events.find(e=>e.id==="rosc")?.sec||0} />
+                    </div>
+                  )}
+
+                  {/* Température — contrôle ciblé (ERC 2025 : prévention stricte de l'hyperthermie) */}
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
+                    background: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.roseSoft : P.amberSoft,
+                    border:`1px solid ${parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
+                    borderRadius:9, padding:"7px 10px" }}>
+                    <span style={{ fontSize:13, flexShrink:0 }}>🌡️</span>
+                    <input type="number" inputMode="decimal" step="0.1" value={racsPed.tempRacs}
+                      onChange={e => srp("tempRacs")(e.target.value)} placeholder="36,5"
+                      style={{ width:62,
+                        background:P.surface,
+                        border:`1px solid ${parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
+                        borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
+                        fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
+                        boxSizing:"border-box", flexShrink:0 }}
+                      onFocus={e => e.target.style.borderColor = P.amberText}
+                      onBlur={e  => e.target.style.borderColor = P.amber} />
+                    <span style={{ fontSize:12,
+                      color: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
+                      fontWeight:600, flexShrink:0 }}>°C</span>
+                    <span style={{ fontSize:10,
+                      color: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
+                      fontWeight: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? 700 : 400,
+                      lineHeight:1.3 }}>
+                      {parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5
+                        ? "⚠️ > 37,5 °C — hyperthermie à traiter"
+                        : "Objectif : éviter > 37,5 °C (72h)"}
+                    </span>
+                  </div>
+
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", margin:"-2px 0 10px" }}>
+                    {[["couverture","Couverture"],["actif","Refroidissement actif"]].map(([v, l]) => (
+                      <button key={v} onClick={() => setTempControlPed(v)}
+                        style={{ border:`1.5px solid ${tempModePed === v ? P.teal : P.border}`, background: tempModePed === v ? P.tealSoft : P.surface, color: tempModePed === v ? P.tealText : P.textMid,
+                          borderRadius:99, padding:"6px 11px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans }}>{l}</button>
+                    ))}
+                  </div>
+
+                  {/* Glycémie — ACSOS : éviter hypo/hyperglycémie */}
+                  {(() => {
+                    const g = parseFloat(String(racsPed.glycemie).replace(",","."));
+                    const out = !isNaN(g) && (g < 0.7 || g > 1.8);
+                    return (
+                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
+                        background: out ? P.roseSoft : P.amberSoft,
+                        border:`1px solid ${out ? P.rose : P.amber}`,
+                        borderRadius:9, padding:"7px 10px" }}>
+                        <span style={{ fontSize:13, flexShrink:0 }}>🩸</span>
+                        <input type="number" inputMode="decimal" step="0.01" value={racsPed.glycemie}
+                          onChange={e => srp("glycemie")(e.target.value)} placeholder="0,90"
+                          style={{ width:62, background:P.surface, border:`1px solid ${out ? P.rose : P.amber}`,
+                            borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
+                            fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
+                            boxSizing:"border-box", flexShrink:0 }}
+                          onFocus={e => e.target.style.borderColor = P.amberText}
+                          onBlur={e  => e.target.style.borderColor = P.amber} />
+                        <span style={{ fontSize:12, color: out ? P.roseText : P.amberText, fontWeight:600, flexShrink:0 }}>g/L</span>
+                        <span style={{ fontSize:10, color: out ? P.roseText : P.amberText,
+                          fontWeight: out ? 700 : 400, lineHeight:1.3 }}>
+                          {out ? "⚠️ Hors cible — corriger hypo/hyperglycémie" : "Objectif : 0,7-1,8 g/L (éviter hypo/hyper)"}
+                        </span>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Pupilles — examen neurologique rapide */}
+                  <div style={{ marginBottom:10 }}>
+                    <Lbl>Pupilles</Lbl>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                      {["Normales","Anormales","Non fait"].map(v => (
+                        <button key={v} onClick={() => {
+                            if (v === "Anormales") { setRacsPupillesExpandedPed(x => !x); return; }
+                            srp("pupilles")(v); setRacsPupillesExpandedPed(false);
+                          }}
+                          style={{ padding:"8px 4px", borderRadius:9, fontSize:10.5, fontWeight:600,
+                            border:`1.5px solid ${P.violet}`,
+                            background: (v==="Anormales" && racsPupillesExpandedPed) || (v!=="Anormales" && racsPed.pupilles===v) ? P.violet : P.surface,
+                            color: (v==="Anormales" && racsPupillesExpandedPed) || (v!=="Anormales" && racsPed.pupilles===v) ? "#fff" : P.violetText,
+                            cursor:"pointer", fontFamily:sans }}>
+                          {v}
+                        </button>
+                      ))}
+                    </div>
+                    {racsPed.pupilles && !["Normales","Non fait"].includes(racsPed.pupilles) && !racsPupillesExpandedPed && (
+                      <p style={{ margin:"6px 0 0", fontSize:10.5, color:P.violetText, fontWeight:700 }}>{racsPed.pupilles}</p>
+                    )}
+                    {racsPupillesExpandedPed && (
+                      <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:5 }}>
+                        {PUPILLES_DETAIL.map(({v,left,right}) => (
+                          <button key={v} onClick={() => { srp("pupilles")(v); setRacsPupillesExpandedPed(false); }}
+                            style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 11px",
+                              borderRadius:9, border:`1.5px solid ${P.border}`, background:P.surface,
+                              fontSize:11.5, fontWeight:600, color:P.text, cursor:"pointer",
+                              fontFamily:sans, textAlign:"left" }}>
+                            <PupilIcon left={left} right={right} />{v}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ADRÉNALINE IVSE — paliers de référence + paliers fins horodatés, reliés à la PAM */}
+                  {localMat && (
+                    <VasoPedPanel P={P} mono={mono} sans={sans} disp={disp} localMat={localMat} kg={localPoids}
+                      rate={adrVitesse} adrPalier={adrPalier} dil={adrDilEff} dilAuto={!adrDilPed}
+                      onDil={(v) => setAdrDilPed(v)} onDilReset={() => setAdrDilPed(null)}
+                      log={vasoLogPed} extra={vasoExtraPed} sec={sec} pamPts={pamPtsPed} livePam={livePamPed}
+                      onDebit={vasoDebitPed}
+                      onRefPalier={(i, v) => { setAdrPalier(i); vasoDebitPed("adr", "Adrénaline IVSE", String(v), getNow()); }}
+                      onAddExtra={(x) => setVasoExtraPed(prev => [...prev, { id:`v${Date.now()}`, rate:"", ...x }])}
+                      onDeleteExtra={(id) => setVasoExtraPed(prev => prev.filter(z => z.id !== id))}
+                      onDeleteLog={vasoDeleteLogPed} />
+                  )}
+
+                  {/* REMPLISSAGE — même composant que l'adulte */}
+                  <RemplissageVasculairePed racs={racsPed} setRacs={setRacsPed} localMat={localMat} />
+
+
+                  <p style={{margin:"4px 0 4px",fontSize:9,fontWeight:500,color:P.textSoft,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Autres thérapeutiques</p>
+                  <TArea value={racsPed.autresHemo||""} onChange={v=>srp("autresHemo")(v)} placeholder="Ex : Dobutamine, Vasopressine..." rows={2}/>
+                </div>
+              )}
+    </>
+  );
+
+  const buildRacsLogPed = () => {
+              const p=[];
+              // Ventilation — seulement si saisi
+              if(racsPed.fr)     p.push(`FR ${racsPed.fr}/min`);
+              if(racsPed.volume) p.push(`Vt ${racsPed.volume}mL`);
+              if(racsPed.pep)    p.push(`PEP ${racsPed.pep}cmH₂O`);
+              if(racsPed.sat)    p.push(`SpO₂ ${racsPed.sat}%`);
+              if(racsPed.fio2)   p.push(`FiO₂ ${racsPed.fio2}%`);
+              if(racsPed.capno)  p.push(`EtCO₂ ${racsPed.capno}mmHg`);
+              // Sédation — seulement si vitesse saisie
+              if(racsPed.midazolamV) p.push(`Midazolam ${racsPed.midazolamV}mL/h`);
+              if(racsPed.sufentaV)   p.push(`Sufentanyl ${racsPed.sufentaV}mL/h`);
+              // Nimbex — seulement si modifié par rapport à la valeur par défaut
+              if(nimbex1Val !== "" && localMat && nimbex1Val !== String(localMat.nimbex1))
+                p.push(`Nimbex 1re dose ${nimbex1Val}mL`);
+              else if(nimbex1Val !== "" && !localMat)
+                p.push(`Nimbex 1re dose ${nimbex1Val}mL`);
+              if(nimbex2Val !== "" && localMat && nimbex2Val !== String(localMat.nimbex2))
+                p.push(`Nimbex 2e dose ${nimbex2Val}mL`);
+              // Hémodynamique — seulement si saisi
+              if(racsPed.tas && racsPed.tad) p.push(`TA ${racsPed.tas}/${racsPed.tad}mmHg`);
+              if(racsPed.fc)  p.push(`FC ${racsPed.fc}/min`);
+              if(racsPed.tempRacs) p.push(`T° ${racsPed.tempRacs} °C`);
+              if(racsPed.pupilles) p.push(`Pupilles ${racsPed.pupilles}`);
+              // Amines — seulement si vitesse saisie
+              if(adrVitesse) {
+                const _ap = vasoUg(adrVitesse, adrDilEff, "mg");
+                p.push(`Adrénaline IVSE ${adrVitesse} mL/h${_ap != null ? ` (${sedFmt(_ap / 60 / localPoids, 3)} µg/kg/min · ${adrDilEff.qty}mg/${adrDilEff.vol}mL)` : ""}`);
+              }
+              vasoExtraPed.forEach(x => { const _p = sedPerHour(x.rate, x); if (mesNum(x.rate) > 0) p.push(`${x.name} ${x.rate} mL/h${_p != null ? ` → ${sedFmt(_p, 2)} ${x.unit}/h` : ""}`); });
+              if(tempModePed) p.push(`Température : ${tempModePed === "couverture" ? "couverture" : "refroidissement actif"}`);
+              // Remplissage pédiatrique
+              const totalRempli = (racsPed.remplissagesPed||[]).reduce((s,r)=>s+r.vol,0);
+              if(totalRempli > 0) p.push(`Remplissage total ${totalRempli}mL`);
+              // Remplissage — seulement si modifié
+              if(rempliVol !== "" && localMat && rempliVol !== String(localMat.rempliVol))
+                p.push(`Remplissage ${rempliVol}mL`);
+              if(rempliDebit !== "" && localMat && rempliDebit !== String(localMat.rempliDebit))
+                p.push(`Débit ${rempliDebit}mL/h`);
+              if(racsPed.autresHemo) p.push(racsPed.autresHemo);
+    return p.length ? `Post-RACS : ${p.join(" · ")}` : "Soins post-RACS initiés";
+  };
+  const commitRacsMesuresPed = () => {
+    const cur = { pas:racsPed.tas, pad:racsPed.tad, fc:racsPed.fc, sat:racsPed.sat, capno:racsPed.capno, fio2:racsPed.fio2, temp:racsPed.tempRacs, gly:racsPed.glycemie };
+    const last = carryVals(mesuresPed), chg = {};
+    MES_KEYS.forEach(k => {
+      if (!mesHas(cur[k]) || mesNum(cur[k]) == null) return;
+      const v = String(cur[k]).replace(",", ".");
+      if (v !== String(last[k] ?? "")) chg[k] = v;
+    });
+    if (Object.keys(chg).length) saveMesurePed(chg, getNow());
+    commitVentLogPed();
+  };
+  const racsLogRefPed = useRef("");
+  const flushRacsLogPed = () => {
+    const t = buildRacsLogPed();
+    if (!t || t === "Soins post-RACS initiés" || t === racsLogRefPed.current) return;
+    racsLogRefPed.current = t;
+    setEvents(prev => [...prev, { id:"racs_soins", label:t, icon:"🫀", time:getNow(), sec }]);
+  };
+  const closeRacsPagePed = () => { commitRacsMesuresPed(); flushRacsLogPed(); setShowRacsPagePed(false); };
+  useEffect(() => {
+    if (!showRacsPagePed) return;
+    const t = setTimeout(commitRacsMesuresPed, 3000);
+    return () => clearTimeout(t);
+  }, [racsPed.tas, racsPed.tad, racsPed.fc, racsPed.sat, racsPed.capno, racsPed.fio2, racsPed.tempRacs, racsPed.glycemie, racsPed.volume, racsPed.fr, racsPed.pep, showRacsPagePed]); // eslint-disable-line react-hooks/exhaustive-deps
+  const openSoinsPed = () => { if (isVLI && !vliUnlockedPed) setModalRacsPed(true); else setShowRacsPagePed(true); };
+  const fmRatePed = v => String(v).replace(".", ",");
+  const lastLogPed = (drug) => [...vasoLogPed].filter(e => e.drug === drug).sort((a, b) => a.sec - b.sec).pop();
+  const enCoursListPed = [
+    mesNum(adrVitesse) > 0 && { k:"adr", label:"Adrénaline", v:`${fmRatePed(adrVitesse)} mL/h`, sec:lastLogPed("adr")?.sec, tone:"rose" },
+    ...vasoExtraPed.filter(x => mesNum(x.rate) > 0).map(x => ({ k:x.id, label:x.name, v:`${fmRatePed(x.rate)} mL/h`, sec:lastLogPed(x.id)?.sec, tone:"rose" })),
+    mesNum(racsPed.midazolamV) > 0 && { k:"mid", label:"Midazolam", v:`${fmRatePed(racsPed.midazolamV)} mL/h`, tone:"violet" },
+    mesNum(racsPed.sufentaV) > 0 && { k:"suf", label:"Sufentanyl", v:`${fmRatePed(racsPed.sufentaV)} mL/h`, tone:"violet" },
+    (racsPed.fio2 || racsPed.fr || racsPed.pep) && { k:"vent", label:"Ventilation", v: racsPed.fio2 ? `FiO₂ ${racsPed.fio2} %` : racsPed.fr ? `FR ${racsPed.fr}` : `PEP ${racsPed.pep}`,
+      sub:[racsPed.fr && `FR ${racsPed.fr}`, racsPed.pep && `PEP ${racsPed.pep}`].filter(Boolean).join(" · ") || undefined, tone:"teal" },
+  ].filter(Boolean);
+  const bannerPamPed = livePamPed != null ? livePamPed : (pamPtsPed.length ? pamPtsPed[pamPtsPed.length - 1].pam : null);
+  const bannerTextPed0 = [bannerPamPed != null && `PAM ${bannerPamPed}`, mesNum(adrVitesse) > 0 && `ADR ${fmRatePed(adrVitesse)} mL/h`, mesNum(racsPed.sat) != null && `SpO₂ ${racsPed.sat}`].filter(Boolean).join(" · ") || "Constantes à renseigner";
+  const bannerTextPed = bannerTextPed0 + (remPed.due ? " · ⏱ REMESURE" : "");
+  const soinsSubPed = {
+    ventil: [racsPed.volume && `Vt ${racsPed.volume}`, racsPed.fr && `FR ${racsPed.fr}`, racsPed.pep && `PEP ${racsPed.pep}`, racsPed.fio2 && `FiO₂ ${racsPed.fio2}`].filter(Boolean).join(" · "),
+    sedat: [mesNum(racsPed.midazolamV) > 0 && "Midazolam", mesNum(racsPed.sufentaV) > 0 && "Sufentanyl", nimbex1Val !== "" && "Nimbex"].filter(Boolean).join(" · "),
+    hemo: [mesNum(adrVitesse) > 0 && "Adrénaline IVSE", ...vasoExtraPed.filter(x => mesNum(x.rate) > 0).map(x => x.name), (racsPed.remplissagesPed || []).reduce((s, r) => s + (r.vol || 0), 0) > 0 && `Remplissage ${(racsPed.remplissagesPed || []).reduce((s, r) => s + (r.vol || 0), 0)} mL`].filter(Boolean).join(" · "),
+  };
+
 
   return (
     <div style={{ background:P.bg, minHeight:"100vh", fontFamily:sans, paddingBottom:70,
@@ -4258,614 +5205,43 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
         </div>
       )}
 
-      {modalRacsPed && !(isVLI && !vliUnlockedPed) && (
-        <div style={{position:"fixed",inset:0,background:"rgba(28,43,58,0.6)",zIndex:80,
-          display:"flex",flexDirection:"column",justifyContent:"flex-end",backdropFilter:"blur(2px)"}}>
-          <div onClick={e=>e.stopPropagation()}
-            style={{background:P.surface,width:"100%",borderRadius:"20px 20px 0 0",
-              padding:"20px 16px 40px",boxShadow:"0 -12px 40px rgba(0,0,0,0.18)",
-              fontFamily:sans,maxHeight:"90vh",display:"flex",flexDirection:"column"}}>
-            <div style={{display:"flex",alignItems:"center",gap:11,marginBottom:16,flexShrink:0}}>
-              <div style={{width:42,height:42,borderRadius:13,
-                background:`linear-gradient(135deg, ${P.green}, ${P.greenText})`,
-                display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,
-                boxShadow:`0 5px 16px color-mix(in srgb, ${P.green} 32%, transparent)`}}>🫀</div>
-              <div>
-                <p style={{margin:"0 0 1px",fontSize:9.5,fontWeight:700,color:P.green,
-                  textTransform:"uppercase",letterSpacing:"0.14em",fontFamily:mono}}>Après RACS · Pédiatrie</p>
-                <p style={{margin:0,fontSize:18,fontWeight:800,color:P.text,fontFamily:disp,letterSpacing:"-0.01em",lineHeight:1}}>Soins post-RACS</p>
-              </div>
-              <button onClick={()=>setModalRacsPed(false)}
-                style={{marginLeft:"auto",background:"transparent",border:"none",color:P.textSoft,fontSize:20,cursor:"pointer"}}>×</button>
-            </div>
-            {/* Onglets */}
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,
-              background:P.surfaceAlt,borderRadius:12,padding:4,marginBottom:14,flexShrink:0}}>
-              {[{id:"ventil",label:"Ventil.",icon:"🌬️"},{id:"sedat",label:"Sédation",icon:"💊"},{id:"hemo",label:"Hémo.",icon:"💓"}].map(t=>(
-                <button key={t.id} onClick={()=>setRacsTabPed(t.id)}
-                  style={{padding:"9px 4px",borderRadius:9,border:"none",
-                    background:racsTabPed===t.id?P.greenSoft:"transparent",
-                    color:racsTabPed===t.id?P.greenText:P.textSoft,
-                    fontSize:11,fontWeight:racsTabPed===t.id?800:600,cursor:"pointer",
-                    fontFamily:racsTabPed===t.id?disp:sans,
-                    boxShadow:racsTabPed===t.id?`inset 0 0 0 1px color-mix(in srgb, ${P.green} 30%, transparent)`:"none",
-                    display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
-                  <span>{t.icon}</span>{t.label}
-                </button>
-              ))}
-            </div>
-            <div style={{flex:1,overflowY:"auto"}}>
-              {racsTabPed==="ventil" && (
-                <div style={{width:"100%"}}>
-                  {/* Encadré normes ventilation */}
-                  {localMat && (
-                    <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,
-                      borderRadius:10,padding:"10px 12px",marginBottom:12}}>
-                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:600,color:P.amberText,
-                        textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
-                        Objectifs ventilation — {localPoids} kg · {localRow.age}
-                      </p>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 10px"}}>
-                        {[
-                          ["Vt cible",  `${localMat.vtR} mL`],
-                          ["FR",        `${localMat.frR} /min`],
-                          ["I/E",       localMat.ie],
-                          ["PEEP",      `${localMat.peep} cmH₂O`],
-                          ["FiO₂",      "100% puis ↓"],
-                          ["SpO₂",      "94–98%"],
-                          ["EtCO₂",     "35–40 mmHg"],
-                        ].map(([l,v])=>(
-                          <div key={l} style={{display:"flex",justifyContent:"space-between",
-                            alignItems:"center",padding:"1px 0"}}>
-                            <span style={{fontSize:10,color:P.amberText}}>{l}</span>
-                            <span style={{fontSize:11,fontWeight:700,color:P.amberText,fontFamily:mono}}>{v}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <p style={{margin:"6px 0 0",fontSize:8,color:P.amberText,fontStyle:"italic",lineHeight:1.4}}>
-                        {localMat.p <= 8
-                          ? "< 8 kg : ventilation pression contrôlée · débuter 20-25 cmH₂O"
-                          : "> 8 kg : ventilation volume contrôlé · gonfler ballonnet sonde IOT"}
-                      </p>
-                    </div>
-                  )}
-                  {[
-                    [["fr","FR","/min"],["volume","Vol. Vt","mL"]],
-                    [["pep","PEP","cmH₂O"],["fio2","FiO₂","%"]],
-                    [["sat","SpO₂","%"],["capno","EtCO₂","mmHg"]],
-                  ].map((pair,ri)=>(
-                    <div key={ri} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
-                      {pair.map(([k,l,u])=>{
-                        const isSpo2 = k === "sat";
-                        const isEtco2 = k === "capno";
-                        const val = parseFloat(String(racsPed[k]).replace(",","."));
-                        const spo2Out = isSpo2 && !isNaN(val) && (val < 94 || val > 98);
-                        const etco2Out = isEtco2 && !isNaN(val) && (val < 35 || val > 45);
-                        const alertColor = spo2Out || etco2Out ? P.rose : isEtco2 && !isNaN(val) ? P.green : null;
-                        const lastEtco2 = isEtco2 && etco2ListPed.length > 0 ? etco2ListPed[etco2ListPed.length-1].val : null;
-                        return (
-                        <div key={k} style={{minWidth:0, position:"relative"}}>
-                          <p style={{margin:"0 0 4px",fontSize:9,fontWeight:500,color:P.textSoft,
-                            textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>{l}</p>
-                          {isEtco2 && lastEtco2 != null && <TrendBadge current={racsPed.capno} last={lastEtco2} P={P} goodDir="up" />}
-                          <div style={{display:"flex",alignItems:"center",gap:4}}>
-                            <input type="number" inputMode="decimal" value={racsPed[k]} onChange={e=>srp(k)(e.target.value)}
-                              style={{flex:1,minWidth:0,
-                                background: alertColor ? (alertColor===P.rose?P.roseSoft:P.greenSoft) : P.surfaceAlt,
-                                border:`1.5px solid ${alertColor || P.border}`,
-                                borderRadius:8,padding:"9px 4px",fontSize:15,
-                                color: alertColor ? (alertColor===P.rose?P.roseText:P.greenText) : P.text,
-                                fontFamily:mono, outline:"none",textAlign:"center",
-                                fontWeight: alertColor ? 800 : 600, boxSizing:"border-box"}}
-                              onFocus={e=>e.target.style.borderColor=P.blue}
-                              onBlur={e=>e.target.style.borderColor=alertColor || P.border}/>
-                            <span style={{fontSize:9, color: alertColor ? (alertColor===P.rose?P.roseText:P.greenText) : P.textSoft,
-                              flexShrink:0, whiteSpace:"nowrap", fontWeight: alertColor ? 700 : 400}}>{u}</span>
-                          </div>
-                        </div>
-                        );
-                      })}
-                    </div>
-                  ))}
-                  {(() => {
-                    const spo2 = parseFloat(String(racsPed.sat).replace(",","."));
-                    const spo2Out = !isNaN(spo2) && (spo2 < 94 || spo2 > 98);
-                    const etco2 = parseFloat(String(racsPed.capno).replace(",","."));
-                    const etco2Out = !isNaN(etco2) && (etco2 < 35 || etco2 > 45);
-                    if (spo2Out) return <p style={{margin:"2px 0 10px",fontSize:9.5,color:P.roseText,fontWeight:700,textAlign:"right"}}>⚠️ SpO₂ {spo2>98?"> 98% — risque d'hyperoxie":"< 94% — hypoxie"}</p>;
-                    if (etco2Out) return <p style={{margin:"2px 0 10px",fontSize:9.5,color:P.roseText,fontWeight:700,textAlign:"right"}}>⚠️ EtCO₂ hors cible (35–45 mmHg)</p>;
-                    return <p style={{margin:"2px 0 10px",fontSize:9,color:P.textSoft,fontStyle:"italic",textAlign:"right"}}>SpO₂ 94–98 % · EtCO₂ 35–45 mmHg</p>;
-                  })()}
 
-                  {/* Graphique live EtCO2 */}
-                  {etco2ListPed.length > 0 && (
-                    <div style={{background:P.surfaceAlt,borderRadius:12,padding:"10px 12px",marginBottom:12}}>
-                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:700,color:P.textMid,
-                        textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
-                        EtCO₂ — {etco2ListPed.length} mesure{etco2ListPed.length>1?"s":""}
-                      </p>
-                      <Etco2Curve data={etco2ListPed} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />
-                    </div>
-                  )}
-
-                  {/* Accordéon DOPÉE */}
-                  <div style={{marginTop:12}}>
-                    <button onClick={()=>setShowDopee(v=>!v)}
-                      style={{width:"100%",background:showDopee?P.amberSoft:P.amberSoft,
-                        border:`1.5px solid ${P.amber}`,
-                        borderRadius:10,padding:"10px 14px",cursor:"pointer",fontFamily:sans,
-                        display:"flex",alignItems:"center",justifyContent:"space-between",
-                        transition:"all 0.15s"}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8}}>
-                        <span style={{fontSize:16}}>⚠️</span>
-                        <div style={{textAlign:"left"}}>
-                          <p style={{margin:0,fontSize:13,fontWeight:600,color:P.amberText}}>
-                            Vérifier DOPÉE
-                          </p>
-                          <p style={{margin:0,fontSize:9,color:P.amberText,fontStyle:"italic"}}>
-                            Problème de ventilation
-                          </p>
-                        </div>
-                      </div>
-                      <span style={{fontSize:12,color:P.amberText,fontWeight:600}}>
-                        {showDopee?"▲":"▼"}
-                      </span>
-                    </button>
-
-                    {showDopee && (
-                      <div style={{background:P.amberSoft,border:`1.5px solid ${P.amber}`,
-                        borderTop:"none",borderRadius:"0 0 10px 10px",
-                        padding:"4px 12px 12px",marginTop:-2}}>
-                        {[
-                          { letter:"D", label:"Déplacement de la sonde",   detail:"Vérifier la position — Auscultation · Capno · RX",    color:"#DC2626" },
-                          { letter:"O", label:"Obstruction",                detail:"Sonde bouchée — Aspiration · Changement de sonde",    color:"#EA580C" },
-                          { letter:"P", label:"Pb pulmonaire",              detail:"Pneumothorax — Auscultation · FAST-écho thoracique",  color:"#D97706" },
-                          { letter:"É", label:"Équipement à vérifier",      detail:"Respirateur · Circuit · Connexions · O₂",            color:"#65A30D" },
-                          { letter:"E", label:"Estomac à vider",            detail:"SNG en aspiration · Décompression gastrique",         color:"#0891B2" },
-                        ].map((item,i)=>(
-                          <div key={item.letter} style={{
-                            display:"flex",alignItems:"flex-start",gap:10,
-                            padding:"8px 0",
-                            borderBottom: i<4 ? "1px solid #FDE68A" : "none"}}>
-                            <div style={{width:28,height:28,borderRadius:8,
-                              background:item.color,flexShrink:0,
-                              display:"flex",alignItems:"center",justifyContent:"center"}}>
-                              <span style={{fontSize:14,fontWeight:800,color:"#fff",fontFamily:mono}}>
-                                {item.letter}
-                              </span>
-                            </div>
-                            <div style={{minWidth:0}}>
-                              <p style={{margin:0,fontSize:13,fontWeight:600,color:"#78350F",lineHeight:1.3}}>
-                                {item.label}
-                              </p>
-                              <p style={{margin:"2px 0 0",fontSize:11,color:P.amberText,lineHeight:1.4}}>
-                                {item.detail}
-                              </p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-              {racsTabPed==="sedat" && (
-                <div style={{width:"100%"}}>
-                  {/* Encadré rappel doses calculées */}
-                  {localMat && (
-                    <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,
-                      borderRadius:10,padding:"10px 12px",marginBottom:12}}>
-                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:600,color:P.amberText,
-                        textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
-                        Doses sédation — {localPoids} kg · {localRow.age}
-                      </p>
-                      {/* Midazolam */}
-                      <div style={{marginBottom:8,paddingBottom:8,borderBottom:`1px solid color-mix(in srgb, ${P.amber} 20%, transparent)`}}>
-                        <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.amberText}}>
-                          Midazolam — 50 mg / 50 mL (1 mg/mL)
-                        </p>
-                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 10px"}}>
-                          {[
-                            ["PSE 0,1 mg/kg/h", `${localMat.midPSE} mL/h`],
-                            ["Plage PSE",        `${localMat.midPSE}–${(localMat.midPSE*3).toFixed(1)} mL/h`],
-                          ].map(([l,v])=>(
-                            <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                              <span style={{fontSize:9,color:P.amberText}}>{l}</span>
-                              <span style={{fontSize:11,fontWeight:700,color:P.amberText,fontFamily:mono}}>{v}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <p style={{margin:"3px 0 0",fontSize:8,color:P.amberText,fontStyle:"italic"}}>
-                          Diluer 50 mg dans 50 mL NaCl 0,9% → 1 mg/mL
-                        </p>
-                      </div>
-                      {/* Sufentanyl */}
-                      <div>
-                        <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.amberText}}>
-                          Sufentanyl — 50 μg / 50 mL (1 μg/mL)
-                        </p>
-                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 10px"}}>
-                          {[
-                            ["Bolus IVD 0,2 μg/kg", `${localMat.sufBolus} mL`],
-                            ["PSE 0,2 μg/kg/h",     `${localMat.sufPSE} mL/h`],
-                            ["Plage PSE",            `${localMat.sufPSE}–${(localMat.sufPSE*5).toFixed(1)} mL/h`],
-                          ].map(([l,v])=>(
-                            <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                              <span style={{fontSize:9,color:P.amberText}}>{l}</span>
-                              <span style={{fontSize:11,fontWeight:700,color:P.amberText,fontFamily:mono}}>{v}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <p style={{margin:"3px 0 0",fontSize:8,color:P.amberText,fontStyle:"italic"}}>
-                          Diluer 50 μg dans 50 mL NaCl 0,9% → 1 μg/mL
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Midazolam — champ vitesse + posologie calculée */}
-                  <div style={{background:P.surfaceAlt,borderRadius:10,padding:"10px",marginBottom:10}}>
-                    <p style={{margin:"0 0 6px",fontSize:9,fontWeight:500,color:P.textSoft,
-                      textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
-                      Midazolam — 50 mg / 50 mL (1 mg/mL)
-                    </p>
-                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:7}}>
-                      <input type="number" inputMode="decimal" value={racsPed.midazolamV||""}
-                        onChange={e=>srp("midazolamV")(e.target.value)} placeholder={String(localMat?.midPSE||"")}
-                        style={{flex:1,minWidth:0,background:P.surface,border:`1.5px solid ${P.border}`,
-                          borderRadius:8,padding:"9px 4px",fontSize:15,color:P.text,fontFamily:mono,
-                          outline:"none",textAlign:"center",fontWeight:600,boxSizing:"border-box"}}
-                        onFocus={e=>e.target.style.borderColor=P.violet}
-                        onBlur={e=>e.target.style.borderColor=P.border}/>
-                      <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>mL/h</span>
-                    </div>
-                    {(()=>{
-                      const v=parseFloat(racsPed.midazolamV||""),ok=!isNaN(v)&&v>0,dose=ok?(v*1).toFixed(2):null;
-                      return (
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-                          background:ok?P.violet+"22":P.borderSoft,borderRadius:7,padding:"7px 10px",
-                          border:`1.5px solid ${ok?P.violet:P.border}`}}>
-                          <span style={{fontSize:11,color:P.textSoft}}>→ Posologie</span>
-                          <span style={{fontSize:17,fontWeight:700,color:ok?P.violetText:P.textSoft,fontFamily:mono}}>
-                            {ok?`${dose} mg/h`:"—"}
-                          </span>
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* Sufentanyl — champ vitesse + posologie calculée */}
-                  <div style={{background:P.surfaceAlt,borderRadius:10,padding:"10px"}}>
-                    <p style={{margin:"0 0 6px",fontSize:9,fontWeight:500,color:P.textSoft,
-                      textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
-                      Sufentanyl — 50 μg / 50 mL (1 μg/mL)
-                    </p>
-                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:7}}>
-                      <input type="number" inputMode="decimal" value={racsPed.sufentaV||""}
-                        onChange={e=>srp("sufentaV")(e.target.value)} placeholder={String(localMat?.sufPSE||"")}
-                        style={{flex:1,minWidth:0,background:P.surface,border:`1.5px solid ${P.border}`,
-                          borderRadius:8,padding:"9px 4px",fontSize:15,color:P.text,fontFamily:mono,
-                          outline:"none",textAlign:"center",fontWeight:600,boxSizing:"border-box"}}
-                        onFocus={e=>e.target.style.borderColor=P.violet}
-                        onBlur={e=>e.target.style.borderColor=P.border}/>
-                      <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>mL/h</span>
-                    </div>
-                    {(()=>{
-                      const v=parseFloat(racsPed.sufentaV||""),ok=!isNaN(v)&&v>0,dose=ok?(v*1).toFixed(2):null;
-                      return (
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-                          background:ok?P.violet+"22":P.borderSoft,borderRadius:7,padding:"7px 10px",
-                          border:`1.5px solid ${ok?P.violet:P.border}`}}>
-                          <span style={{fontSize:11,color:P.textSoft}}>→ Posologie</span>
-                          <span style={{fontSize:17,fontWeight:700,color:ok?P.violetText:P.textSoft,fontFamily:mono}}>
-                            {ok?`${dose} μg/h`:"—"}
-                          </span>
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* NIMBEX dans sédation */}
-                  {localMat && (
-                    <div style={{background:P.violetSoft,border:`1px solid color-mix(in srgb, ${P.violet} 27%, transparent)`,borderRadius:10,padding:"10px 12px"}}>
-                      <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.violetText}}>
-                        Nimbex <span style={{fontWeight:400,fontSize:9,color:P.violet,fontStyle:"italic"}}>Cisatracurium — Curare non dépolarisant</span>
-                      </p>
-                      <p style={{margin:"0 0 8px",fontSize:9,color:P.violetText,fontStyle:"italic"}}>
-                        {localPoids<20?"0,5 mg/mL — 10 mg dans 20 mL NaCl 0,9%":"PUR 2 mg/mL"}
-                      </p>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                        <div>
-                          <p style={{margin:"0 0 4px",fontSize:9,color:P.textSoft,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>1re dose (0,15 mg/kg)</p>
-                          <div style={{display:"flex",alignItems:"center",gap:5}}>
-                            <input type="number" inputMode="decimal"
-                              value={nimbex1Val !== "" ? nimbex1Val : String(localMat.nimbex1)}
-                              onChange={e=>setNimbex1Val(e.target.value)}
-                              style={{flex:1,minWidth:0,background:P.surface,border:`1.5px solid ${P.border}`,borderRadius:8,
-                                padding:"9px 4px",fontSize:16,color:P.text,fontFamily:mono,outline:"none",
-                                textAlign:"center",fontWeight:700,boxSizing:"border-box"}}
-                              onFocus={e=>{if(nimbex1Val==="")setNimbex1Val(String(localMat.nimbex1));e.target.style.borderColor=P.violet;}}
-                              onBlur={e=>e.target.style.borderColor=P.border}/>
-                            <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>mL</span>
-                          </div>
-                        </div>
-                        <div>
-                          <p style={{margin:"0 0 4px",fontSize:9,color:P.textSoft,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>2e dose à 20 min</p>
-                          <div style={{display:"flex",alignItems:"center",gap:5}}>
-                            <input type="number" inputMode="decimal"
-                              value={nimbex2Val !== "" ? nimbex2Val : String(localMat.nimbex2)}
-                              onChange={e=>setNimbex2Val(e.target.value)}
-                              style={{flex:1,minWidth:0,background:P.surface,border:`1.5px solid ${P.border}`,borderRadius:8,
-                                padding:"9px 4px",fontSize:16,color:P.text,fontFamily:mono,outline:"none",
-                                textAlign:"center",fontWeight:700,boxSizing:"border-box"}}
-                              onFocus={e=>{if(nimbex2Val==="")setNimbex2Val(String(localMat.nimbex2));e.target.style.borderColor=P.violet;}}
-                              onBlur={e=>e.target.style.borderColor=P.border}/>
-                            <span style={{fontSize:9,color:P.textSoft,flexShrink:0}}>mL</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-              {racsTabPed==="hemo" && (
-                <div style={{width:"100%"}}>
-                  {/* Encadré normes */}
-                  {localMat && (
-                    <div style={{background:P.amberSoft,border:`1px solid color-mix(in srgb, ${P.amber} 27%, transparent)`,borderRadius:10,padding:"10px 12px",marginBottom:12}}>
-                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:600,color:P.amberText,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
-                        Objectifs — {localPoids} kg · {localRow.age}
-                      </p>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 10px"}}>
-                        {[["FC",`≈ ${localMat.fcN} /min`],["PAS cible",`> ${localMat.pasN} mmHg`],["PAM hors TC",`> ${localMat.pamHTC} mmHg`],["PAM si TC",`> ${localMat.pamTC} mmHg`]].map(([l,v])=>(
-                          <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"1px 0"}}>
-                            <span style={{fontSize:10,color:P.amberText}}>{l}</span>
-                            <span style={{fontSize:12,fontWeight:700,color:P.amberText,fontFamily:mono}}>{v}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <p style={{margin:"5px 0 0",fontSize:8,color:P.amberText,fontStyle:"italic"}}>ACSOS : normotout · O₂/EtCO₂/Hb {">"} 7g/L · T°/Glycémie</p>
-                    </div>
-                  )}
-                  {/* TAs / TAd / FC — 3 colonnes compactes sans overflow, avec tendance */}
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:4}}>
-                    {[["tas","TAs",P.rose,"up"],["tad","TAd",P.rose,"up"],["fc","FC",P.rose,"down"]].map(([k,l,a,goodDir])=>{
-                      const lastVal = hemoListPed.length > 0 ? hemoListPed[hemoListPed.length - 1][k] : null;
-                      return (
-                      <div key={k} style={{minWidth:0, position:"relative"}}>
-                        <p style={{margin:"0 0 3px",fontSize:9,fontWeight:500,color:P.textSoft,
-                          textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:mono}}>{l}</p>
-                        {lastVal != null && <TrendBadge current={racsPed[k]} last={lastVal} P={P} goodDir={goodDir} />}
-                        <input type="number" inputMode="decimal" value={racsPed[k]} onChange={e=>srp(k)(e.target.value)}
-                          style={{width:"100%",minWidth:0,background:P.surfaceAlt,border:`1.5px solid ${P.border}`,
-                            borderRadius:8,padding:"8px 2px",fontSize:14,color:P.text,fontFamily:mono,
-                            outline:"none",textAlign:"center",fontWeight:600,boxSizing:"border-box"}}
-                          onFocus={e=>e.target.style.borderColor=a} onBlur={e=>e.target.style.borderColor=P.border}/>
-                      </div>
-                      );
-                    })}
-                  </div>
-                  {hemoListPed.length > 0 && (
-                    <p style={{margin:"6px 0 10px",fontSize:9,color:P.textSoft,textAlign:"right",fontStyle:"italic"}}>
-                      vs dernière mesure enregistrée
-                    </p>
-                  )}
-                  {/* PAM calculée */}
-                  {(()=>{
-                    const sys=parseFloat(racsPed.tas),dia=parseFloat(racsPed.tad);
-                    const pam=(!isNaN(sys)&&!isNaN(dia)&&sys>0&&dia>0)?Math.round((sys+2*dia)/3):null;
-                    const pamOk=localMat&&pam!==null&&pam>=localMat.pamHTC;
-                    return (
-                      <div style={{marginBottom:14}}>
-                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2}}>
-                          <span style={{fontSize:9,color:P.textSoft,fontFamily:mono,textTransform:"uppercase",letterSpacing:"0.08em"}}>PAM calculée</span>
-                          <span style={{fontSize:16,fontWeight:700,fontFamily:mono,color:pam!==null?(pamOk?P.greenText:P.roseText):P.textSoft}}>{pam!==null?`${pam} mmHg`:"—"}</span>
-                        </div>
-                        {pam!==null&&localMat&&(<p style={{margin:0,fontSize:9,color:P.textSoft,fontStyle:"italic"}}>Objectif hors TC {">"} {localMat.pamHTC} · si TC {">"} {localMat.pamTC} mmHg</p>)}
-                      </div>
-                    );
-                  })()}
-
-                  {/* Graphique live — évolution TA/FC (mesures déjà enregistrées) */}
-                  {hemoListPed.length > 0 && (
-                    <div style={{background:P.surfaceAlt,borderRadius:12,padding:"10px 12px",marginBottom:14}}>
-                      <p style={{margin:"0 0 6px",fontSize:9,fontWeight:700,color:P.textMid,
-                        textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>
-                        Évolution — {hemoListPed.length} mesure{hemoListPed.length>1?"s":""}
-                      </p>
-                      <HemoCurve hemoList={hemoListPed} amineList={amineListPed} P={P} mono={mono}
-                        refSec={events.find(e=>e.id==="rosc")?.sec||0} />
-                    </div>
-                  )}
-
-                  {/* Température — contrôle ciblé (ERC 2025 : prévention stricte de l'hyperthermie) */}
-                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
-                    background: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.roseSoft : P.amberSoft,
-                    border:`1px solid ${parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
-                    borderRadius:9, padding:"7px 10px" }}>
-                    <span style={{ fontSize:13, flexShrink:0 }}>🌡️</span>
-                    <input type="number" inputMode="decimal" step="0.1" value={racsPed.tempRacs}
-                      onChange={e => srp("tempRacs")(e.target.value)} placeholder="36,5"
-                      style={{ width:62,
-                        background:P.surface,
-                        border:`1px solid ${parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
-                        borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
-                        fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
-                        boxSizing:"border-box", flexShrink:0 }}
-                      onFocus={e => e.target.style.borderColor = P.amberText}
-                      onBlur={e  => e.target.style.borderColor = P.amber} />
-                    <span style={{ fontSize:12,
-                      color: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
-                      fontWeight:600, flexShrink:0 }}>°C</span>
-                    <span style={{ fontSize:10,
-                      color: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
-                      fontWeight: parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5 ? 700 : 400,
-                      lineHeight:1.3 }}>
-                      {parseFloat(String(racsPed.tempRacs).replace(",",".")) > 37.5
-                        ? "⚠️ > 37,5 °C — hyperthermie à traiter"
-                        : "Objectif : éviter > 37,5 °C (72h)"}
-                    </span>
-                  </div>
-
-                  {/* Glycémie — ACSOS : éviter hypo/hyperglycémie */}
-                  {(() => {
-                    const g = parseFloat(String(racsPed.glycemie).replace(",","."));
-                    const out = !isNaN(g) && (g < 0.7 || g > 1.8);
-                    return (
-                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
-                        background: out ? P.roseSoft : P.amberSoft,
-                        border:`1px solid ${out ? P.rose : P.amber}`,
-                        borderRadius:9, padding:"7px 10px" }}>
-                        <span style={{ fontSize:13, flexShrink:0 }}>🩸</span>
-                        <input type="number" inputMode="decimal" step="0.01" value={racsPed.glycemie}
-                          onChange={e => srp("glycemie")(e.target.value)} placeholder="0,90"
-                          style={{ width:62, background:P.surface, border:`1px solid ${out ? P.rose : P.amber}`,
-                            borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
-                            fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
-                            boxSizing:"border-box", flexShrink:0 }}
-                          onFocus={e => e.target.style.borderColor = P.amberText}
-                          onBlur={e  => e.target.style.borderColor = P.amber} />
-                        <span style={{ fontSize:12, color: out ? P.roseText : P.amberText, fontWeight:600, flexShrink:0 }}>g/L</span>
-                        <span style={{ fontSize:10, color: out ? P.roseText : P.amberText,
-                          fontWeight: out ? 700 : 400, lineHeight:1.3 }}>
-                          {out ? "⚠️ Hors cible — corriger hypo/hyperglycémie" : "Objectif : 0,7-1,8 g/L (éviter hypo/hyper)"}
-                        </span>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Pupilles — examen neurologique rapide */}
-                  <div style={{ marginBottom:10 }}>
-                    <Lbl>Pupilles</Lbl>
-                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
-                      {["Normales","Anormales","Non fait"].map(v => (
-                        <button key={v} onClick={() => {
-                            if (v === "Anormales") { setRacsPupillesExpandedPed(x => !x); return; }
-                            srp("pupilles")(v); setRacsPupillesExpandedPed(false);
-                          }}
-                          style={{ padding:"8px 4px", borderRadius:9, fontSize:10.5, fontWeight:600,
-                            border:`1.5px solid ${P.violet}`,
-                            background: (v==="Anormales" && racsPupillesExpandedPed) || (v!=="Anormales" && racsPed.pupilles===v) ? P.violet : P.surface,
-                            color: (v==="Anormales" && racsPupillesExpandedPed) || (v!=="Anormales" && racsPed.pupilles===v) ? "#fff" : P.violetText,
-                            cursor:"pointer", fontFamily:sans }}>
-                          {v}
-                        </button>
-                      ))}
-                    </div>
-                    {racsPed.pupilles && !["Normales","Non fait"].includes(racsPed.pupilles) && !racsPupillesExpandedPed && (
-                      <p style={{ margin:"6px 0 0", fontSize:10.5, color:P.violetText, fontWeight:700 }}>{racsPed.pupilles}</p>
-                    )}
-                    {racsPupillesExpandedPed && (
-                      <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:5 }}>
-                        {PUPILLES_DETAIL.map(({v,left,right}) => (
-                          <button key={v} onClick={() => { srp("pupilles")(v); setRacsPupillesExpandedPed(false); }}
-                            style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 11px",
-                              borderRadius:9, border:`1.5px solid ${P.border}`, background:P.surface,
-                              fontSize:11.5, fontWeight:600, color:P.text, cursor:"pointer",
-                              fontFamily:sans, textAlign:"left" }}>
-                            <PupilIcon left={left} right={right} />{v}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* ADRÉNALINE IVSE — paliers cliquables + vitesse éditable */}
-                  {localMat && (
-                    <div style={{background:P.roseSoft,border:`1px solid color-mix(in srgb, ${P.rose} 27%, transparent)`,borderRadius:10,padding:"10px 12px",marginBottom:10}}>
-                      <p style={{margin:"0 0 3px",fontSize:10,fontWeight:600,color:P.roseText}}>Adrénaline IVSE</p>
-                      <p style={{margin:"0 0 8px",fontSize:9,color:P.roseText,fontStyle:"italic"}}>
-                        {localPoids<=10?"1 mg/50 mL → 0,02 mg/mL":"5 mg/50 mL → 0,1 mg/mL"} · débuter 0,1–0,2 μg/kg/min ↑ par palier 0,1
-                      </p>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:10}}>
-                        {[[`0,2 μg/kg/min`,localMat.adrPSE1],[`0,5 μg/kg/min`,localMat.adrPSE2],[`1,0 μg/kg/min`,localMat.adrPSE3],[`1,5 μg/kg/min`,localMat.adrPSE4]].map(([palier,vitesse],i)=>(
-                          <button key={palier} onClick={()=>{setAdrPalier(i);setAdrVitesse(String(vitesse));}}
-                            style={{background:adrPalier===i?"rgba(217,107,107,0.18)":"rgba(255,255,255,0.6)",
-                              border:`1.5px solid ${adrPalier===i?P.rose:"rgba(217,107,107,0.2)"}`,
-                              borderRadius:8,padding:"5px 6px",cursor:"pointer",fontFamily:sans,textAlign:"left",
-                              minWidth:0,overflow:"hidden"}}>
-                            <p style={{margin:"0 0 1px",fontSize:8,color:P.roseText,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{palier}</p>
-                            <p style={{margin:0,fontSize:13,fontWeight:700,color:P.roseText,fontFamily:mono}}>{vitesse} mL/h</p>
-                          </button>
-                        ))}
-                      </div>
-                      <p style={{margin:"0 0 4px",fontSize:9,color:P.textSoft,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Vitesse PSE en cours</p>
-                      <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <input type="number" inputMode="decimal" value={adrVitesse}
-                          onChange={e=>setAdrVitesse(e.target.value)}
-                          placeholder={String(localMat.adrPSE1)}
-                          style={{flex:1,background:P.surface,border:`1.5px solid ${P.border}`,borderRadius:8,
-                            padding:"10px 6px",fontSize:17,color:P.text,fontFamily:mono,outline:"none",
-                            textAlign:"center",fontWeight:700,boxSizing:"border-box"}}
-                          onFocus={e=>e.target.style.borderColor=P.rose}
-                          onBlur={e=>e.target.style.borderColor=P.border}/>
-                        <span style={{fontSize:11,color:P.textSoft,flexShrink:0}}>mL/h</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* REMPLISSAGE — même composant que l'adulte */}
-                  <RemplissageVasculairePed racs={racsPed} setRacs={setRacsPed} localMat={localMat} />
-
-
-                  <p style={{margin:"4px 0 4px",fontSize:9,fontWeight:500,color:P.textSoft,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:mono}}>Autres thérapeutiques</p>
-                  <TArea value={racsPed.autresHemo||""} onChange={v=>srp("autresHemo")(v)} placeholder="Ex : Dobutamine, Vasopressine..." rows={2}/>
-                </div>
-              )}
-            </div>
-            <button onClick={()=>{
-              const p=[];
-              // Ventilation — seulement si saisi
-              if(racsPed.fr)     p.push(`FR ${racsPed.fr}/min`);
-              if(racsPed.volume) p.push(`Vt ${racsPed.volume}mL`);
-              if(racsPed.pep)    p.push(`PEP ${racsPed.pep}cmH₂O`);
-              if(racsPed.sat)    p.push(`SpO₂ ${racsPed.sat}%`);
-              if(racsPed.fio2)   p.push(`FiO₂ ${racsPed.fio2}%`);
-              if(racsPed.capno)  p.push(`EtCO₂ ${racsPed.capno}mmHg`);
-              // Sédation — seulement si vitesse saisie
-              if(racsPed.midazolamV) p.push(`Midazolam ${racsPed.midazolamV}mL/h`);
-              if(racsPed.sufentaV)   p.push(`Sufentanyl ${racsPed.sufentaV}mL/h`);
-              // Nimbex — seulement si modifié par rapport à la valeur par défaut
-              if(nimbex1Val !== "" && localMat && nimbex1Val !== String(localMat.nimbex1))
-                p.push(`Nimbex 1re dose ${nimbex1Val}mL`);
-              else if(nimbex1Val !== "" && !localMat)
-                p.push(`Nimbex 1re dose ${nimbex1Val}mL`);
-              if(nimbex2Val !== "" && localMat && nimbex2Val !== String(localMat.nimbex2))
-                p.push(`Nimbex 2e dose ${nimbex2Val}mL`);
-              // Hémodynamique — seulement si saisi
-              if(racsPed.tas && racsPed.tad) p.push(`TA ${racsPed.tas}/${racsPed.tad}mmHg`);
-              if(racsPed.fc)  p.push(`FC ${racsPed.fc}/min`);
-              if(racsPed.tempRacs) p.push(`T° ${racsPed.tempRacs} °C`);
-              if(racsPed.pupilles) p.push(`Pupilles ${racsPed.pupilles}`);
-              // Amines — seulement si vitesse saisie
-              if(adrVitesse)  p.push(`Adrénaline IVSE ${adrVitesse}mL/h`);
-              // Remplissage pédiatrique
-              const totalRempli = (racsPed.remplissagesPed||[]).reduce((s,r)=>s+r.vol,0);
-              if(totalRempli > 0) p.push(`Remplissage total ${totalRempli}mL`);
-              // Remplissage — seulement si modifié
-              if(rempliVol !== "" && localMat && rempliVol !== String(localMat.rempliVol))
-                p.push(`Remplissage ${rempliVol}mL`);
-              if(rempliDebit !== "" && localMat && rempliDebit !== String(localMat.rempliDebit))
-                p.push(`Débit ${rempliDebit}mL/h`);
-              if(racsPed.autresHemo) p.push(racsPed.autresHemo);
-              addEvent("racs_soins", p.length ? `Post-RACS : ${p.join(" · ")}` : "Soins post-RACS initiés", "🫀");
-              if (racsPed.tas || racsPed.fc) {
-                setHemoListPed(prev => [...prev, { sec, time: getNow(), pas: racsPed.tas, pad: racsPed.tad, fc: racsPed.fc }]);
-              }
-              if (racsPed.capno) {
-                setEtco2ListPed(prev => [...prev, { val: racsPed.capno, sec, time: getNow() }]);
-              }
-              setModalRacsPed(false);
-            }} style={{width:"100%",background:"linear-gradient(135deg,#3EA876,#2A7D57)",
-              border:"none",borderRadius:14,color:"#fff",fontSize:14,fontWeight:600,
-              padding:"14px",cursor:"pointer",fontFamily:sans,marginTop:12,flexShrink:0}}>
-              ✓ Enregistrer
-            </button>
-
-            {/* Le bouton "Récidive d'arrêt" a été déplacé en tête de la grille d'actions,
-                bien plus visible qu'enfoui ici en bas du modal. */}
-          </div>
-        </div>
+      {/* ── Page Soins post-RACS pédiatrique (plein écran) ── */}
+      {showRacsPagePed && !(isVLI && !vliUnlockedPed) && (
+        <PostRacsPage P={P} mono={mono} sans={sans} disp={disp} sec={sec}
+          roscEvt={events.find(e => e.id === "rosc")} events={events} racs={racsPed} renderBody={renderRacsBodyPed} enCours={enCoursListPed}
+          hemoList={hemoListPed} etco2List={etco2ListPed} suspectedAd={suspectedPed}
+          orient={orientListPed} onOrient={setOrientPed} tc={tcOnPed} onTc={setTcPed} mesures={mesuresPed} vasoLog={vasoLogPed}
+          onSaveMesure={saveMesurePed} onDeleteMesure={deleteMesurePed} dest={regulDest} onDest={setRegulDest}
+          remMin={remMinPed} onRemMin={setRemMinPed} neuroLog={neuroLogPed} onSaveNeuro={saveNeuroPed} onDeleteNeuro={deleteNeuroPed} ventLog={ventLogPed} onEditMesure={editMesurePed}
+          pamTarget={tcOnPed ? localMat.pamTC : localMat.pamHTC} fcSub={`≈ ${localMat.fcN} /min pour l'âge`} glyLo={0.7}
+          orientOptions={ORIENT_PED} subtitle={`Pédiatrie · ${localPoids} kg`} soinsSub={soinsSubPed}
+          onBack={closeRacsPagePed}
+          onRecidive={() => {
+            commitRacsMesuresPed(); flushRacsLogPed();
+            const roscTime = events.find(e => e.id === "rosc")?.time || "?";
+            addEvent("re_arret", `↩ Récidive d'arrêt — RACS précédent à ${roscTime}`, "🔴");
+            setEvents(prev => prev.filter(e => e.id !== "rosc"));
+            setAdrTimerStartPed(Date.now());
+            setCycleOffset(sec);
+            prevCpPedRef.current = null;
+            setRunning(true);
+            setShowRacsPagePed(false);
+          }}
+          onEcg={() => setModalEcgPed(true)}
+          onFast={() => setModalFastPed(true)}
+          onCause={() => { closeRacsPagePed(); setMainTabPed("etio"); }}
+          onTransmission={() => setShowLecturePed(true)} />
+      )}
+      {showLecturePed && (
+        <ModeLecture P={P} mono={mono} sans={sans} disp={disp}
+          data={buildLecture({ ped:true, sec, events, racs:racsPed, hemoList:hemoListPed, etco2List:etco2ListPed, enCours:enCoursListPed,
+            orientLabels: orientListPed.map(id => ORIENT_PED.find(o => o.id === id)?.label).filter(Boolean), dest:regulDest,
+            causeLabels: suspectedPed.map(id => CAUSES_PED.find(c => c.id === id)?.label || CAUSES_HOTT.find(c => c.id === id)?.label).filter(Boolean),
+            ident: `${patPed.sexe === "H" || patPed.sexe === "Garçon" ? "Garçon" : patPed.sexe === "F" || patPed.sexe === "Fille" ? "Fille" : "Enfant"} ${patPed.age || calcAge(patPed.ddn) || localRow.age} · ${localPoids} kg`,
+            extra: null, pamTarget: tcOnPed ? localMat.pamTC : localMat.pamHTC, glyLo: 0.7 })}
+          onClose={() => setShowLecturePed(false)}
+          onFreeze={(txt, t) => setEvents(prev => [...prev, { id:"transmission", label:`Transmission figée : ${txt}`, icon:"🔍", time:t, sec }])} />
       )}
 
       {/* Alerte 2 min */}
@@ -5124,7 +5500,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           <AdrenalineTimer
             startSec={adrTimerStartPed}
             intervalMin={adrIntervalGlobal}
-            setIntervalMin={null}
+            setIntervalMin={setAdrIntervalGlobal}
+            onAdjust={(d) => setAdrTimerStartPed(t => t + d * 1000)}
             onAdminister={() => { addEvent("adr",`Adrénaline ${localMat?.adrenalineMg||""}mg IV/IO (10μg/kg)`,"💉"); setAdrTimerStartPed(Date.now()); }}
             onCancel={() => setAdrTimerStartPed(0)}
             running={running}
@@ -5347,42 +5724,20 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           {etco2OpenPed && <Etco2Curve data={etco2ListPed} P={P} mono={mono} />}
         </div>
 
-        {/* ── Carte Hémodynamique post-RACS pédiatrique ── */}
+        {/* ── Bandeau Post-RACS : ouvre la page post-RACS ── visible seulement si RACS */}
         {events.find(e => e.id === "rosc") && (
-          <div style={{ background:P.surface, border:`1px solid ${P.green}`, borderRadius:13,
-            padding:"9px 12px", marginBottom:10, boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 14%, transparent)` }}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: hemoOpenPed ? 6 : 0 }}>
-              <button onClick={() => setHemoOpenPed(v => !v)}
-                style={{ display:"flex", alignItems:"center", gap:7, background:"transparent", border:"none",
-                  cursor:"pointer", padding:0, flex:1, minWidth:0, textAlign:"left" }}>
-                <span style={{ width:24, height:24, borderRadius:8, background:P.greenSoft,
-                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>💓</span>
-                <p style={{ margin:0, fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>Hémodynamique <span style={{ fontSize:8, fontWeight:600, color:P.textSoft, fontFamily:mono }}>post-RACS</span></p>
-                <span style={{ fontSize:10, color:P.textSoft, marginLeft:4 }}>{hemoOpenPed ? "▾" : "▸"}</span>
-              </button>
-              <div style={{ display:"flex", gap:7 }}>
-                <button onClick={() => { setAmineFormPed({ type:"Noradrénaline", dose:"", unit:"mg/h" }); setModalAminePed(true); }}
-                  style={{ background:`color-mix(in srgb, ${P.green} 14%, transparent)`, color:P.greenText,
-                    border:`1px solid ${P.green}`, borderRadius:9, padding:"5px 9px", fontSize:10.5,
-                    fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>+ Amine</button>
-                <button onClick={() => { setHemoFormPed({ pas:"", pad:"", fc:"" }); setModalHemoPed(true); }}
-                  style={{ background:`color-mix(in srgb, ${P.green} 14%, transparent)`, color:P.greenText,
-                    border:`1px solid ${P.green}`, borderRadius:9, padding:"5px 9px", fontSize:10.5,
-                    fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>+ Mesure</button>
-              </div>
-            </div>
-            {hemoOpenPed && hemoListPed.length > 0 && (
-              <div style={{ display:"flex", gap:12, marginBottom:5 }}>
-                {[{c:P.rose,l:"PAS"},{c:P.blue,l:"PAD"},{c:P.amber,l:"PAM",dash:true},{c:P.violet,l:"FC",dot:true}].map(({c,l,dash,dot})=>(
-                  <div key={l} style={{ display:"flex", alignItems:"center", gap:3 }}>
-                    <svg width="18" height="8" viewBox="0 0 18 8"><line x1="0" y1="4" x2="18" y2="4" stroke={c} strokeWidth="2" strokeDasharray={dash?"5 3":dot?"2 3":undefined} /></svg>
-                    <span style={{ fontSize:9, fontWeight:700, color:c, fontFamily:mono }}>{l}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {hemoOpenPed && <HemoCurve hemoList={hemoListPed} amineList={amineListPed} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />}
-          </div>
+          <button ref={tourModRefRacsPed} onClick={openSoinsPed}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:10, textAlign:"left", cursor:"pointer", fontFamily:sans,
+              border:"none", borderRadius:16, padding:"11px 13px", marginBottom:10, color:"#fff",
+              background:`linear-gradient(135deg, ${P.green}, color-mix(in srgb, ${P.green} 65%, #000))`,
+              boxShadow:`0 6px 18px color-mix(in srgb, ${P.green} 35%, transparent)` }}>
+            <span style={{ width:34, height:34, borderRadius:11, background:"rgba(255,255,255,0.22)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🫀</span>
+            <span style={{ flex:1, minWidth:0 }}>
+              <span style={{ display:"block", fontSize:8.5, fontWeight:700, letterSpacing:"0.12em", fontFamily:mono, opacity:0.85 }}>POST-RACS · DEPUIS {Math.max(0, Math.round((sec - (events.find(e => e.id === "rosc")?.sec || 0)) / 60))} MIN</span>
+              <span style={{ display:"block", fontSize:13, fontWeight:800, fontFamily:disp, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{bannerTextPed}</span>
+            </span>
+            <span style={{ fontSize:20, opacity:0.9 }}>›</span>
+          </button>
         )}
 
         {/* ── Tab bar Actions / Étiologie / Thérapeutiques / (Situations particulières VLI) ── */}
@@ -5514,7 +5869,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
                 <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                   onClick={() => setModalRythme(true)} />
-                <ActionBtn action={{ label:"Voie d'abord", dose:"DIO 1ère intention", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+                <ActionBtn action={{ label:"Voie d'abord", dose:"DIO 1ère intention", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText,
+                    badge: events.some(e => e.id === "vvp" || e.id === "vio") ? { text:"✓", color:P.green, pulse:false } : null }}
                   onClick={() => setModalVvpPed(true)} />
               </div>
               <div ref={tourModRefVasVliPed} style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
@@ -5667,26 +6023,6 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                   <p style={{ margin:0, fontSize:10.5, opacity:0.85 }}>Reprendre la réanimation</p>
                 </div>
                 <span style={{ fontSize:15, flexShrink:0 }}>↩</span>
-              </button>
-
-              <button ref={tourModRefRacsPed} onClick={() => setModalRacsPed(true)}
-                style={{ gridColumn:"1 / -1", display:"flex", alignItems:"center", gap:10,
-                  background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
-                  border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
-                  cursor:"pointer", fontFamily:sans, textAlign:"left",
-                  boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
-                <span style={{ width:36, height:36, borderRadius:10,
-                  background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
-                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
-                    Soins post-RACS
-                  </p>
-                  <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
-                    RACS obtenu — renseigner constantes, amines, température
-                  </p>
-                </div>
-                <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
               </button>
             </>
           )}
@@ -5859,7 +6195,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           </div>
           <ActionBtn action={{label:"Analyse de rythme",svg:ICONS.rythme,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
             onClick={()=>setModalRythme(true)}/>
-          <ActionBtn action={{label:"Voie d'abord",svg:ICONS.vvp,accent:P.green,soft:P.greenSoft,textC:P.greenText}}
+          <ActionBtn action={{label:"Voie d'abord",svg:ICONS.vvp,accent:P.green,soft:P.greenSoft,textC:P.greenText,
+              badge: events.some(e => e.id === "vvp" || e.id === "vio") ? { text:"✓", color:P.green, pulse:false } : null}}
             onClick={()=>setModalVvpPed(true)}/>
           <ActionBtn action={{label:amioLabel,svg:ICONS.amio,accent:P.amber,soft:P.amberSoft,textC:P.amberText}}
             onClick={()=>addEvent("cord",`Amiodarone ${localMat?.amio||""}mg IV/IO (5mg/kg)`,"💊")}/>
@@ -5925,7 +6262,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
               onClick={()=>setModalFastPed(true)}/>
             {!events.some(e => e.id === "rosc") && (
               <ActionBtn action={{label:"Soins post-RACS",icon:"🫀",accent:P.green,soft:P.greenSoft,textC:P.greenText}}
-                onClick={()=>setModalRacsPed(true)}/>
+                onClick={openSoinsPed}/>
             )}
             <ActionBtn action={{label:"Constat de décès",svg:ICONS.deces,accent:P.slate,soft:P.slateSoft,textC:P.slateText}}
               onClick={()=>setModalDecesPed(true)}/>
@@ -6114,7 +6451,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                       onFocus={ev=>ev.target.style.borderColor=P.teal}
                       onBlur={ev=>ev.target.style.borderColor="transparent"}/>
                     <button
-                      onClick={()=>setEvents(prev=>prev.filter((_,idx)=>idx!==realIdx))}
+                      onClick={()=>{ if (window.confirm(`Retirer cet événement de la chronologie ?\n« ${e.label} » · ${e.time}`)) setEvents(prev=>prev.filter((_,idx)=>idx!==realIdx)); }}
                       style={{background:"transparent",border:`1px solid ${P.border}`,
                         borderRadius:6,padding:"2px 6px",cursor:"pointer",
                         color:P.textSoft,fontSize:11,fontFamily:sans,flexShrink:0,lineHeight:1.4}}
@@ -6238,6 +6575,20 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
                 )}
               </div>
               <div><Lbl>Poids</Lbl><TInput value={patPed.poids} onChange={spf("poids")} placeholder={`${localPoids} kg`} /></div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              <div>
+                <Lbl>Sexe</Lbl>
+                <div style={{ display:"flex", gap:6 }}>
+                  {["Garçon","Fille"].map(v => (
+                    <button key={v} onClick={() => spf("sexe")(patPed.sexe === v ? "" : v)}
+                      style={{ flex:1, padding:"10px 0", borderRadius:9, fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:sans,
+                        border:`1.5px solid ${patPed.sexe === v ? P.blue : P.border}`, background: patPed.sexe === v ? P.blueSoft : P.surface,
+                        color: patPed.sexe === v ? P.blueText : P.textSoft }}>{v}</button>
+                  ))}
+                </div>
+              </div>
+              <div><Lbl>Taille (cm)</Lbl><TInput type="number" value={patPed.taille || ""} onChange={spf("taille")} placeholder="ex : 85" /></div>
             </div>
             <div><Lbl>Température (°C)</Lbl>
               <TInput value={patPed.temp} onChange={spf("temp")} placeholder="Ex : 35,2 — penser hypothermie / ECMO" /></div>
@@ -6977,7 +7328,8 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
             prenom:  patPed.prenom,
             ddn:     patPed.ddn,
             age:     patPed.age || calcAge(patPed.ddn) || localRow?.age || "",
-            sexe:    "",
+            sexe:    patPed.sexe || "",
+            taille:  patPed.taille || "",
             temp:    patPed.temp,
             atcd:    patPed.atcd,
             histoire:patPed.histoire,
@@ -8487,8 +8839,341 @@ function DebriefModal({ events, totalSec, noFlow, lowFlow, etco2List, ccfEnabled
 // ── APP ────────────────────────────────────────────────────────────────────────
 // ── Algorithme ALS interactif ────────────────────────────────────────────────
 // ── Dashboard Analytics ──────────────────────────────────────────────────────
+// ── DASHBOARD — VUE GRAPHIQUES ────────────────────────────────────────────────
+// SVG/div natifs (aucune bibliothèque, fonctionne hors ligne). Repères ERC 2025 :
+//  · adrénaline 1 mg toutes les 3–5 min (ALS) ; non choquable : dès que possible ;
+//    choquable : après le 3e choc (pas de délai chiffré → pas de ligne cible)
+//  · défibrillation rapide < 3 min : cible formulée pour l'ACR INTRA-hospitalier uniquement
+function DashChartsView({ stats, P, mono, sans, disp }) {
+  const n = stats.length;
+  const LOW_N = 5; // en dessous, un pourcentage est trompeur → grisé + mention
+  const pctOf = (a, b) => b ? Math.round(a / b * 100) : null;
+
+  const Card = ({ title, sub, children, note }) => (
+    <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:16, padding:"14px 14px 12px" }}>
+      <p style={{ margin:0, fontSize:13, fontWeight:800, color:P.text, fontFamily:disp }}>{title}</p>
+      {sub ? <p style={{ margin:"2px 0 10px", fontSize:10.5, color:P.textSoft }}>{sub}</p> : <div style={{ height:10 }} />}
+      {children}
+      {note && <p style={{ margin:"10px 0 0", fontSize:10, color:P.textSoft, lineHeight:1.5, fontStyle:"italic" }}>{note}</p>}
+    </div>
+  );
+  const Empty = ({ txt = "Pas assez de données pour ce graphique." }) => (
+    <p style={{ margin:"8px 0", fontSize:12, color:P.textSoft }}>{txt}</p>
+  );
+
+  // Barres horizontales (taux) — effectif faible grisé
+  const HBars = ({ rows }) => {
+    const ok = rows.filter(r => r.n > 0);
+    if (ok.length === 0) return <Empty />;
+    return (
+      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+        {ok.map(r => {
+          const low = r.n < LOW_N;
+          return (
+            <div key={r.label} style={{ opacity: low ? 0.55 : 1 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:3 }}>
+                <span style={{ fontSize:12, color:P.textMid }}>{r.label}</span>
+                <span style={{ fontSize:12, fontWeight:800, color:P.text, fontFamily:mono }}>
+                  {r.value}{r.unit || "%"} <span style={{ fontWeight:500, color:P.textSoft, fontSize:10 }}>n={r.n}{low ? " · effectif faible" : ""}</span>
+                </span>
+              </div>
+              <div style={{ height:12, background:P.surfaceAlt, borderRadius:6, overflow:"hidden" }}>
+                <div style={{ width:`${Math.min(100, r.bar ?? r.value)}%`, height:"100%", background:r.color || P.green, borderRadius:6 }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // Histogramme (barres verticales)
+  const Histo = ({ bins, unitLabel }) => {
+    const max = Math.max(1, ...bins.map(b => b.count));
+    const tot = bins.reduce((a, b) => a + b.count, 0);
+    if (tot === 0) return <Empty />;
+    return (
+      <div>
+        <div style={{ display:"flex", alignItems:"flex-end", gap:6, height:96 }}>
+          {bins.map(b => (
+            <div key={b.label} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"flex-end", height:"100%" }}>
+              <span style={{ fontSize:11, fontWeight:800, color:P.text, fontFamily:mono, marginBottom:2 }}>{b.count || ""}</span>
+              <div style={{ width:"100%", height:`${Math.max(b.count ? 6 : 2, b.count / max * 70)}px`, background:b.count ? b.color : P.border, borderRadius:"5px 5px 2px 2px" }} />
+            </div>
+          ))}
+        </div>
+        <div style={{ display:"flex", gap:6, marginTop:4 }}>
+          {bins.map(b => (
+            <span key={b.label} style={{ flex:1, textAlign:"center", fontSize:9.5, color:P.textSoft, fontFamily:mono }}>{b.label}</span>
+          ))}
+        </div>
+        {unitLabel && <p style={{ margin:"4px 0 0", textAlign:"center", fontSize:9.5, color:P.textSoft }}>{unitLabel}</p>}
+      </div>
+    );
+  };
+  const bin = (vals, edges, labels, colors) => labels.map((label, i) => ({
+    label, color: colors[i],
+    count: vals.filter(v => v >= edges[i] && v < edges[i + 1]).length,
+  }));
+
+  // 1. Issues — anneau
+  const nRacs = stats.filter(s => s.outcome === "RACS").length;
+  const nDec  = stats.filter(s => s.outcome === "Décès").length;
+  const nAut  = n - nRacs - nDec;
+  const donut = (() => {
+    const R = 42, C = 2 * Math.PI * R;
+    const segs = [[nRacs, P.green, "RACS"], [nDec, P.textMid, "Décès"], [nAut, P.border, "Non renseigné"]].filter(x => x[0] > 0);
+    let off = 0;
+    return (
+      <div style={{ display:"flex", alignItems:"center", gap:16 }}>
+        <svg viewBox="0 0 110 110" style={{ width:116, height:116, flexShrink:0 }}>
+          <g transform="rotate(-90 55 55)">
+            {segs.map(([v, c, l]) => {
+              const len = v / n * C;
+              const el = <circle key={l} cx="55" cy="55" r={R} fill="none" stroke={c} strokeWidth="14"
+                strokeDasharray={`${len} ${C - len}`} strokeDashoffset={-off} />;
+              off += len; return el;
+            })}
+          </g>
+          <text x="55" y="53" textAnchor="middle" fontSize="20" fontWeight="800" fill={P.text} fontFamily={mono}>{pctOf(nRacs, n)}%</text>
+          <text x="55" y="68" textAnchor="middle" fontSize="8.5" fill={P.textSoft} fontFamily={mono}>RACS</text>
+        </svg>
+        <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+          {[[nRacs, P.green, "RACS"], [nDec, P.textMid, "Décès"], [nAut, P.border, "Non renseigné"]].map(([v, c, l]) => (
+            <div key={l} style={{ display:"flex", alignItems:"center", gap:7, fontSize:12, color:P.textMid }}>
+              <span style={{ width:10, height:10, borderRadius:3, background:c, flexShrink:0 }} />
+              <span>{l}</span><span style={{ fontWeight:800, color:P.text, fontFamily:mono }}>{v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  })();
+
+  // 2. Évolution mensuelle — barres (cas) + courbe (taux RACS)
+  const monthly = (() => {
+    const m = {};
+    stats.forEach(s => { if (!s.date) return; const k = s.date.slice(0, 7);
+      if (!m[k]) m[k] = { t: 0, r: 0 }; m[k].t++; if (s.outcome === "RACS") m[k].r++; });
+    const keys = Object.keys(m).sort();
+    if (keys.length === 0) return <Empty />;
+    const W = 320, H = 150, pl = 26, pr = 26, pt = 14, pb = 26;
+    const maxT = Math.max(...keys.map(k => m[k].t), 1);
+    const bw = Math.min(34, (W - pl - pr) / keys.length * 0.6);
+    const x = i => pl + (i + 0.5) * ((W - pl - pr) / keys.length);
+    const yT = v => pt + (1 - v / maxT) * (H - pt - pb);
+    const yP = v => pt + (1 - v / 100) * (H - pt - pb);
+    const pts = keys.map((k, i) => `${i ? "L" : "M"} ${x(i).toFixed(1)} ${yP(pctOf(m[k].r, m[k].t)).toFixed(1)}`).join(" ");
+    const lab = k => { const [y, mo] = k.split("-"); return `${mo}/${y.slice(2)}`; };
+    return (
+      <div>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width:"100%", height:"auto", display:"block" }}>
+          <line x1={pl} y1={H - pb} x2={W - pr} y2={H - pb} stroke={P.border} />
+          {keys.map((k, i) => (
+            <g key={k}>
+              <rect x={x(i) - bw / 2} y={yT(m[k].t)} width={bw} height={H - pb - yT(m[k].t)} rx="3" fill={P.blue} opacity="0.28" />
+              <text x={x(i)} y={yT(m[k].t) - 3} textAnchor="middle" fontSize="9" fill={P.blueText} fontFamily={mono}>{m[k].t}</text>
+              <text x={x(i)} y={H - 10} textAnchor="middle" fontSize="9" fill={P.textSoft} fontFamily={mono}>{lab(k)}</text>
+            </g>
+          ))}
+          {keys.length > 1 && <path d={pts} fill="none" stroke={P.green} strokeWidth="2" />}
+          {keys.map((k, i) => (
+            <g key={k + "p"}>
+              <circle cx={x(i)} cy={yP(pctOf(m[k].r, m[k].t))} r="3.5" fill={P.green} stroke={P.surface} strokeWidth="1.5" />
+              <text x={x(i)} y={yP(pctOf(m[k].r, m[k].t)) - 7} textAnchor="middle" fontSize="9" fontWeight="700" fill={P.greenText} fontFamily={mono}>{pctOf(m[k].r, m[k].t)}%</text>
+            </g>
+          ))}
+        </svg>
+        <div style={{ display:"flex", gap:14, justifyContent:"center", fontSize:10, color:P.textSoft, marginTop:2 }}>
+          <span><span style={{ display:"inline-block", width:10, height:8, background:P.blue, opacity:0.28, marginRight:4, borderRadius:2 }} />Nombre de cas</span>
+          <span><span style={{ display:"inline-block", width:10, height:3, background:P.green, marginRight:4, verticalAlign:"middle" }} />Taux de RACS</span>
+        </div>
+      </div>
+    );
+  })();
+
+  // 3. RACS selon rythme initial / RCP témoin
+  const rateRow = (label, pred, color) => {
+    const g = stats.filter(pred);
+    return { label, n: g.length, value: pctOf(g.filter(s => s.outcome === "RACS").length, g.length) ?? 0, color };
+  };
+
+  // 4. Durée de RCP selon l'issue — strip plot
+  const strip = (() => {
+    const pts = stats.filter(s => s.durationSec > 0);
+    if (pts.length === 0) return <Empty />;
+    const W = 320, H = 130, pl = 62, pr = 30, pt = 10, pb = 24;
+    const maxM = Math.max(10, Math.ceil(Math.max(...pts.map(s => s.durationSec / 60)) / 10) * 10);
+    const x = m => pl + (m / maxM) * (W - pl - pr);
+    const rows = [["RACS", P.green], ["Décès", P.textMid], ["Autre", P.amber]];
+    const yRow = i => pt + 14 + i * ((H - pt - pb - 20) / 2);
+    const ticks = []; for (let t = 0; t <= maxM; t += maxM > 40 ? 20 : 10) ticks.push(t);
+    const rowOf = o => o === "RACS" ? 0 : o === "Décès" ? 1 : 2;
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width:"100%", height:"auto", display:"block" }}>
+        {rows.map(([l, c], i) => (
+          <g key={l}>
+            <line x1={pl} y1={yRow(i)} x2={W - pr} y2={yRow(i)} stroke={P.borderSoft || P.border} />
+            <text x={pl - 8} y={yRow(i) + 3} textAnchor="end" fontSize="10" fill={c} fontWeight="700" fontFamily={mono}>{l}</text>
+          </g>
+        ))}
+        {ticks.map(t => (
+          <g key={t}>
+            <line x1={x(t)} y1={H - pb} x2={x(t)} y2={H - pb + 4} stroke={P.border} />
+            <text x={x(t)} y={H - 8} textAnchor="middle" fontSize="9" fill={P.textSoft} fontFamily={mono}>{t} min</text>
+          </g>
+        ))}
+        {pts.map((s, i) => (
+          <circle key={i} cx={x(Math.min(maxM, s.durationSec / 60))} cy={yRow(rowOf(s.outcome))} r="5"
+            fill={rows[rowOf(s.outcome)][1]} opacity="0.55" stroke={P.surface} strokeWidth="1">
+            <title>{`${s.label} · ${Math.round(s.durationSec / 60)} min`}</title>
+          </circle>
+        ))}
+      </svg>
+    );
+  })();
+
+  // 5. Délais
+  const chocMin = stats.map(s => s.delaiChoc).filter(v => v !== null && v >= 0).map(v => v / 60);
+  const adrMin  = stats.map(s => s.delaiAdr).filter(v => v !== null && v >= 0).map(v => v / 60);
+  const adrGaps = stats.flatMap(s => s.adrGaps || []).map(v => v / 60);
+  const inTarget = adrGaps.filter(v => v >= 3 && v <= 5).length;
+  const medianOf = a => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y); const m = Math.floor(b.length / 2); return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+  const fm = v => v === null ? "—" : `${Math.round(v * 10) / 10} min`;
+
+  // 6. Flow
+  const flowRows = stats.filter(s => (s.noFlowMin !== null && !isNaN(s.noFlowMin)) || (s.lowFlowMin !== null && !isNaN(s.lowFlowMin)));
+  const avgOf = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+  const nfAvg = avgOf(flowRows.map(s => s.noFlowMin).filter(v => v !== null && !isNaN(v)));
+  const lfAvg = avgOf(flowRows.map(s => s.lowFlowMin).filter(v => v !== null && !isNaN(v)));
+
+  // 7/8. Répartitions
+  const countBy = (keyFn) => { const m = {}; stats.forEach(s => { const k = keyFn(s); if (k) m[k] = (m[k] || 0) + 1; });
+    return Object.entries(m).sort((a, b) => b[1] - a[1]); };
+  const byType = countBy(s => s.type);
+  const byLieu = countBy(s => s.lieu).slice(0, 6);
+  const maxCount = rows => Math.max(1, ...rows.map(r => r[1]));
+  const CountBars = ({ rows, color }) => rows.length === 0 ? <Empty txt="Donnée non renseignée sur ces cas." /> : (
+    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+      {rows.map(([l, v]) => (
+        <div key={l}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:2 }}>
+            <span style={{ fontSize:12, color:P.textMid }}>{l}</span>
+            <span style={{ fontSize:12, fontWeight:800, color:P.text, fontFamily:mono }}>{v}</span>
+          </div>
+          <div style={{ height:9, background:P.surfaceAlt, borderRadius:5, overflow:"hidden" }}>
+            <div style={{ width:`${v / maxCount(rows) * 100}%`, height:"100%", background:color, borderRadius:5 }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
+  const recidN = stats.filter(s => s.outcome === "RACS" || s.recidive);
+  const recidV = pctOf(stats.filter(s => s.recidive).length, recidN.length);
+
+  return (
+    <div style={{ padding:"16px 14px 40px", display:"flex", flexDirection:"column", gap:14 }}>
+      <Card title="Issue des réanimations" sub={`${n} cas`}>{donut}</Card>
+      <Card title="Évolution mensuelle" sub="Nombre de cas et taux de RACS par mois">{monthly}</Card>
+      <Card title="RACS selon le rythme initial" sub="Taux de RACS par groupe"
+        note="Rythme du DSA pré-SMUR, sinon première analyse SMUR.">
+        <HBars rows={[rateRow("Choquable (FV/TV)", s => s.initialRhythm === "choquable", P.green),
+                      rateRow("Non choquable (AESP/asystolie)", s => s.initialRhythm === "nonChoquable", P.amber)]} />
+      </Card>
+      <Card title="RACS selon la RCP par témoin" sub="Taux de RACS par groupe">
+        <HBars rows={[rateRow("Avec RCP témoin", s => s.mceTemoin === "Oui", P.green),
+                      rateRow("Sans RCP témoin", s => s.mceTemoin === "Non", P.amber)]} />
+      </Card>
+      <Card title="Durée de RCP selon l'issue" sub="Un point par cas — la moyenne seule cache la dispersion">{strip}</Card>
+      <Card title="Délai avant le 1er choc" sub={`Depuis le début de la RCP · médiane ${fm(medianOf(chocMin))} · ${chocMin.length} cas choqués`}
+        note="Repère ERC 2025 : défibriller rapidement (< 3 min). Cette cible est formulée pour l'ACR intra-hospitalier ; il n'existe pas d'équivalent chiffré en extra-hospitalier. Barres vertes = < 3 min.">
+        <Histo bins={bin(chocMin, [0,1,2,3,5,Infinity], ["< 1","1–2","2–3","3–5","> 5"], [P.green,P.green,P.green,P.amber,P.rose])} unitLabel="minutes" />
+      </Card>
+      <Card title="Délai avant la 1ère adrénaline" sub={`Depuis le début de la RCP · médiane ${fm(medianOf(adrMin))} · ${adrMin.length} cas`}
+        note="ERC 2025 : adrénaline 1 mg dès que possible si rythme non choquable ; après le 3e choc si rythme choquable. Pas de délai chiffré : aucune ligne cible.">
+        <Histo bins={bin(adrMin, [0,2,5,10,Infinity], ["< 2","2–5","5–10","> 10"], [P.blue,P.blue,P.blue,P.blue])} unitLabel="minutes" />
+      </Card>
+      <Card title="Intervalle entre les doses d'adrénaline"
+        sub={adrGaps.length ? `${inTarget}/${adrGaps.length} intervalles conformes (${pctOf(inTarget, adrGaps.length)}%)` : "Aucun cas avec ≥ 2 doses"}
+        note="ERC 2025 : répéter l'adrénaline 1 mg toutes les 3 à 5 minutes. Barre verte = intervalle conforme (3–5 min).">
+        <Histo bins={bin(adrGaps, [0,3,5.0001,Infinity], ["< 3","3–5","> 5"], [P.rose,P.green,P.amber])} unitLabel="minutes" />
+      </Card>
+      <Card title="No-flow et low-flow moyens" sub={`${flowRows.length} cas renseignés`}>
+        <HBars rows={[
+          { label:"No-flow", n: flowRows.filter(s => s.noFlowMin !== null && !isNaN(s.noFlowMin)).length, value: nfAvg === null ? 0 : Math.round(nfAvg * 10) / 10, unit:" min", bar: nfAvg === null ? 0 : Math.min(100, nfAvg / Math.max(nfAvg, lfAvg || 0, 1) * 100), color:P.rose },
+          { label:"Low-flow", n: flowRows.filter(s => s.lowFlowMin !== null && !isNaN(s.lowFlowMin)).length, value: lfAvg === null ? 0 : Math.round(lfAvg * 10) / 10, unit:" min", bar: lfAvg === null ? 0 : Math.min(100, lfAvg / Math.max(nfAvg || 0, lfAvg, 1) * 100), color:P.amber },
+        ]} />
+      </Card>
+      <Card title="Répartition par type de cas"><CountBars rows={byType} color={P.blue} /></Card>
+      <Card title="Lieux d'intervention" sub="Les 6 plus fréquents"><CountBars rows={byLieu} color={P.teal || P.blue} /></Card>
+      <Card title="Récidive après RACS" sub={recidN.length ? `${recidN.length} cas avec RACS` : "Aucun RACS dans la sélection"}>
+        {recidV === null ? <Empty /> : (
+          <HBars rows={[{ label:"Nouvel arrêt après RACS", n: recidN.length, value: recidV, color:P.rose }]} />
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// Devenir à J30 : un décès constaté sur place vaut « Décédé » ; un RACS non suivi reste « À renseigner ».
+function devenirLabel(devenir, outcome) {
+  if (devenir === "vivant") return "Vivant";
+  if (devenir === "decede") return "Décédé";
+  if (devenir === "inconnu") return "Perdu de vue";
+  return outcome === "Décès" ? "Décédé" : outcome === "RACS" ? "À renseigner" : "";
+}
+const CPC_LABELS = { 1:"CPC 1 · bonne", 2:"CPC 2 · modérée", 3:"CPC 3 · sévère", 4:"CPC 4 · coma", 5:"CPC 5 · décès" };
+
+function J30Editor({ archive, onChange, P, mono, sans }) {
+  const [open, setOpen] = useState(false);
+  const dv = archive.devenir || {};
+  const set = (patch) => onChange({ ...dv, ...patch, date: new Date().toISOString() });
+  const btn = (active, color) => ({ flex:1, padding:"7px 4px", borderRadius:9, fontSize:11, fontWeight:700, cursor:"pointer",
+    fontFamily:sans, border:`1.5px solid ${active ? color : P.border}`, background: active ? `color-mix(in srgb, ${color} 14%, ${P.surface})` : P.surface,
+    color: active ? color : P.textSoft });
+  const resume = dv.statut === "vivant" ? `Vivant à J30${dv.cpc ? ` · CPC ${dv.cpc}` : " · CPC à préciser"}`
+    : dv.statut === "decede" ? "Décédé avant J30" : dv.statut === "inconnu" ? "Perdu de vue" : "Devenir J30 à renseigner";
+  return (
+    <div style={{ borderTop:`1px dashed ${P.border}`, paddingTop:8 }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ background:"transparent", border:"none", padding:0, cursor:"pointer", fontFamily:sans, fontSize:11,
+          fontWeight:700, color: dv.statut ? P.greenText : P.amberText, display:"flex", alignItems:"center", gap:6 }}>
+        <span style={{ fontFamily:mono }}>{dv.statut ? "✓" : "○"}</span>{resume}
+        <span style={{ color:P.textSoft, fontWeight:600 }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:8 }}>
+          <div style={{ display:"flex", gap:6 }}>
+            <button onClick={() => set({ statut:"vivant" })} style={btn(dv.statut === "vivant", P.green)}>Vivant</button>
+            <button onClick={() => onChange({ statut:"decede", cpc:5, date:new Date().toISOString() })} style={btn(dv.statut === "decede", P.slateText)}>Décédé</button>
+            <button onClick={() => onChange({ statut:"inconnu", date:new Date().toISOString() })} style={btn(dv.statut === "inconnu", P.amber)}>Perdu de vue</button>
+          </div>
+          {dv.statut === "vivant" && (
+            <div>
+              <p style={{ margin:"0 0 5px", fontSize:10, color:P.textSoft, fontFamily:mono }}>SCORE CPC (Cerebral Performance Category)</p>
+              <div style={{ display:"flex", gap:5 }}>
+                {[1,2,3,4].map(c => (
+                  <button key={c} onClick={() => set({ cpc:c })} style={btn(dv.cpc === c, P.green)}>{c}</button>
+                ))}
+              </div>
+              {dv.cpc && <p style={{ margin:"5px 0 0", fontSize:10.5, color:P.textSoft }}>{CPC_LABELS[dv.cpc]}</p>}
+            </div>
+          )}
+          {dv.statut && (
+            <button onClick={() => onChange(null)}
+              style={{ alignSelf:"flex-start", background:"transparent", border:"none", color:P.textSoft, fontSize:10.5,
+                cursor:"pointer", fontFamily:sans, padding:0, textDecoration:"underline" }}>Effacer cette saisie</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
   const [filterType, setFilterType] = useState("all"); // all | Adulte | Traumatique | Pédiatrique
+  const [dashView, setDashView] = useState("chiffres"); // chiffres | graphiques
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo,   setDateTo]   = useState("");
 
@@ -8529,9 +9214,16 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
       noFlowMin:  a.props?.noFlow ? parseFloat(String(a.props.noFlow).replace(",",".")) : null,
       lowFlowMin: a.props?.lowFlow ? parseFloat(String(a.props.lowFlow).replace(",",".")) : null,
       initialRhythm,
+      devenir:    a.devenir?.statut || null,   // vivant | decede | inconnu (suivi J30)
+      cpc:        a.devenir?.cpc ?? null,
+      age:        a.props?.patient?.age || (a.props?.patient?.ddn ? calcAge(a.props.patient.ddn) : ""),
+      sexe:       a.props?.patient?.sexe || "",
+      acrTime:    a.props?.acrTime || "",
+      dsa:        dsaRythme || "",
       mceTemoin:  a.props?.trans?.mceTemoin || null,
       nbChocs:    evts.filter(e => e.id === "choc").length,
       nbAdrs:     evts.filter(e => e.id === "adr").length,
+      adrGaps:    evts.filter(e => e.id === "adr").map(e => e.sec).filter(v => typeof v === "number").sort((a, b) => a - b).map((v, i, arr) => i ? v - arr[i - 1] : null).filter(v => v !== null && v > 0),
       roscSec:    rosc ? rosc.sec - start : null,
       // Rétro-compatible : les archives antérieures à ce champ n'ont pas
       // `recidive` enregistré, mais l'info est déjà présente dans leur chronologie
@@ -8543,7 +9235,7 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
   // Export CSV — toujours basé sur les cas filtrés actuellement affichés
   // Données communes aux deux exports (CSV et Excel)
   const buildExportRows = () => {
-    const headers = ["Date","Type","Libellé","Issue","Récidive","Durée (s)","Délai 1er choc (s)","Délai 1ère adré (s)","Nb chocs","Nb doses adré","RACS à (s)","No-flow (min)","Low-flow (min)","Rythme initial","RCP témoin","Lieu"];
+    const headers = ["Date","Type","Libellé","Issue","Récidive","Durée (s)","Délai 1er choc (s)","Délai 1ère adré (s)","Nb chocs","Nb doses adré","RACS à (s)","No-flow (min)","Low-flow (min)","Rythme initial","RCP témoin","Lieu","Devenir J30","CPC"];
     const rows = stats.map(s => [
       s.date ? new Date(s.date).toLocaleString("fr-FR") : "",
       s.type, s.label, s.outcome, s.recidive ? "Oui" : "Non", s.durationSec,
@@ -8552,6 +9244,7 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
       s.initialRhythm === "choquable" ? "Choquable" : s.initialRhythm === "nonChoquable" ? "Non choquable" : "",
       s.mceTemoin || "",
       s.lieu || "",
+      devenirLabel(s.devenir, s.outcome), s.cpc ?? "",
     ]);
     return { headers, rows };
   };
@@ -8566,6 +9259,31 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
     const a = document.createElement("a");
     a.href = url;
     a.download = `copilote-acr-stats-${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Export « Utstein » : un cas par ligne, colonnes alignées sur les items
+  // Utstein disponibles dans l'app (les délais d'appel/arrivée ne sont pas saisis).
+  const exportUtstein = () => {
+    const headers = ["Date","Type","Âge","Sexe","Lieu","Heure de l'arrêt","RCP par témoin","Rythme initial","Rythme DSA pré-SMUR",
+      "Délai 1er choc (s)","Nb chocs","Nb adrénaline","No-flow (min)","Low-flow (min)","RACS soutenu","Délai RACS (s)","Récidive d'arrêt",
+      "Durée RCP SMUR (s)","Survie J30","CPC J30"];
+    const rows = stats.map(s => [
+      s.date ? new Date(s.date).toISOString().slice(0,10) : "", s.type, s.age, s.sexe, s.lieu || "", s.acrTime,
+      s.mceTemoin || "",
+      s.initialRhythm === "choquable" ? "Choquable" : s.initialRhythm === "nonChoquable" ? "Non choquable" : "",
+      s.dsa === "choquable" ? "Choquable" : s.dsa === "nonChoquable" ? "Non choquable" : "",
+      s.delaiChoc ?? "", s.nbChocs, s.nbAdrs, s.noFlowMin ?? "", s.lowFlowMin ?? "",
+      s.outcome === "RACS" ? "Oui" : s.outcome === "Décès" ? "Non" : "",
+      s.roscSec ?? "", s.recidive ? "Oui" : "Non", s.durationSec,
+      devenirLabel(s.devenir, s.outcome), s.cpc ?? "",
+    ]);
+    const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(";")).join("\r\n");
+    const blob = new Blob(["\uFEFF" + csv], { type:"text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `copilote-acr-utstein-${new Date().toISOString().slice(0,10)}.csv`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
@@ -8755,6 +9473,16 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
 
       {/* Barre de filtres */}
       <div style={{ padding:"12px 14px 0", display:"flex", flexDirection:"column", gap:8 }}>
+        <div style={{ display:"flex", background:P.surfaceAlt, borderRadius:11, padding:3, gap:3 }}>
+          {[["chiffres","🔢 Chiffres"],["graphiques","📈 Graphiques"]].map(([id,label]) => (
+            <button key={id} onClick={() => setDashView(id)}
+              style={{ flex:1, padding:"8px 0", borderRadius:9, border:"none", cursor:"pointer", fontFamily:sans,
+                fontSize:12.5, fontWeight:700,
+                background: dashView===id ? P.surface : "transparent",
+                color: dashView===id ? P.text : P.textSoft,
+                boxShadow: dashView===id ? "0 1px 4px rgba(0,0,0,0.12)" : "none" }}>{label}</button>
+          ))}
+        </div>
         <div style={{ display:"flex", gap:6, overflowX:"auto" }}>
           {[["all","Tous"],["Adulte","Adulte"],["Traumatique","Trauma"],["Pédiatrique","Pédia"]].map(([id,label]) => (
             <button key={id} onClick={() => setFilterType(id)}
@@ -8799,6 +9527,12 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
               display:"flex", alignItems:"center", gap:5, whiteSpace:"nowrap" }}>
             {exportingXlsx ? "…" : "⬇ Excel"}
           </button>
+          <button onClick={exportUtstein} disabled={n===0}
+            style={{ flexShrink:0, background:"transparent", border:`1.5px solid ${n===0?P.border:P.border}`,
+              borderRadius:9, color: n===0 ? P.textSoft : P.text, padding:"8px 10px", fontSize:12,
+              fontWeight:700, cursor: n===0 ? "default" : "pointer", fontFamily:sans, whiteSpace:"nowrap" }}>
+            Utstein
+          </button>
         </div>
       </div>
 
@@ -8809,6 +9543,8 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
           <p style={{ fontSize:15, fontWeight:700, color:P.text, margin:"0 0 6px" }}>Aucun cas ne correspond</p>
           <p style={{ fontSize:12.5, color:P.textSoft }}>Essayez d'élargir la période ou le type sélectionné.</p>
         </div>
+      ) : dashView === "graphiques" ? (
+        <DashChartsView stats={stats} P={P} mono={mono} sans={sans} disp={disp} />
       ) : (
       <div style={{ padding:"16px 14px 40px", display:"flex", flexDirection:"column", gap:14 }}>
 
@@ -8837,6 +9573,38 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
               background:P.green, borderRadius:4, transition:"width 0.5s" }} />
           </div>
         </div>
+
+        {/* Devenir à J30 */}
+        {roscCases.length > 0 && (() => {
+          const suivis   = roscCases.filter(s => s.devenir);
+          const vivants  = roscCases.filter(s => s.devenir === "vivant");
+          const cpc12    = vivants.filter(s => s.cpc === 1 || s.cpc === 2);
+          const perdus   = roscCases.filter(s => s.devenir === "inconnu").length;
+          const aRens    = roscCases.length - suivis.length;
+          const pct = (k) => n > 0 ? Math.round(k / n * 100) : 0;
+          return (
+            <div style={{ background:P.surface, border:`1px solid ${P.border}`, borderRadius:14, padding:"13px 14px" }}>
+              <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:700, color:P.textSoft, textTransform:"uppercase",
+                letterSpacing:"0.1em", fontFamily:mono }}>🗓️ Devenir à J30</p>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                <div>
+                  <p style={{ margin:0, fontSize:26, fontWeight:900, color:P.greenText, fontFamily:mono, lineHeight:1 }}>{pct(vivants.length)}%</p>
+                  <p style={{ margin:"3px 0 0", fontSize:10.5, color:P.textSoft }}>Survie J30 · {vivants.length}/{n} arrêts</p>
+                </div>
+                <div>
+                  <p style={{ margin:0, fontSize:26, fontWeight:900, color:P.greenText, fontFamily:mono, lineHeight:1 }}>{pct(cpc12.length)}%</p>
+                  <p style={{ margin:"3px 0 0", fontSize:10.5, color:P.textSoft }}>Survie CPC 1-2 · {cpc12.length}/{n}</p>
+                </div>
+              </div>
+              {(aRens > 0 || perdus > 0) && (
+                <p style={{ margin:"10px 0 0", fontSize:10.5, color:P.amberText, lineHeight:1.5 }}>
+                  ⚠️ Chiffres provisoires : {aRens > 0 ? `${aRens} RACS sans devenir renseigné` : ""}{aRens > 0 && perdus > 0 ? " · " : ""}{perdus > 0 ? `${perdus} perdu${perdus>1?"s":""} de vue` : ""}.
+                  Renseignez-les depuis la liste des arrêts archivés (accueil).
+                </p>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Taux de récidive après RACS */}
         {recidiveRate !== null && (
@@ -9040,6 +9808,1478 @@ function DashboardView({ archives, onClose, P, mono, sans, disp, fmtSec }) {
   );
 }
 
+// Poids idéal (formule de Devine/ARDSNet) : H = 50 + 0,91 × (taille − 152,4) ; F = 45,5 + 0,91 × (taille − 152,4)
+function idealBodyWeight(tailleCm, sexe) {
+  const h = parseFloat(String(tailleCm ?? "").replace(",", "."));
+  if (!(h >= 100 && h <= 230) || (sexe !== "H" && sexe !== "F")) return null;
+  return (sexe === "H" ? 50 : 45.5) + 0.91 * (h - 152.4);
+}
+
+// ── ONGLET SÉDATION (Adulte / Traumatique) ──────────────────────────────────
+// Dilutions réglables (mémorisées sur l'appareil), débits et bolus horodatés,
+// posologie au poids si renseigné. L'appli calcule ce qui est saisi : elle ne
+// propose ni cible ni dose.
+const SED_DRUGS = [
+  { key:"hypnovel", name:"Hypnovel",   unit:"mg", rateKey:"hypnovelV", def:{ qty:"50",  vol:"50" }, bolusSteps:[-2,-1,1,2] },
+  { key:"sufenta",  name:"Sufentanyl", unit:"µg", rateKey:"sufentaV",  def:{ qty:"250", vol:"50" }, bolusSteps:[-10,-5,5,10] },
+];
+const SED_DEFAULT_DIL = { hypnovel: SED_DRUGS[0].def, sufenta: SED_DRUGS[1].def };
+const sedPerHour = (rate, dil) => {
+  const r = mesNum(rate), q = mesNum(dil?.qty), v = mesNum(dil?.vol);
+  return r != null && r > 0 && q != null && v != null && v > 0 ? r * q / v : null;
+};
+const sedFmt = (n, d = 2) => (n == null ? "—" : String(Math.round(n * Math.pow(10, d)) / Math.pow(10, d)).replace(".", ","));
+
+function SedSheet({ P, mono, sans, disp, kind, title, unit, initial, steps, stepUnit, dilPreview, onSave, onClose, onReset, footer }) {
+  // kind : "debit" | "bolus" | "dil"
+  const [val, setVal] = useState(initial?.val ?? "");
+  const [val2, setVal2] = useState(initial?.val2 ?? "");
+  const [time, setTime] = useState(getNow());
+  const [active, setActive] = useState(1);
+  const cur = active === 1 ? val : val2, setCur = active === 1 ? setVal : setVal2;
+  const apply = (st) => { const base = mesNum(cur) ?? 0; setCur(String(Math.max(0, Math.round((base + st) * 100) / 100))); };
+  const fieldSt = (on) => ({ borderRadius:12, padding:"8px 10px", textAlign:"center", border:`1.5px solid ${on ? P.blue : P.border}`, background:P.surfaceAlt,
+    boxShadow: on ? `0 0 0 3px color-mix(in srgb, ${P.blue} 22%, transparent)` : "none" });
+  const inSt = { width:"100%", boxSizing:"border-box", background:"transparent", border:"none", outline:"none", textAlign:"center", fontSize:24, fontWeight:800, fontFamily:mono, color:P.text };
+  const lab = { fontSize:8.5, fontWeight:700, letterSpacing:"0.08em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase" };
+  const ok = kind === "dil" ? mesNum(val) > 0 && mesNum(val2) > 0 : mesNum(val) > 0;
+  const dp = kind === "dil" && ok ? dilPreview(mesNum(val), mesNum(val2)) : null;
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:90, background:"rgba(10,17,27,0.6)", display:"flex", flexDirection:"column", justifyContent:"flex-end" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background:P.surface, borderRadius:"20px 20px 0 0", padding:"16px 14px 22px", maxHeight:"92vh", overflowY:"auto", fontFamily:sans }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+          <div style={{ width:38, height:38, borderRadius:12, background:`linear-gradient(135deg, ${P.violet}, ${P.violetText})`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:19 }}>{kind === "bolus" ? "💉" : kind === "dil" ? "🧪" : "💊"}</div>
+          <div>
+            <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.14em", color:P.violetText, fontFamily:mono, textTransform:"uppercase" }}>{kind === "bolus" ? "Nouveau bolus" : kind === "dil" ? "Dilution" : "Débit"}</div>
+            <div style={{ fontSize:17, fontWeight:800, fontFamily:disp, color:P.text }}>{title}</div>
+          </div>
+          {kind !== "dil" && (
+            <input type="time" value={time} onChange={e => setTime(e.target.value)}
+              style={{ marginLeft:"auto", background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:10, padding:"6px 8px", fontSize:13, fontWeight:800, fontFamily:mono, color:P.text, outline:"none" }} />
+          )}
+          <button onClick={onClose} style={{ marginLeft: kind === "dil" ? "auto" : 0, background:"transparent", border:"none", color:P.textSoft, fontSize:22, cursor:"pointer" }}>×</button>
+        </div>
+        {kind === "dil" ? (
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            <div style={fieldSt(active === 1)} onClick={() => setActive(1)}><div style={lab}>Principe actif ({unit})</div>
+              <input type="text" inputMode="decimal" value={val} onFocus={() => setActive(1)} onChange={e => setVal(e.target.value.replace(",", "."))} style={inSt} /></div>
+            <div style={fieldSt(active === 2)} onClick={() => setActive(2)}><div style={lab}>Volume total (cc)</div>
+              <input type="text" inputMode="decimal" value={val2} onFocus={() => setActive(2)} onChange={e => setVal2(e.target.value.replace(",", "."))} style={inSt} /></div>
+          </div>
+        ) : (
+          <div style={fieldSt(true)}><div style={lab}>{kind === "bolus" ? `Dose administrée (${unit})` : "Débit (mL/h)"}</div>
+            <input type="text" inputMode="decimal" autoFocus value={val} onChange={e => setVal(e.target.value.replace(",", "."))} style={inSt} /></div>
+        )}
+        {dp && <div style={{ marginTop:8, fontSize:11, fontWeight:700, fontFamily:mono, color:P.violetText, background:P.violetSoft, border:`1px solid ${P.violet}`, borderRadius:11, padding:"8px 10px", textAlign:"center" }}>{dp}</div>}
+        <div style={{ display:"flex", gap:6, marginTop:10 }}>
+          {steps.map(st => (
+            <button key={st} onMouseDown={e => e.preventDefault()} onClick={() => apply(st)}
+              style={{ flex:1, padding:"9px 0", borderRadius:10, border:`1.5px solid ${P.border}`, background:P.surface, color:P.text, fontSize:13, fontWeight:800, fontFamily:mono, cursor:"pointer" }}>
+              {st > 0 ? "+" : "−"}{String(Math.abs(st)).replace(".", ",")}
+            </button>
+          ))}
+        </div>
+        {footer}
+        {kind === "dil" && (
+          <p style={{ margin:"9px 0 0", fontSize:10, color:P.textSoft, lineHeight:1.5 }}>
+            Mémorisé sur cet appareil pour les prochaines réanimations. À vérifier avec la seringue réellement montée : l'appli ne contrôle pas la préparation.
+          </p>
+        )}
+        <button disabled={!ok} onClick={() => onSave(kind === "dil" ? { qty: val, vol: val2 } : val, time)}
+          style={{ width:"100%", marginTop:12, border:"none", borderRadius:14, padding:13, fontSize:14, fontWeight:800, fontFamily:disp,
+            color: ok ? "#fff" : P.textSoft, cursor: ok ? "pointer" : "default",
+            background: ok ? `linear-gradient(135deg, ${P.violet}, color-mix(in srgb, ${P.violet} 70%, #000))` : P.surfaceAlt }}>
+          ✓ {kind === "bolus" ? "Enregistrer le bolus" : kind === "dil" ? "Enregistrer la dilution" : "Valider le débit"}
+        </button>
+        {onReset && <button onClick={onReset} style={{ width:"100%", marginTop:6, background:"transparent", border:"none", color:P.textSoft, fontSize:11.5, cursor:"pointer", fontFamily:sans, padding:6 }}>Revenir aux valeurs d'origine</button>}
+      </div>
+    </div>
+  );
+}
+
+function SedationTab({ P, mono, sans, disp, racs, dil, onDil, log, extra, poids, onPoids, sec, onDebit, onBolus, onAddExtra, onDeleteExtra, onDeleteLog, autresDrogues, onAutres }) {
+  const [sheet, setSheet] = useState(null); // {kind, drug, name, unit}
+  const card = { background:P.surface, border:`1px solid ${P.border}`, borderRadius:16, padding:"11px 12px", marginBottom:10 };
+  const kg = mesNum(poids);
+  const lastOf = (drugKey, kind) => [...log].reverse().find(e => e.drug === drugKey && e.kind === kind);
+  const ago = (e) => { if (!e) return ""; const m = Math.max(0, Math.round((sec - e.sec) / 60)); return m < 1 ? "à l'instant" : `il y a ${m} min`; };
+  const btn = (primary) => ({ flex:1, textAlign:"center", borderRadius:11, padding:"9px 4px", fontSize:12, fontWeight:800, fontFamily:disp, cursor:"pointer",
+    border:`1.5px solid ${primary ? P.violet : P.border}`, background: primary ? P.violetSoft : P.surfaceAlt, color: primary ? P.violetText : P.text });
+  const chipSt = { marginLeft:"auto", fontSize:9.5, fontWeight:700, fontFamily:mono, background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:99, padding:"4px 9px", color:P.textMid, cursor:"pointer" };
+
+  const drugCard = (d) => {
+    const dl = dil[d.key] || d.def;
+    const rate = racs[d.rateKey];
+    const ph = sedPerHour(rate, dl);
+    const dbt = lastOf(d.key, "debit"), blt = lastOf(d.key, "bolus");
+    return (
+      <div key={d.key} style={card}>
+        <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:8 }}>
+          <span style={{ width:30, height:30, borderRadius:9, background:P.violetSoft, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15 }}>💊</span>
+          <span style={{ fontFamily:disp, fontSize:14, fontWeight:800, color:P.text }}>{d.name}</span>
+          <button onClick={() => setSheet({ kind:"dil", drug:d.key, name:d.name, unit:d.unit })} style={chipSt}>
+            dilution <b style={{ color:P.violetText }}>{dl.qty} {d.unit} / {dl.vol} cc</b> ✎
+          </button>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1.1fr 1.4fr", gap:8 }}>
+          <div style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:12, padding:"6px 10px", textAlign:"center" }}>
+            <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.1em", color:P.textSoft, fontFamily:mono }}>DÉBIT</div>
+            <div style={{ fontSize:24, fontWeight:800, fontFamily:mono, color: mesNum(rate) > 0 ? P.text : P.textSoft }}>{mesNum(rate) > 0 ? String(rate).replace(".", ",") : "—"}<span style={{ fontSize:10, fontWeight:600, color:P.textSoft, marginLeft:3 }}>mL/h</span></div>
+          </div>
+          <div style={{ border:`1.5px solid ${ph != null ? P.violet : P.border}`, background: ph != null ? P.violetSoft : P.surfaceAlt, borderRadius:12, padding:"6px 10px", display:"flex", flexDirection:"column", justifyContent:"center" }}>
+            <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.1em", color: ph != null ? P.violetText : P.textSoft, fontFamily:mono }}>POSOLOGIE</div>
+            <div style={{ fontSize:20, fontWeight:800, fontFamily:mono, color: ph != null ? P.violetText : P.textSoft }}>{ph != null ? `${sedFmt(ph, d.unit === "µg" ? 1 : 2)} ${d.unit}/h` : "—"}</div>
+            {ph != null && kg > 0 && <div style={{ fontSize:10, fontWeight:600, fontFamily:mono, color:P.violetText, opacity:0.85 }}>{sedFmt(ph / kg, 3)} {d.unit}/kg/h</div>}
+          </div>
+        </div>
+        {dbt && (
+          <div style={{ display:"flex", justifyContent:"space-between", marginTop:8, fontSize:10.5, fontFamily:mono, color:P.textSoft }}>
+            <span>Débit réglé à <b style={{ color:P.text }}>{dbt.time}</b></span><span>{ago(dbt)}</span>
+          </div>
+        )}
+        <div style={{ display:"flex", gap:7, marginTop:8 }}>
+          <button style={btn(true)} onClick={() => setSheet({ kind:"bolus", drug:d.key, name:d.name, unit:d.unit, steps:d.bolusSteps })}>+ Bolus</button>
+          <button style={btn(false)} onClick={() => setSheet({ kind:"debit", drug:d.key, name:d.name, unit:d.unit, initial:{ val: rate || "" } })}>{mesNum(rate) > 0 ? "Modifier le débit" : "Régler le débit"}</button>
+        </div>
+        {blt && <div style={{ marginTop:7, fontSize:10.5, fontFamily:mono, color:P.textMid, background:P.surfaceAlt, borderRadius:9, padding:"6px 9px" }}>Dernier bolus : {blt.dose} {d.unit} à {blt.time}</div>}
+      </div>
+    );
+  };
+  const curareLast = lastOf("curare", "bolus");
+  const sheetCfg = sheet && (() => {
+    const d = SED_DRUGS.find(x => x.key === sheet.drug);
+    if (sheet.kind === "dil") {
+      const dl = dil[sheet.drug] || d.def;
+      return { initial:{ val: dl.qty, val2: dl.vol }, steps:[-50,-10,10,50], onReset: () => { onDil(sheet.drug, d.def); setSheet(null); },
+        dilPreview:(q, v) => `= ${sedFmt(q / v, 3)} ${sheet.unit}/mL`,
+        onSave:(v) => { onDil(sheet.drug, v); setSheet(null); } };
+    }
+    if (sheet.kind === "debit") return { initial:sheet.initial, steps:[-1,-0.5,0.5,1], onSave:(v, t) => { onDebit(sheet.drug, sheet.name, v, t); setSheet(null); } };
+    return { initial:{ val:"" }, steps: sheet.steps || [-5,-1,1,5], onSave:(v, t) => { onBolus(sheet.drug, sheet.name, v, sheet.unit, t); setSheet(null); } };
+  })();
+
+  return (
+    <div>
+      <div style={{ display:"flex", alignItems:"center", gap:8, background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:12, padding:"7px 10px", marginBottom:10 }}>
+        <span style={{ fontSize:9, fontWeight:700, letterSpacing:"0.1em", color:P.textSoft, fontFamily:mono }}>POIDS</span>
+        <input type="text" inputMode="decimal" value={poids || ""} placeholder="—" onChange={e => onPoids(e.target.value.replace(",", "."))}
+          style={{ width:54, background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:8, padding:"5px 4px", fontSize:15, fontWeight:800, fontFamily:mono, color:P.text, textAlign:"center", outline:"none" }} />
+        <span style={{ fontSize:10, color:P.textSoft }}>kg</span>
+        <span style={{ marginLeft:"auto", fontSize:10, color:P.textSoft, textAlign:"right", lineHeight:1.3 }}>pour les doses<br />en /kg/h (optionnel)</span>
+      </div>
+
+      {SED_DRUGS.map(drugCard)}
+
+      <div style={card}>
+        <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:8 }}>
+          <span style={{ width:30, height:30, borderRadius:9, background:P.amberSoft, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15 }}>🧪</span>
+          <span style={{ fontFamily:disp, fontSize:14, fontWeight:800, color:P.text }}>Curare</span>
+        </div>
+        {curareLast
+          ? <div style={{ fontSize:10.5, fontFamily:mono, color:P.textMid, background:P.surfaceAlt, borderRadius:9, padding:"6px 9px" }}>Dernier bolus : {curareLast.dose} mg à {curareLast.time} · <b>{ago(curareLast)}</b></div>
+          : <div style={{ fontSize:10.5, fontFamily:mono, color:P.textSoft }}>Aucun bolus enregistré</div>}
+        <div style={{ display:"flex", gap:7, marginTop:8 }}>
+          <button style={btn(true)} onClick={() => setSheet({ kind:"bolus", drug:"curare", name:"Curare", unit:"mg", steps:[-10,-5,5,10] })}>+ Bolus</button>
+        </div>
+      </div>
+
+      {extra.map(x => {
+        const ph = sedPerHour(x.rate, { qty:x.qty, vol:x.vol });
+        return (
+          <div key={x.id} style={card}>
+            <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:8 }}>
+              <span style={{ width:30, height:30, borderRadius:9, background:P.violetSoft, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15 }}>💊</span>
+              <span style={{ fontFamily:disp, fontSize:14, fontWeight:800, color:P.text, flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{x.name}</span>
+              <span style={{ fontSize:9.5, fontFamily:mono, color:P.textSoft }}>{x.qty} {x.unit} / {x.vol} cc</span>
+              <button onClick={() => { if (window.confirm(`Retirer « ${x.name} » ?`)) onDeleteExtra(x.id); }}
+                style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:18, cursor:"pointer", padding:"0 2px" }}>×</button>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1.1fr 1.4fr", gap:8 }}>
+              <div style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:12, padding:"6px 10px", textAlign:"center" }}>
+                <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.1em", color:P.textSoft, fontFamily:mono }}>DÉBIT</div>
+                <div style={{ fontSize:24, fontWeight:800, fontFamily:mono, color: mesNum(x.rate) > 0 ? P.text : P.textSoft }}>{mesNum(x.rate) > 0 ? String(x.rate).replace(".", ",") : "—"}<span style={{ fontSize:10, color:P.textSoft, marginLeft:3 }}>mL/h</span></div>
+              </div>
+              <div style={{ border:`1.5px solid ${ph != null ? P.violet : P.border}`, background: ph != null ? P.violetSoft : P.surfaceAlt, borderRadius:12, padding:"6px 10px", display:"flex", flexDirection:"column", justifyContent:"center" }}>
+                <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.1em", color: ph != null ? P.violetText : P.textSoft, fontFamily:mono }}>POSOLOGIE</div>
+                <div style={{ fontSize:20, fontWeight:800, fontFamily:mono, color: ph != null ? P.violetText : P.textSoft }}>{ph != null ? `${sedFmt(ph, 2)} ${x.unit}/h` : "—"}</div>
+                {ph != null && kg > 0 && <div style={{ fontSize:10, fontWeight:600, fontFamily:mono, color:P.violetText, opacity:0.85 }}>{sedFmt(ph / kg, 3)} {x.unit}/kg/h</div>}
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:7, marginTop:8 }}>
+              <button style={btn(true)} onClick={() => setSheet({ kind:"bolus", drug:x.id, name:x.name, unit:x.unit, steps:[-1,-0.5,0.5,1] })}>+ Bolus</button>
+              <button style={btn(false)} onClick={() => setSheet({ kind:"debit", drug:x.id, name:x.name, unit:x.unit, initial:{ val: x.rate || "" } })}>{mesNum(x.rate) > 0 ? "Modifier le débit" : "Régler le débit"}</button>
+            </div>
+          </div>
+        );
+      })}
+      <AddExtraRow P={P} mono={mono} sans={sans} onAdd={onAddExtra} />
+
+      <Lbl>Notes (autres drogues)</Lbl>
+      <TArea value={autresDrogues} onChange={onAutres} placeholder="Ex : Propofol 200 mg/h…" rows={2} />
+
+      {log.length > 0 && (
+        <div style={{ marginTop:14 }}>
+          <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.12em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase", marginBottom:6 }}>Historique sédation</div>
+          <div style={{ borderLeft:`2px solid ${P.border}`, marginLeft:6, paddingLeft:12, display:"flex", flexDirection:"column", gap:9 }}>
+            {[...log].sort((a, b) => a.sec - b.sec).map(e => (
+              <div key={e.id} style={{ position:"relative", display:"flex", alignItems:"center", gap:6, fontSize:11.5, fontWeight:600, color:P.textMid }}>
+                <span style={{ position:"absolute", left:-17, top:5, width:8, height:8, borderRadius:99, background:P.violet }} />
+                <b style={{ fontFamily:mono, fontSize:11, color:P.text }}>{e.time}</b>
+                <span style={{ flex:1, minWidth:0 }}>{e.text}</span>
+                <button onClick={() => { if (window.confirm("Supprimer cette ligne de l'historique ?")) onDeleteLog(e.id); }}
+                  style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:16, cursor:"pointer", padding:0 }}>×</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {sheet && sheetCfg && (
+        <SedSheet P={P} mono={mono} sans={sans} disp={disp} kind={sheet.kind}
+          title={sheet.name} unit={sheet.unit} initial={sheetCfg.initial} steps={sheetCfg.steps}
+          dilPreview={sheetCfg.dilPreview} onSave={sheetCfg.onSave} onReset={sheetCfg.onReset} onClose={() => setSheet(null)} />
+      )}
+    </div>
+  );
+}
+
+function AddExtraRow({ P, mono, sans, onAdd, label = "+ Autre sédatif / analgésique", placeholder = "Nom (ex : Propofol)" }) {
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ name:"", qty:"", vol:"", unit:"mg" });
+  const ok = f.name.trim() && mesNum(f.qty) > 0 && mesNum(f.vol) > 0;
+  const inp = { background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:9, padding:"9px 8px", fontSize:14, fontWeight:700, fontFamily:mono, color:P.text, outline:"none", boxSizing:"border-box", width:"100%", textAlign:"center" };
+  if (!open) return (
+    <button onClick={() => setOpen(true)}
+      style={{ width:"100%", border:`1.5px dashed ${P.border}`, background:"transparent", borderRadius:14, padding:11, fontSize:12, fontWeight:700, color:P.textSoft, cursor:"pointer", fontFamily:sans, marginBottom:12 }}>
+      {label}
+    </button>
+  );
+  return (
+    <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:14, padding:11, marginBottom:12 }}>
+      <input value={f.name} onChange={e => setF(v => ({ ...v, name:e.target.value }))} placeholder={placeholder} style={{ ...inp, textAlign:"left", fontFamily:sans, marginBottom:8 }} />
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 70px", gap:7 }}>
+        <input value={f.qty} inputMode="decimal" onChange={e => setF(v => ({ ...v, qty:e.target.value.replace(",", ".") }))} placeholder="Quantité" style={inp} />
+        <input value={f.vol} inputMode="decimal" onChange={e => setF(v => ({ ...v, vol:e.target.value.replace(",", ".") }))} placeholder="Volume cc" style={inp} />
+        <button onClick={() => setF(v => ({ ...v, unit: v.unit === "mg" ? "µg" : "mg" }))} style={{ ...inp, cursor:"pointer", background:P.violetSoft, borderColor:P.violet, color:P.violetText }}>{f.unit}</button>
+      </div>
+      <div style={{ display:"flex", gap:8, marginTop:9 }}>
+        <button onClick={() => setOpen(false)} style={{ flex:1, padding:10, borderRadius:10, border:`1.5px solid ${P.border}`, background:P.surface, color:P.textSoft, fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:sans }}>Annuler</button>
+        <button disabled={!ok} onClick={() => { onAdd({ name:f.name.trim(), qty:f.qty, vol:f.vol, unit:f.unit }); setF({ name:"", qty:"", vol:"", unit:"mg" }); setOpen(false); }}
+          style={{ flex:2, padding:10, borderRadius:10, border:"none", background: ok ? P.violet : P.surface, color: ok ? "#fff" : P.textSoft, fontWeight:800, fontSize:12, cursor: ok ? "pointer" : "default", fontFamily:sans }}>Ajouter la ligne</button>
+      </div>
+    </div>
+  );
+}
+
+
+// ── HÉMODYNAMIQUE : noradrénaline réglée par paliers, reliée à la PAM ───────
+// L'appli calcule et enregistre ce qui est saisi : elle ne propose ni dose ni cible de débit.
+const VASO_DEFAULT_DIL = { qty:"8", vol:"40" };
+const vasoUg = (rate, dil, unit) => { const ph = sedPerHour(rate, dil); return ph == null ? null : (unit === "µg" ? ph : ph * 1000); }; // µg/h
+function pamPoints(mesures, hemoList) {
+  const pts = [];
+  const cur = {};
+  (mesures || []).forEach(m => {
+    MES_KEYS.forEach(k => { if (mesHas(m[k])) cur[k] = m[k]; });
+    if ((mesHas(m.pas) || mesHas(m.pad)) && mesHas(cur.pas) && mesHas(cur.pad) && m.sec != null)
+      pts.push({ sec:m.sec, time:m.time, pam: Math.round((mesNum(cur.pas) + 2 * mesNum(cur.pad)) / 3) });
+  });
+  (hemoList || []).forEach(h => {
+    const a = mesNum(h.pas), d = mesNum(h.pad);
+    if (a != null && d != null && a > 0 && d > 0 && h.sec != null) {
+      const pam = Math.round((a + 2 * d) / 3);
+      if (!pts.some(p => p.sec === h.sec && p.pam === pam)) pts.push({ sec:h.sec, time:h.time, pam });
+    }
+  });
+  return pts.sort((a, b) => a.sec - b.sec);
+}
+function pamAfterOf(entry, pts) { const n = pts.find(p => p.sec > entry.sec); return n ? n.pam : null; }
+
+function VasoPanel({ P, mono, sans, disp, racs, dil, onDil, log, extra, poids, sec, pamPts, livePam, tc, onDebit, onAddExtra, onDeleteExtra, onDeleteLog }) {
+  const [sheet, setSheet] = useState(null); // {kind, drug, name, unit, initial?}
+  const kg = mesNum(poids);
+  const target = tc ? 80 : 65;
+  const card = { background:P.surface, border:`1px solid ${P.border}`, borderRadius:16, padding:"11px 12px", marginBottom:10 };
+  const mins = (s) => Math.max(0, Math.round((sec - s) / 60));
+  const lastPalier = [...log].sort((a, b) => a.sec - b.sec).pop();
+  const lastPam = pamPts.length ? pamPts[pamPts.length - 1] : null;
+  const nadDil = dil.norad || VASO_DEFAULT_DIL;
+  const chipSt = { marginLeft:"auto", fontSize:9.5, fontWeight:700, fontFamily:mono, background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:99, padding:"4px 9px", color:P.textMid, cursor:"pointer" };
+  const stepBtn = (up) => ({ textAlign:"center", borderRadius:11, padding:"9px 0", fontSize:12.5, fontWeight:800, fontFamily:mono, cursor:"pointer",
+    border:`1.5px solid ${up ? P.rose : P.border}`, background: up ? P.roseSoft : P.surfaceAlt, color: up ? P.roseText : P.blueText });
+  const fmtRate = (v) => String(v).replace(".", ",");
+  const lastOf = (drug) => [...log].filter(e => e.drug === drug).sort((a, b) => a.sec - b.sec).pop();
+
+  const drugBlock = ({ id, name, rate, dl, unit, extraItem }) => {
+    const ugh = vasoUg(rate, dl, unit);                 // µg/h
+    const mgh = ugh != null ? ugh / 1000 : null;
+    const perKgMin = ugh != null && kg > 0 ? ugh / 60 / kg : null;
+    const has = mesNum(rate) > 0;
+    const lp = lastOf(id);
+    const apply = (st) => onDebit(id, name, String(Math.max(0, Math.round(((mesNum(rate) || 0) + st) * 100) / 100)), getNow());
+    return (
+      <div key={id} style={card}>
+        <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:8 }}>
+          <span style={{ width:30, height:30, borderRadius:9, background:P.roseSoft, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, flexShrink:0 }}>💉</span>
+          <span style={{ fontFamily:disp, fontSize:14, fontWeight:800, color:P.text, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span>
+          {extraItem
+            ? <>
+                <span style={{ marginLeft:"auto", fontSize:9.5, fontFamily:mono, color:P.textSoft }}>{dl.qty} {unit} / {dl.vol} cc</span>
+                <button onClick={() => { if (window.confirm(`Retirer « ${name} » ?`)) onDeleteExtra(id); }}
+                  style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:18, cursor:"pointer", padding:"0 2px" }}>×</button>
+              </>
+            : <button onClick={() => setSheet({ kind:"dil", drug:id, name, unit })} style={chipSt}>
+                dilution <b style={{ color:P.roseText }}>{dl.qty} {unit} / {dl.vol} cc</b> ✎
+              </button>}
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1.1fr 1.4fr", gap:8 }}>
+          <div style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:12, padding:"6px 10px", textAlign:"center" }}>
+            <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.1em", color:P.textSoft, fontFamily:mono }}>DÉBIT</div>
+            <div style={{ fontSize:24, fontWeight:800, fontFamily:mono, color: has ? P.text : P.textSoft }}>{has ? fmtRate(rate) : "—"}<span style={{ fontSize:10, fontWeight:600, color:P.textSoft, marginLeft:3 }}>mL/h</span></div>
+          </div>
+          <div style={{ border:`1.5px solid ${mgh != null ? P.rose : P.border}`, background: mgh != null ? P.roseSoft : P.surfaceAlt, borderRadius:12, padding:"6px 10px", display:"flex", flexDirection:"column", justifyContent:"center" }}>
+            <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.1em", color: mgh != null ? P.roseText : P.textSoft, fontFamily:mono }}>POSOLOGIE</div>
+            <div style={{ fontSize:20, fontWeight:800, fontFamily:mono, color: mgh != null ? P.roseText : P.textSoft }}>{mgh != null ? (unit === "µg" ? `${sedFmt(ugh, 1)} µg/h` : `${sedFmt(mgh, 2)} mg/h`) : "—"}</div>
+            {perKgMin != null && <div style={{ fontSize:10, fontWeight:600, fontFamily:mono, color:P.roseText, opacity:0.85 }}>{sedFmt(perKgMin, 3)} µg/kg/min</div>}
+          </div>
+        </div>
+        {lp && <div style={{ display:"flex", justifyContent:"space-between", marginTop:8, fontSize:10.5, fontWeight:600, fontFamily:mono, color:P.textSoft }}>
+          <span>Débit réglé à <b style={{ color:P.text }}>{lp.time}</b></span><span>depuis {mins(lp.sec)} min</span></div>}
+        {has ? (
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:6, marginTop:8 }}>
+            {[-1, -0.5, 0.5, 1].map(st => (
+              <button key={st} onClick={() => apply(st)} style={stepBtn(st > 0)}>{st > 0 ? "+" : "−"}{fmtRate(Math.abs(st))}</button>
+            ))}
+          </div>
+        ) : null}
+        <button onClick={() => setSheet({ kind:"debit", drug:id, name, unit, initial:{ val: rate || "" } })}
+          style={{ width:"100%", marginTop:8, borderRadius:11, padding:"9px 4px", fontSize:12, fontWeight:800, fontFamily:disp, cursor:"pointer",
+            border:`1.5px solid ${has ? P.border : P.rose}`, background: has ? P.surfaceAlt : P.roseSoft, color: has ? P.text : P.roseText }}>
+          {has ? "Saisir un débit précis" : "Régler le débit"}
+        </button>
+        {lp && lp.prev != null && <div style={{ marginTop:8, fontSize:10.5, fontWeight:600, fontFamily:mono, color:P.textMid, background:P.surfaceAlt, borderRadius:9, padding:"6px 9px", display:"flex", justifyContent:"space-between", gap:6 }}>
+          <span>Dernier palier : <b style={{ color:P.text }}>{fmtRate(lp.prev || 0)} → {fmtRate(lp.rate)} mL/h</b></span>
+          <span>{lp.pam != null ? <>PAM <b style={{ color:P.text }}>{lp.pam}{(() => { const a = pamAfterOf(lp, pamPts); return a != null ? ` → ${a}` : " → ?"; })()}</b></> : "PAM non renseignée"}</span>
+        </div>}
+      </div>
+    );
+  };
+
+  const sheetCfg = (() => {
+    if (!sheet) return null;
+    if (sheet.kind === "dil") {
+      const cur = dil[sheet.drug] || VASO_DEFAULT_DIL;
+      return { initial:{ val:cur.qty, val2:cur.vol }, steps: [-1, -0.5, 0.5, 1], dilPreview:(q, v) => `= ${sedFmt(q / v, 3)} ${sheet.unit}/mL`,
+        onReset: () => { onDil(sheet.drug, VASO_DEFAULT_DIL); setSheet(null); }, onSave:(v) => { onDil(sheet.drug, v); setSheet(null); } };
+    }
+    return { initial:sheet.initial, steps:[-1, -0.5, 0.5, 1], onSave:(v, t) => { onDebit(sheet.drug, sheet.name, v, t); setSheet(null); } };
+  })();
+
+  const reminder = (lastPalier || mesNum(racs.noradrV) > 0) ? (
+    <div style={{ display:"flex", gap:8, alignItems:"center", background:P.blueSoft, border:`1px solid ${P.blue}`, borderRadius:11, padding:"7px 10px", marginBottom:10, fontSize:11, fontWeight:600, color:P.blueText, fontFamily:sans }}>
+      <span>⏱</span>
+      <span>
+        {lastPalier ? <>Dernier palier il y a <b style={{ fontFamily:mono }}>{mins(lastPalier.sec)} min</b></> : "Aucun palier enregistré"}
+        {" · "}
+        {lastPam ? <>PAM mesurée il y a <b style={{ fontFamily:mono }}>{mins(lastPam.sec)} min</b></> : livePam != null ? <>PAM saisie <b style={{ fontFamily:mono }}>{livePam}</b> (non enregistrée)</> : "PAM non mesurée"}
+        {lastPalier && lastPam && lastPam.sec < lastPalier.sec ? <b style={{ fontFamily:mono }}> (avant le dernier palier)</b> : null}
+      </span>
+    </div>
+  ) : null;
+
+  return (
+    <div>
+      {reminder}
+      {drugBlock({ id:"norad", name:"Noradrénaline", rate:racs.noradrV, dl:nadDil, unit:"mg" })}
+      {extra.map(x => drugBlock({ id:x.id, name:x.name, rate:x.rate, dl:{ qty:x.qty, vol:x.vol }, unit:x.unit, extraItem:true }))}
+      <AddExtraRow P={P} mono={mono} sans={sans} onAdd={onAddExtra} label="+ Autre vasopresseur" placeholder="Nom (ex : Adrénaline)" />
+
+      {log.length > 0 && (
+        <div style={{ marginBottom:12 }}>
+          <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.12em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase", marginBottom:6 }}>Historique des paliers</div>
+          <div style={{ borderLeft:`2px solid ${P.border}`, marginLeft:6, paddingLeft:12, display:"flex", flexDirection:"column", gap:9 }}>
+            {[...log].sort((a, b) => a.sec - b.sec).map(e => {
+              const aft = pamAfterOf(e, pamPts);
+              return (
+                <div key={e.id} style={{ position:"relative", display:"flex", alignItems:"center", gap:6, fontSize:11.5, fontWeight:600, color:P.textMid }}>
+                  <span style={{ position:"absolute", left:-17, top:5, width:8, height:8, borderRadius:99, background:P.rose }} />
+                  <b style={{ fontFamily:mono, fontSize:11, color:P.text }}>{e.time}</b>
+                  <span style={{ flex:1, minWidth:0 }}>{e.text}</span>
+                  {e.pam != null && <span style={{ fontFamily:mono, fontSize:10.5, fontWeight:700, borderRadius:8, padding:"2px 6px", background: aft != null && aft >= target ? P.greenSoft : P.amberSoft, color: aft != null && aft >= target ? P.greenText : P.amberText }}>PAM {e.pam} → {aft != null ? aft : "?"}</span>}
+                  <button onClick={() => { if (window.confirm("Supprimer ce palier de l'historique ?")) onDeleteLog(e.id); }}
+                    style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:16, cursor:"pointer", padding:0 }}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {sheet && sheetCfg && (
+        <SedSheet P={P} mono={mono} sans={sans} disp={disp} kind={sheet.kind}
+          title={sheet.name} unit={sheet.unit} initial={sheetCfg.initial} steps={sheetCfg.steps}
+          dilPreview={sheetCfg.dilPreview} onSave={sheetCfg.onSave} onReset={sheetCfg.onReset} onClose={() => setSheet(null)}
+          footer={sheet.kind === "debit" ? (
+            <div style={{ marginTop:10, display:"flex", justifyContent:"space-between", alignItems:"baseline", padding:"7px 10px", background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:11 }}>
+              <span style={{ fontSize:10, fontWeight:700, letterSpacing:"0.08em", fontFamily:mono, color:P.amberText }}>{livePam != null ? "PAM ENREGISTRÉE AVEC LE PALIER" : lastPam ? `DERNIÈRE PAM · IL Y A ${mins(lastPam.sec)} MIN` : "PAM NON RENSEIGNÉE"}</span>
+              <b style={{ fontSize:20, fontFamily:mono, color:P.amberText }}>{livePam != null ? livePam : lastPam ? lastPam.pam : "—"}</b>
+            </div>) : null} />
+      )}
+    </div>
+  );
+}
+
+
+// ── HÉMODYNAMIQUE PÉDIATRIQUE : adrénaline IVSE par paliers, reliée à la PAM ──
+// Les paliers de référence viennent de la table poids/âge de l'appli ; la vitesse saisie est
+// reconvertie en µg/kg/min avec le poids de l'enfant. Dilution : règle automatique selon le poids,
+// modifiable pour la réanimation en cours seulement.
+function VasoPedPanel({ P, mono, sans, disp, localMat, kg, rate, adrPalier, dil, dilAuto, onDil, onDilReset, log, extra, sec, pamPts, livePam, onDebit, onRefPalier, onAddExtra, onDeleteExtra, onDeleteLog }) {
+  const [sheet, setSheet] = useState(null); // {kind, drug, name, unit, initial?}
+  const target = localMat ? localMat.pamHTC : null;
+  const card = { background:P.surface, border:`1px solid ${P.border}`, borderRadius:16, padding:"11px 12px", marginBottom:10 };
+  const mins = (s2) => Math.max(0, Math.round((sec - s2) / 60));
+  const fm = (v) => String(v).replace(".", ",");
+  const lastPalier = [...log].sort((a, b) => a.sec - b.sec).pop();
+  const lastPam = pamPts.length ? pamPts[pamPts.length - 1] : null;
+  const lastOf = (drug) => [...log].filter(e => e.drug === drug).sort((a, b) => a.sec - b.sec).pop();
+  const chipSt = { marginLeft:"auto", fontSize:9.5, fontWeight:700, fontFamily:mono, background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:99, padding:"4px 9px", color:P.textMid, cursor:"pointer", flexShrink:0 };
+  const fineBtn = (up) => ({ textAlign:"center", borderRadius:11, padding:"8px 0", fontSize:12, fontWeight:800, fontFamily:mono, cursor:"pointer",
+    border:`1.5px solid ${up ? P.rose : P.border}`, background: up ? P.roseSoft : P.surfaceAlt, color: up ? P.roseText : P.blueText });
+
+  const block = ({ id, name, r, dl, unit, extraItem }) => {
+    const ugh = vasoUg(r, dl, unit);
+    const perKgMin = ugh != null && kg > 0 ? ugh / 60 / kg : null;
+    const has = mesNum(r) > 0;
+    const lp = lastOf(id);
+    const apply = (st) => onDebit(id, name, String(Math.max(0, Math.round(((mesNum(r) || 0) + st) * 100) / 100)), getNow());
+    return (
+      <div key={id} style={card}>
+        <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:8 }}>
+          <span style={{ width:30, height:30, borderRadius:9, background:P.roseSoft, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, flexShrink:0 }}>💉</span>
+          <span style={{ fontFamily:disp, fontSize:14, fontWeight:800, color:P.text, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span>
+          {extraItem
+            ? <>
+                <span style={{ marginLeft:"auto", fontSize:9.5, fontFamily:mono, color:P.textSoft, flexShrink:0 }}>{dl.qty} {unit} / {dl.vol} mL</span>
+                <button onClick={() => { if (window.confirm(`Retirer « ${name} » ?`)) onDeleteExtra(id); }}
+                  style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:18, cursor:"pointer", padding:"0 2px" }}>×</button>
+              </>
+            : <button onClick={() => setSheet({ kind:"dil", drug:id, name, unit })} style={chipSt}>
+                <b style={{ color:P.roseText }}>{dl.qty} {unit} / {dl.vol} mL</b> ✎{dilAuto ? "" : " ·perso"}
+              </button>}
+        </div>
+        {!extraItem && localMat && (
+          <>
+            <p style={{ margin:"0 0 5px", fontSize:9, fontWeight:700, letterSpacing:"0.08em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase" }}>Paliers de référence de la table (µg/kg/min → mL/h)</p>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, marginBottom:8 }}>
+              {[["0,2", localMat.adrPSE1], ["0,5", localMat.adrPSE2], ["1,0", localMat.adrPSE3], ["1,5", localMat.adrPSE4]].map(([lab, v], i) => (
+                <button key={lab} onClick={() => onRefPalier(i, v)}
+                  style={{ textAlign:"left", cursor:"pointer", borderRadius:10, padding:"6px 8px", fontFamily:sans,
+                    border:`1.5px solid ${adrPalier === i && String(rate) === String(v) ? P.rose : `color-mix(in srgb, ${P.rose} 30%, ${P.border})`}`,
+                    background: adrPalier === i && String(rate) === String(v) ? P.roseSoft : P.surfaceAlt }}>
+                  <div style={{ fontSize:8.5, fontWeight:600, fontFamily:mono, color:P.roseText }}>{lab} µg/kg/min</div>
+                  <div style={{ fontSize:13, fontWeight:800, fontFamily:mono, color:P.roseText }}>{fm(v)} mL/h</div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        <div style={{ display:"grid", gridTemplateColumns:"1.1fr 1.4fr", gap:8 }}>
+          <div style={{ background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:12, padding:"6px 10px", textAlign:"center" }}>
+            <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.1em", color:P.textSoft, fontFamily:mono }}>VITESSE PSE</div>
+            <div style={{ fontSize:24, fontWeight:800, fontFamily:mono, color: has ? P.text : P.textSoft }}>{has ? fm(r) : "—"}<span style={{ fontSize:10, fontWeight:600, color:P.textSoft, marginLeft:3 }}>mL/h</span></div>
+          </div>
+          <div style={{ border:`1.5px solid ${perKgMin != null ? P.rose : P.border}`, background: perKgMin != null ? P.roseSoft : P.surfaceAlt, borderRadius:12, padding:"6px 10px", display:"flex", flexDirection:"column", justifyContent:"center" }}>
+            <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.1em", color: perKgMin != null ? P.roseText : P.textSoft, fontFamily:mono }}>POSOLOGIE</div>
+            <div style={{ fontSize:20, fontWeight:800, fontFamily:mono, color: perKgMin != null ? P.roseText : P.textSoft }}>{perKgMin != null ? sedFmt(perKgMin, 3) : "—"}</div>
+            <div style={{ fontSize:10, fontWeight:600, fontFamily:mono, color:P.roseText, opacity:0.85 }}>µg/kg/min</div>
+          </div>
+        </div>
+        {lp && <div style={{ display:"flex", justifyContent:"space-between", marginTop:8, fontSize:10.5, fontWeight:600, fontFamily:mono, color:P.textSoft }}>
+          <span>Vitesse réglée à <b style={{ color:P.text }}>{lp.time}</b></span><span>depuis {mins(lp.sec)} min</span></div>}
+        {has && (
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:6, marginTop:8 }}>
+            {[-0.5, -0.1, 0.1, 0.5].map(st => (
+              <button key={st} onClick={() => apply(st)} style={fineBtn(st > 0)}>{st > 0 ? "+" : "−"}{fm(Math.abs(st))}</button>
+            ))}
+          </div>
+        )}
+        <button onClick={() => setSheet({ kind:"debit", drug:id, name, unit, initial:{ val: r || "" } })}
+          style={{ width:"100%", marginTop:8, borderRadius:11, padding:"9px 4px", fontSize:12, fontWeight:800, fontFamily:disp, cursor:"pointer",
+            border:`1.5px solid ${has ? P.border : P.rose}`, background: has ? P.surfaceAlt : P.roseSoft, color: has ? P.text : P.roseText }}>
+          {has ? "Saisir une vitesse précise" : "Régler la vitesse"}
+        </button>
+        {lp && <div style={{ marginTop:8, fontSize:10.5, fontWeight:600, fontFamily:mono, color:P.textMid, background:P.surfaceAlt, borderRadius:9, padding:"6px 9px", display:"flex", justifyContent:"space-between", gap:6 }}>
+          <span>Dernier palier : <b style={{ color:P.text }}>{fm(lp.prev || 0)} → {fm(lp.rate)} mL/h</b></span>
+          <span>{lp.pam != null ? <>PAM <b style={{ color:P.text }}>{lp.pam}{(() => { const a = pamAfterOf(lp, pamPts); return a != null ? ` → ${a}` : " → ?"; })()}</b></> : "PAM non renseignée"}</span>
+        </div>}
+      </div>
+    );
+  };
+
+  const sheetCfg = (() => {
+    if (!sheet) return null;
+    if (sheet.kind === "dil") {
+      return { initial:{ val:dil.qty, val2:dil.vol }, steps:[-1, -0.5, 0.5, 1], dilPreview:(q, v) => `= ${sedFmt(q / v, 3)} mg/mL`,
+        onReset: dilAuto ? null : () => { onDilReset(); setSheet(null); }, onSave:(v) => { onDil(v); setSheet(null); } };
+    }
+    return { initial:sheet.initial, steps:[-0.5, -0.1, 0.1, 0.5], onSave:(v, t) => { onDebit(sheet.drug, sheet.name, v, t); setSheet(null); } };
+  })();
+
+  return (
+    <div>
+      {(lastPalier || mesNum(rate) > 0) && (
+        <div style={{ display:"flex", gap:8, alignItems:"center", background:P.blueSoft, border:`1px solid ${P.blue}`, borderRadius:11, padding:"7px 10px", marginBottom:10, fontSize:11, fontWeight:600, color:P.blueText, fontFamily:sans }}>
+          <span>⏱</span>
+          <span>
+            {lastPalier ? <>Dernier palier il y a <b style={{ fontFamily:mono }}>{mins(lastPalier.sec)} min</b></> : "Aucun palier enregistré"}
+            {" · "}
+            {lastPam ? <>PAM mesurée il y a <b style={{ fontFamily:mono }}>{mins(lastPam.sec)} min</b></> : livePam != null ? <>PAM saisie <b style={{ fontFamily:mono }}>{livePam}</b> (non enregistrée)</> : "PAM non mesurée"}
+            {lastPalier && lastPam && lastPam.sec < lastPalier.sec ? <b style={{ fontFamily:mono }}> (avant le dernier palier)</b> : null}
+          </span>
+        </div>
+      )}
+      {block({ id:"adr", name:"Adrénaline IVSE", r:rate, dl:dil, unit:"mg" })}
+      {extra.map(x => block({ id:x.id, name:x.name, r:x.rate, dl:{ qty:x.qty, vol:x.vol }, unit:x.unit, extraItem:true }))}
+      <AddExtraRow P={P} mono={mono} sans={sans} onAdd={onAddExtra} label="+ Autre vasopresseur" placeholder="Nom (ex : Noradrénaline)" />
+
+      {log.length > 0 && (
+        <div style={{ marginBottom:12 }}>
+          <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.12em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase", marginBottom:6 }}>Historique des paliers</div>
+          <div style={{ borderLeft:`2px solid ${P.border}`, marginLeft:6, paddingLeft:12, display:"flex", flexDirection:"column", gap:9 }}>
+            {[...log].sort((a, b) => a.sec - b.sec).map(e => {
+              const aft = pamAfterOf(e, pamPts);
+              const ok = aft != null && target != null && aft >= target;
+              return (
+                <div key={e.id} style={{ position:"relative", display:"flex", alignItems:"center", gap:6, fontSize:11.5, fontWeight:600, color:P.textMid }}>
+                  <span style={{ position:"absolute", left:-17, top:5, width:8, height:8, borderRadius:99, background:P.rose }} />
+                  <b style={{ fontFamily:mono, fontSize:11, color:P.text }}>{e.time}</b>
+                  <span style={{ flex:1, minWidth:0 }}>{e.text}</span>
+                  {e.pam != null && <span style={{ fontFamily:mono, fontSize:10.5, fontWeight:700, borderRadius:8, padding:"2px 6px", background: ok ? P.greenSoft : P.amberSoft, color: ok ? P.greenText : P.amberText }}>PAM {e.pam} → {aft != null ? aft : "?"}</span>}
+                  <button onClick={() => { if (window.confirm("Supprimer ce palier de l'historique ?")) onDeleteLog(e.id); }}
+                    style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:16, cursor:"pointer", padding:0 }}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {sheet && sheetCfg && (
+        <SedSheet P={P} mono={mono} sans={sans} disp={disp} kind={sheet.kind}
+          title={sheet.name} unit={sheet.unit} initial={sheetCfg.initial} steps={sheetCfg.steps}
+          dilPreview={sheetCfg.dilPreview} onSave={sheetCfg.onSave} onReset={sheetCfg.onReset} onClose={() => setSheet(null)}
+          footer={sheet.kind === "debit" ? (
+            <div style={{ marginTop:10, display:"flex", justifyContent:"space-between", alignItems:"baseline", padding:"7px 10px", background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:11 }}>
+              <span style={{ fontSize:10, fontWeight:700, letterSpacing:"0.08em", fontFamily:mono, color:P.amberText }}>{livePam != null ? "PAM ENREGISTRÉE AVEC LE PALIER" : lastPam ? `DERNIÈRE PAM · IL Y A ${mins(lastPam.sec)} MIN` : "PAM NON RENSEIGNÉE"}{target != null ? ` · CIBLE > ${target}` : ""}</span>
+              <b style={{ fontSize:20, fontFamily:mono, color:P.amberText }}>{livePam != null ? livePam : lastPam ? lastPam.pam : "—"}</b>
+            </div>) : null} />
+      )}
+    </div>
+  );
+}
+
+// ── PAGE POST-RACS (plein écran) ────────────────────────────────────────────
+// S'ouvre au RACS (après le bandeau « Annuler »). Les données restent dans
+// l'état existant `racs` (écran « Soins post-RACS » = détail) : cette page ne
+// duplique rien, elle résume, signale ce qui est hors cible et guide l'orientation.
+// ── MESURES POST-RACS HORODATÉES ────────────────────────────────────────────
+// Chaque « + Mesure » ajoute une ligne {id, sec, time, pas, pad, fc, sat, capno, fio2, temp, gly}
+// (seuls les champs saisis). Les valeurs « courantes » restent dans `racs`, `hemoList`
+// et `etco2List` pour ne casser ni les courbes ni le compte rendu.
+const MES_KEYS = ["pas","pad","fc","sat","capno","fio2","temp","gly"];
+const mesNum = v => { const n = parseFloat(String(v ?? "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
+const mesHas = v => v != null && String(v).trim() !== "";
+function carryVals(mesures) {
+  const v = {};
+  (mesures || []).forEach(m => MES_KEYS.forEach(k => { if (mesHas(m[k])) v[k] = m[k]; }));
+  return v;
+}
+function buildMesureSeries(mesures) {
+  const cur = {};
+  return (mesures || []).map(m => {
+    MES_KEYS.forEach(k => { if (mesHas(m[k])) cur[k] = m[k]; });
+    const touchedPa = mesHas(m.pas) || mesHas(m.pad);
+    const pam = touchedPa && mesHas(cur.pas) && mesHas(cur.pad) ? Math.round((mesNum(cur.pas) + 2 * mesNum(cur.pad)) / 3) : null;
+    const pick = k => (mesHas(m[k]) ? mesNum(m[k]) : null);
+    return { id: m.id, sec: m.sec, time: m.time, pam, fc: pick("fc"), sat: pick("sat"), capno: pick("capno"), fio2: pick("fio2"), temp: pick("temp"), gly: pick("gly") };
+  });
+}
+const MES_FIELDS = [
+  ["Hémodynamique", [["pas","TAS","mmHg"],["pad","TAD","mmHg"],["fc","FC","/min"]]],
+  ["Ventilation",   [["sat","SpO₂","%"],["capno","EtCO₂","mmHg"],["fio2","FiO₂","%"]]],
+  ["Autres",        [["temp","T°","°C"],["gly","Glycémie","g/L"]]],
+];
+function MesureSheet({ P, mono, sans, disp, prefill, tc, pamTarget, onSave, onClose, initial }) {
+  const [vals, setVals] = useState(() => { const v = {}; if (initial) MES_KEYS.forEach(k => { if (mesHas(initial[k])) v[k] = String(initial[k]); }); return v; });
+  const [active, setActive] = useState("pad");
+  const [time, setTime] = useState(initial?.time || getNow());
+  const small = active === "temp" || active === "gly";
+  const steps = small ? [-0.5, -0.1, 0.1, 0.5] : [-5, -1, 1, 5];
+  const apply = (st) => {
+    const base = mesNum(vals[active]) ?? mesNum(prefill[active]) ?? (active === "temp" ? 37 : 0);
+    const nv = Math.max(0, base + st);
+    setVals(v => ({ ...v, [active]: small ? String(Math.round(nv * 10) / 10) : String(Math.round(nv)) }));
+  };
+  const pas = mesNum(vals.pas) ?? mesNum(prefill.pas), pad = mesNum(vals.pad) ?? mesNum(prefill.pad);
+  const pam = pas != null && pad != null ? Math.round((pas + 2 * pad) / 3) : null;
+  const target = pamTarget ?? (tc ? 80 : 65);
+  const nbSet = MES_KEYS.filter(k => mesHas(vals[k])).length;
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:70, background:"rgba(10,17,27,0.6)", display:"flex", flexDirection:"column", justifyContent:"flex-end" }}
+      onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ background:P.surface, borderRadius:"20px 20px 0 0", padding:"16px 14px 22px", maxHeight:"92vh", overflowY:"auto",
+          boxShadow:"0 -12px 40px rgba(0,0,0,0.25)", fontFamily:sans }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+          <div style={{ width:38, height:38, borderRadius:12, background:`linear-gradient(135deg, ${P.green}, ${P.greenText})`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:19 }}>📋</div>
+          <div>
+            <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.14em", color:P.green, fontFamily:mono, textTransform:"uppercase" }}>{initial ? "Modifier la mesure" : "Nouvelle mesure"}</div>
+            <div style={{ fontSize:17, fontWeight:800, fontFamily:disp, color:P.text }}>Constantes</div>
+          </div>
+          <input type="time" value={time} onChange={e => setTime(e.target.value)}
+            style={{ marginLeft:"auto", background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:10, padding:"6px 8px",
+              fontSize:13, fontWeight:800, fontFamily:mono, color:P.text, outline:"none" }} />
+          <button onClick={onClose} style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:22, cursor:"pointer", padding:2 }}>×</button>
+        </div>
+        {MES_FIELDS.map(([grp, fields]) => (
+          <div key={grp}>
+            <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.12em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase", margin:"10px 0 5px" }}>{grp}</div>
+            <div style={{ display:"grid", gridTemplateColumns:`repeat(${fields.length === 2 ? 2 : 3}, 1fr)`, gap:7 }}>
+              {fields.map(([k, label, unit]) => {
+                const set = mesHas(vals[k]), on = active === k;
+                return (
+                  <div key={k} onClick={() => setActive(k)}
+                    style={{ borderRadius:11, padding:"6px 8px 5px", textAlign:"center", cursor:"text",
+                      border:`1.5px solid ${on ? P.blue : set ? P.green : P.border}`,
+                      background: set ? P.greenSoft : P.surfaceAlt,
+                      boxShadow: on ? `0 0 0 3px color-mix(in srgb, ${P.blue} 22%, transparent)` : "none" }}>
+                    <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.08em", color:P.textSoft, fontFamily:mono }}>{label} <span style={{ opacity:0.7 }}>{unit}</span></div>
+                    <input type="text" inputMode="decimal" value={vals[k] ?? ""} placeholder={mesHas(prefill[k]) ? String(prefill[k]) : "—"}
+                      onFocus={() => setActive(k)}
+                      onChange={e => setVals(v => ({ ...v, [k]: e.target.value.replace(",", ".") }))}
+                      style={{ width:"100%", boxSizing:"border-box", background:"transparent", border:"none", outline:"none", textAlign:"center",
+                        fontSize:21, fontWeight:800, fontFamily:mono, color: set ? P.greenText : P.text, padding:"1px 0" }} />
+                    <div style={{ fontSize:9, fontStyle:"italic", fontFamily:mono, color:P.textSoft }}>
+                      {set ? "mesuré" : mesHas(prefill[k]) ? `avant ${prefill[k]}` : "à mesurer"}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {grp === "Hémodynamique" && (
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginTop:7, padding:"7px 10px", borderRadius:11,
+                background: pam == null ? P.surfaceAlt : pam < target ? P.amberSoft : P.greenSoft,
+                border:`1px solid ${pam == null ? P.border : pam < target ? P.amber : P.green}` }}>
+                <span style={{ fontSize:10, fontWeight:700, letterSpacing:"0.08em", fontFamily:mono, color: pam == null ? P.textSoft : pam < target ? P.amberText : P.greenText }}>
+                  PAM CALCULÉE · objectif ≥ {target}
+                </span>
+                <b style={{ fontSize:20, fontFamily:mono, color: pam == null ? P.textSoft : pam < target ? P.amberText : P.greenText }}>{pam == null ? "—" : `${pam} mmHg`}</b>
+              </div>
+            )}
+          </div>
+        ))}
+        <div style={{ display:"flex", gap:6, marginTop:12 }}>
+          {steps.map(st => (
+            <button key={st} onMouseDown={e => e.preventDefault()} onClick={() => apply(st)}
+              style={{ flex:1, padding:"9px 0", borderRadius:10, border:`1.5px solid ${P.border}`, background:P.surface, color:P.text,
+                fontSize:13, fontWeight:800, fontFamily:mono, cursor:"pointer" }}>{st > 0 ? "+" : "−"}{String(Math.abs(st)).replace(".", ",")}</button>
+          ))}
+        </div>
+        <p style={{ margin:"5px 0 0", fontSize:9.5, color:P.textSoft, fontFamily:mono, textAlign:"center" }}>
+          Boutons : ajustent le champ sélectionné · seules les cases remplies sont enregistrées
+        </p>
+        <button disabled={nbSet === 0} onClick={() => onSave(vals, time)}
+          style={{ width:"100%", marginTop:12, border:"none", borderRadius:14, padding:13, fontSize:14, fontWeight:800, fontFamily:disp,
+            color: nbSet ? "#fff" : P.textSoft, cursor: nbSet ? "pointer" : "default",
+            background: nbSet ? `linear-gradient(135deg, ${P.green}, color-mix(in srgb, ${P.green} 70%, #000))` : P.surfaceAlt,
+            boxShadow: nbSet ? `0 6px 18px color-mix(in srgb, ${P.green} 35%, transparent)` : "none" }}>
+          ✓ {initial ? "Enregistrer les modifications" : "Enregistrer la mesure"}{nbSet ? ` (${nbSet})` : ""}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Rappel de remesure, libellé et modification d'une mesure ──
+function remesureState(mesures, roscEvt, sec, remMin) {
+  const m = Number(remMin) || 0;
+  if (!m || !roscEvt) return { on:false, due:false, sinceMin:0, leftMin:0 };
+  const last = Math.max(roscEvt.sec || 0, ...((mesures || []).map(x => x.sec ?? 0)));
+  const el = Math.max(0, sec - last);
+  return { on:true, due: el >= m * 60, sinceMin: Math.floor(el / 60), leftMin: Math.max(1, Math.ceil((m * 60 - el) / 60)) };
+}
+function useRemesureAlert(due) {
+  const prev = useRef(false);
+  useEffect(() => {
+    if (due && !prev.current) { try { if (navigator.vibrate) navigator.vibrate([220, 110, 220]); } catch (e) {} }
+    prev.current = due;
+  }, [due]);
+}
+function mesureLabel(c) {
+  const pas = mesNum(c.pas), pad = mesNum(c.pad), parts = [];
+  if (pas != null && pad != null) parts.push(`TA ${pas}/${pad} (PAM ${Math.round((pas + 2 * pad) / 3)})`);
+  else { if (mesHas(c.pas)) parts.push(`TAs ${c.pas}`); if (mesHas(c.pad)) parts.push(`TAd ${c.pad}`); }
+  if (mesHas(c.fc)) parts.push(`FC ${c.fc}`);
+  if (mesHas(c.sat)) parts.push(`SpO₂ ${c.sat}%`);
+  if (mesHas(c.capno)) parts.push(`EtCO₂ ${c.capno}`);
+  if (mesHas(c.fio2)) parts.push(`FiO₂ ${c.fio2}%`);
+  if (mesHas(c.temp)) parts.push(`T° ${c.temp}`);
+  if (mesHas(c.gly)) parts.push(`Glycémie ${c.gly} g/L`);
+  return parts.join(" · ");
+}
+function doEditMesure(o) {
+  const { mesures, id, vals, timeStr, setMesures, setEvents, setHemoList, setEtco2List, setRacs, map } = o;
+  const m = mesures.find(x => x.id === id);
+  if (!m) return;
+  const nm = { id:m.id, sec:m.sec, time: timeStr || m.time };
+  MES_KEYS.forEach(k => { if (mesHas(vals[k])) nm[k] = String(vals[k]).replace(",", "."); });
+  if (!MES_KEYS.some(k => mesHas(nm[k]))) return;
+  const rest = mesures.map(x => x.id === id ? nm : x);
+  setMesures(rest);
+  setEvents(prev => prev.map(e => e.mid === id ? { ...e, time:nm.time, label:`Mesure post-RACS : ${mesureLabel(nm)}` } : e));
+  const cv = carryVals(rest.slice(0, rest.findIndex(x => x.id === id) + 1));
+  setHemoList(prev => {
+    const others = prev.filter(h => !(h.sec === m.sec && h.time === m.time));
+    const add = (mesHas(nm.pas) || mesHas(nm.pad) || mesHas(nm.fc)) ? [{ sec:m.sec, time:nm.time, pas:nm.pas ?? cv.pas ?? "", pad:nm.pad ?? cv.pad ?? "", fc:nm.fc ?? cv.fc ?? "" }] : [];
+    return [...others, ...add].sort((a, b) => (a.sec ?? 0) - (b.sec ?? 0));
+  });
+  setEtco2List(prev => {
+    const others = prev.filter(e => !(e.sec === m.sec && e.time === m.time));
+    const add = mesHas(nm.capno) ? [{ val:nm.capno, sec:m.sec, time:nm.time }] : [];
+    return [...others, ...add].sort((a, b) => (a.sec ?? 0) - (b.sec ?? 0));
+  });
+  const carried = carryVals(rest), patch = {};
+  MES_KEYS.forEach(k => { if (mesHas(m[k]) || mesHas(nm[k])) patch[map[k]] = carried[k] ?? ""; });
+  setRacs(p => ({ ...p, ...patch }));
+}
+
+// Réévaluation neurologique horodatée : Glasgow + pupilles
+function NeuroSheet({ P, mono, sans, disp, prefill, onSave, onClose }) {
+  const [gcs, setGcs] = useState(prefill?.glasgow ? String(prefill.glasgow) : "");
+  const [pup, setPup] = useState(prefill?.pupilles || "");
+  const [time, setTime] = useState(getNow());
+  const can = gcs !== "" || pup !== "";
+  const chip = (on, c) => ({ borderRadius:10, padding:"9px 4px", fontSize:13, fontWeight:800, fontFamily:mono, cursor:"pointer",
+    border:`1.5px solid ${on ? P[c] : P.border}`, background: on ? P[c + "Soft"] : P.surface, color: on ? P[c + "Text"] : P.text });
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:70, background:"rgba(10,17,27,0.6)", display:"flex", flexDirection:"column", justifyContent:"flex-end" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background:P.surface, borderRadius:"20px 20px 0 0", padding:"16px 14px 22px", maxHeight:"92vh", overflowY:"auto", fontFamily:sans, boxShadow:"0 -12px 40px rgba(0,0,0,0.25)" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+          <div style={{ width:38, height:38, borderRadius:12, background:`linear-gradient(135deg, ${P.violet}, ${P.violetText})`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:19 }}>🧠</div>
+          <div>
+            <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.14em", color:P.violet, fontFamily:mono, textTransform:"uppercase" }}>Réévaluation</div>
+            <div style={{ fontSize:17, fontWeight:800, fontFamily:disp, color:P.text }}>Neurologique</div>
+          </div>
+          <input type="time" value={time} onChange={e => setTime(e.target.value)}
+            style={{ marginLeft:"auto", background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:10, padding:"6px 8px", fontSize:13, fontWeight:800, fontFamily:mono, color:P.text, outline:"none" }} />
+          <button onClick={onClose} style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:22, cursor:"pointer", padding:2 }}>×</button>
+        </div>
+        <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.12em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase", margin:"8px 0 5px" }}>Glasgow (/15)</div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(5, 1fr)", gap:6 }}>
+          {[3,4,5,6,7,8,9,10,11,12,13,14,15].map(n => (
+            <button key={n} onClick={() => setGcs(gcs === String(n) ? "" : String(n))} style={chip(gcs === String(n), "violet")}>{n}</button>
+          ))}
+        </div>
+        <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.12em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase", margin:"12px 0 5px" }}>Pupilles</div>
+        <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+          {[{ v:"Normales" }, ...PUPILLES_DETAIL].map(o => (
+            <button key={o.v} onClick={() => setPup(pup === o.v ? "" : o.v)}
+              style={{ ...chip(pup === o.v, "violet"), display:"flex", alignItems:"center", gap:9, textAlign:"left", fontFamily:sans, fontSize:12.5, fontWeight:700, padding:"9px 11px" }}>
+              {o.left ? <PupilIcon left={o.left} right={o.right} /> : <span style={{ width:18 }}>👁</span>}{o.v}
+            </button>
+          ))}
+        </div>
+        <button disabled={!can} onClick={() => onSave({ glasgow:gcs, pupilles:pup }, time)}
+          style={{ width:"100%", marginTop:14, border:"none", borderRadius:14, padding:13, fontSize:14, fontWeight:800, fontFamily:disp, color: can ? "#fff" : P.textSoft, cursor: can ? "pointer" : "default",
+            background: can ? `linear-gradient(135deg, ${P.violet}, color-mix(in srgb, ${P.violet} 70%, #000))` : P.surfaceAlt }}>
+          ✓ Enregistrer la réévaluation
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const ORIENT_OPTIONS = [
+  { id:"coro",    label:"Coronarographie", sub:"ST+ ou forte suspicion", color:"rose"   },
+  { id:"rea",     label:"Réanimation",     sub:"Réanimation polyvalente", color:"green"  },
+  { id:"usic",    label:"USIC",            sub:"Soins intensifs cardio", color:"blue"   },
+  { id:"scanner", label:"Scanner",         sub:"Cause non cardiaque",   color:"violet" },
+];
+function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoList, etco2List, suspectedAd,
+  orient, onOrient, tc, onTc, mesures, vasoLog, onSaveMesure, onDeleteMesure, dest, onDest, onBack, onRecidive, renderBody, enCours, onEcg, onFast, onCause, onTransmission,
+  pamTarget, fcSub, glyLo, orientOptions, subtitle, soinsSub, remMin, onRemMin, neuroLog, onSaveNeuro, onDeleteNeuro, ventLog, onEditMesure }) {
+  const tgt = pamTarget ?? (tc ? 80 : 65);
+  const gLo = glyLo ?? 1.0;
+  const num = v => { const n = parseFloat(String(v ?? "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
+  const [sheet, setSheet] = useState(false);
+  const [openRow, setOpenRow] = useState(null);
+  const [editId, setEditId] = useState(null);
+  const [neuroSheet, setNeuroSheet] = useState(false);
+  const [transport, setTransport] = useState(false);
+  useWakeLock(transport);
+  const rem = remesureState(mesures, roscEvt, sec, remMin);
+  const [openAcc, setOpenAcc] = useState(null); // "ventil" | "sedat" | "hemo"
+  const accRef = useRef(null);
+  const onDetail = (tab) => { setOpenAcc(tab); setTimeout(() => { try { accRef.current?.scrollIntoView({ behavior:"smooth", block:"start" }); } catch (e) {} }, 60); };
+  const series = buildMesureSeries(mesures || []);
+  const lastTwo = (key) => { const a = series.map(r => r[key]).filter(v => v != null); return a.length >= 2 ? [a[a.length - 2], a[a.length - 1]] : null; };
+  const trendOf = (key) => { const t = lastTwo(key); if (!t) return null; const d = t[1] - t[0]; const eps = key === "capno" || key === "sat" ? 1 : key === "fc" ? 3 : 2; return { arrow: d > eps ? "↑" : d < -eps ? "↓" : "→", cap: `${t[0]} → ${t[1]}` }; };
+  const since = Math.max(0, sec - (roscEvt?.sec || 0));
+  const startSec = events.find(e => e.id === "start")?.sec || 0;
+  const rcp = Math.max(0, (roscEvt?.sec || 0) - startSec);
+  const nbAdr = events.filter(e => e.id === "adr").length;
+  const nbChoc = events.filter(e => e.id === "choc").length;
+
+  // Valeurs courantes : saisie live de l'écran détail, sinon dernière mesure enregistrée
+  const lastHemo = hemoList.length ? hemoList[hemoList.length - 1] : null;
+  const prevHemo = hemoList.length > 1 ? hemoList[hemoList.length - 2] : null;
+  const pamOf = (h) => { const s = num(h?.pas), d = num(h?.pad); return s != null && d != null ? Math.round((s + 2 * d) / 3) : null; };
+  const tas = num(racs.tas) ?? num(lastHemo?.pas), tad = num(racs.tad) ?? num(lastHemo?.pad);
+  const pam = (tas != null && tad != null) ? Math.round((tas + 2 * tad) / 3) : pamOf(lastHemo);
+  const pamPrev = pamOf(prevHemo);
+  const fc = num(racs.fc) ?? num(lastHemo?.fc);
+  const spo2 = num(racs.sat);
+  const lastEt = etco2List.length ? etco2List[etco2List.length - 1] : null;
+  const etco2 = num(racs.capno) ?? num(lastEt?.val);
+  const temp = num(racs.tempRacs);
+  const gly = num(racs.glycemie);
+
+  const tiles = [
+    { k:"PAM", v: pam, u:"mmHg", o:`Objectif PAM ≥ ${tgt}${tc ? " (TC)" : ""}`, bad: pam != null && pam < tgt,
+      tr: trendOf("pam")?.arrow ?? (pam != null && pamPrev != null ? (pam > pamPrev + 2 ? "↑" : pam < pamPrev - 2 ? "↓" : "→") : null),
+      sub: trendOf("pam")?.cap ?? (tas != null && tad != null ? `PA ${tas}/${tad}` : null) },
+    { k:"SpO₂", v: spo2, u:"%", o:"Objectif SpO₂ 94–98 %", bad: spo2 != null && (spo2 < 94 || spo2 > 98), tr: trendOf("sat")?.arrow, sub: trendOf("sat")?.cap },
+    { k:"EtCO₂", v: etco2, u:"mmHg", o:"Objectif 35–45 mmHg", bad: etco2 != null && (etco2 < 35 || etco2 > 45), tr: trendOf("capno")?.arrow, sub: trendOf("capno")?.cap },
+    { k:"FC", v: fc, u:"/min", o:"", tr: trendOf("fc")?.arrow, sub: trendOf("fc")?.cap ?? fcSub },
+    { k:"Température", v: temp, u:"°C", o:"Éviter > 37,5 °C", bad: temp != null && temp > 37.5 },
+    { k:"Glycémie", v: gly, u:"g/L", o:`Objectif ${gLo.toFixed(1).replace(".", ",")}–1,8 g/L`, bad: gly != null && (gly < gLo || gly > 1.8) },
+  ];
+  const horsCible = tiles.filter(t => t.bad).map(t => `${t.k} ${t.v}`);
+
+  const evAfter = (id) => events.find(e => e.id === id && (e.sec ?? 0) >= (roscEvt?.sec || 0));
+  const ecgEv = evAfter("ecg"), fastEv = evAfter("fast");
+  const checks = [
+    { label:"ECG 12 dér.", done: !!ecgEv, time: ecgEv?.time, go: onEcg },
+    { label:"Fast-écho",   done: !!fastEv, time: fastEv?.time, go: onFast },
+    { label:"Pupilles",    done: !!racs.pupilles || (neuroLog || []).some(n => n.pupilles), time: racs.pupilles ? String(racs.pupilles).slice(0, 14) : "", go: () => onDetail("hemo") },
+    { label:"Glycémie",    done: gly != null, time: gly != null ? `${gly} g/L` : "", go: () => onDetail("hemo") },
+    { label:"Température", done: temp != null, time: temp != null ? `${temp} °C` : "", go: () => onDetail("hemo") },
+    { label:"Cause cherchée", done: (suspectedAd || []).length > 0, time: (suspectedAd || []).length ? `${suspectedAd.length} piste${suspectedAd.length > 1 ? "s" : ""}` : "", go: onCause },
+  ];
+  const nbDone = checks.filter(c => c.done).length;
+
+  const ventParts = [racs.volume && `Vt ${racs.volume}`, racs.fr && `FR ${racs.fr}`, racs.pep && `PEP ${racs.pep}`, racs.fio2 && `FiO₂ ${racs.fio2}`].filter(Boolean);
+  const sedParts = [racs.hypnovelV && "Hypnovel", racs.sufentaV && "Sufentanyl", racs.curare && "Curare"].filter(Boolean);
+  const remp = (racs.remplissages || []).reduce((s, r) => s + (r.vol || 0), 0);
+  const hemoParts = [racs.noradrV && "Noradrénaline", racs.dobut && "Dobutamine", remp > 0 && `Remplissage ${remp} mL`].filter(Boolean);
+
+  const tone = (c) => ({ accent: P[c], soft: P[c + "Soft"], text: P[c + "Text"] });
+  const card = { background:P.surface, border:`1px solid ${P.border}`, borderRadius:16, padding:12 };
+  const sq = (bg) => ({ width:30, height:30, borderRadius:9, background:bg, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, flexShrink:0 });
+  const hTitle = { margin:0, fontFamily:disp, fontSize:14, fontWeight:800, color:P.text };
+
+  const toggleOrient = (id) => onOrient(orient.includes(id) ? orient.filter(x => x !== id) : [...orient, id]);
+
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:60, background:P.bg, display:"flex", flexDirection:"column", fontFamily:sans,
+      paddingTop:"env(safe-area-inset-top, 0px)" }}>
+      {/* Barre fixe */}
+      <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:`${isTraining() ? 24 : 9}px 12px 9px`,
+        display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+        <button onClick={onBack}
+          style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:10, padding:"8px 10px",
+            fontSize:12, fontWeight:700, color:P.text, cursor:"pointer", fontFamily:sans }}>← Arrêt</button>
+        <div style={{ lineHeight:1.05 }}>
+          <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.12em", color:P.green, fontFamily:mono }}>{roscEvt ? "DEPUIS LE RACS" : "SOINS POST-RACS"}</div>
+          <div style={{ fontSize:22, fontWeight:800, fontFamily:mono, color:P.text }}>{roscEvt ? fmtSec(since) : "—"}</div>
+        </div>
+        {roscEvt && <button onClick={onRecidive}
+          style={{ marginLeft:"auto", background:`linear-gradient(135deg, ${P.rose}, #9B1010)`, border:"none", color:"#fff",
+            borderRadius:11, padding:"9px 12px", fontSize:12, fontWeight:800, fontFamily:disp, cursor:"pointer",
+            display:"flex", alignItems:"center", gap:6, boxShadow:`0 4px 12px color-mix(in srgb, ${P.rose} 40%, transparent)` }}>
+          <span>🔴</span>Récidive d'arrêt<span>↩</span>
+        </button>}
+      </div>
+
+      <div style={{ flex:1, overflowY:"auto", WebkitOverflowScrolling:"touch", padding:"10px 12px 28px",
+        display:"flex", flexDirection:"column", gap:10 }}>
+        {/* Rappel de la RCP */}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8 }}>
+          {[["RCP totale", fmtSec(rcp), P.text], ["Adré", `${nbAdr}`, P.amberText], ["Chocs", `${nbChoc}`, P.roseText]].map(([l, v, c]) => (
+            <div key={l} style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:12, padding:"7px 10px" }}>
+              <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.08em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase" }}>{l}</div>
+              <div style={{ fontSize:17, fontWeight:800, fontFamily:mono, color:c }}>{v}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Titre */}
+        <div style={{ display:"flex", alignItems:"center", gap:11, padding:"2px 2px 0" }}>
+          <div style={{ width:44, height:44, borderRadius:13, background:`linear-gradient(135deg, ${P.green}, ${P.greenText})`,
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0,
+            boxShadow:`0 5px 16px color-mix(in srgb, ${P.green} 32%, transparent)` }}>🫀</div>
+          <div>
+            <div style={{ fontSize:9.5, fontWeight:700, letterSpacing:"0.14em", color:P.green, fontFamily:mono, textTransform:"uppercase" }}>Après RACS{subtitle ? ` · ${subtitle}` : ""}</div>
+            <div style={{ fontSize:19, fontWeight:800, fontFamily:disp, color:P.text, letterSpacing:"-0.01em" }}>Soins post-RACS</div>
+          </div>
+          <button onClick={() => setTransport(true)}
+            style={{ marginLeft:"auto", background:P.blueSoft, color:P.blueText, border:`1.5px solid ${P.blue}`, borderRadius:11, padding:"8px 10px",
+              fontSize:11.5, fontWeight:800, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>🚑 Transport</button>
+        </div>
+
+        {/* Premières minutes */}
+        <div style={card}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:9 }}>
+            <p style={{ ...hTitle, display:"flex", alignItems:"center", gap:8 }}><span style={sq(P.greenSoft)}>✅</span>Premières minutes</p>
+            <span style={{ fontSize:11, fontWeight:800, fontFamily:mono, color:P.greenText, background:P.greenSoft, borderRadius:99, padding:"3px 8px" }}>{nbDone}/{checks.length}</span>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            {checks.map(c => (
+              <button key={c.label} onClick={c.go}
+                style={{ display:"flex", alignItems:"center", gap:8, textAlign:"left", cursor:"pointer", fontFamily:sans,
+                  borderRadius:12, padding:"9px 10px", fontSize:12, fontWeight:700,
+                  border:`1.5px solid ${c.done ? P.green : P.border}`,
+                  background: c.done ? P.greenSoft : P.surfaceAlt, color: c.done ? P.greenText : P.text }}>
+                <span style={{ width:20, height:20, borderRadius:7, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center",
+                  fontSize:12, border:`1.5px solid ${c.done ? P.green : P.border}`, background: c.done ? P.green : P.surface, color:"#fff" }}>{c.done ? "✓" : ""}</span>
+                <span style={{ minWidth:0 }}>
+                  {c.label}
+                  {c.time ? <span style={{ display:"block", fontSize:9, fontWeight:600, fontFamily:mono, color:P.textSoft, marginTop:1,
+                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.time}</span> : null}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* En cours : perfusions et ventilation, pour le passage de relais */}
+        {enCours && enCours.length > 0 && (
+          <div>
+            <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:700, letterSpacing:"0.12em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase" }}>En cours</p>
+            <div style={{ display:"flex", gap:7, overflowX:"auto", paddingBottom:2 }}>
+              {enCours.map(c => {
+                const col = c.tone === "rose" ? [P.rose, P.roseSoft, P.roseText] : c.tone === "violet" ? [P.violet, P.violetSoft, P.violetText] : [P.teal, P.tealSoft, P.tealText];
+                return (
+                  <div key={c.k} style={{ flex:"none", minWidth:92, borderRadius:12, padding:"7px 10px", border:`1.5px solid ${col[0]}`, background:col[1] }}>
+                    <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.08em", fontFamily:mono, color:col[2], textTransform:"uppercase", whiteSpace:"nowrap" }}>{c.label}</div>
+                    <div style={{ fontSize:13, fontWeight:800, fontFamily:mono, color:col[2], whiteSpace:"nowrap" }}>{c.v}</div>
+                    <div style={{ fontSize:9.5, fontWeight:600, fontFamily:mono, color:P.textSoft, whiteSpace:"nowrap" }}>{c.sec != null ? `depuis ${Math.max(0, Math.round((sec - c.sec) / 60))} min` : (c.sub || " ")}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Constantes */}
+        <div style={card}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:9 }}>
+            <p style={{ ...hTitle, display:"flex", alignItems:"center", gap:8 }}><span style={sq(P.blueSoft)}>📊</span>Constantes</p>
+            <div style={{ display:"flex", gap:6 }}>
+              <button onClick={() => { const o = [0, 3, 5, 10, 15]; onRemMin(o[(o.indexOf(Number(remMin) || 0) + 1) % o.length]); }}
+                aria-label="Rappel de remesure"
+                style={{ background: rem.on ? P.amberSoft : P.surfaceAlt, color: rem.on ? P.amberText : P.textSoft,
+                  border:`1.5px solid ${rem.on ? P.amber : P.border}`, borderRadius:10, padding:"6px 8px",
+                  fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>⏱ {rem.on ? `${remMin} min` : "Rappel"}</button>
+              <button onClick={() => onTc(!tc)} aria-pressed={tc}
+                style={{ background: tc ? P.violetSoft : P.surfaceAlt, color: tc ? P.violetText : P.textSoft,
+                  border:`1.5px solid ${tc ? P.violet : P.border}`, borderRadius:10, padding:"6px 9px",
+                  fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans }}>🧠 TC{tc ? " ✓" : ""}</button>
+              <button onClick={() => setSheet(true)}
+                style={{ background:P.greenSoft, color:P.greenText, border:`1.5px solid ${P.green}`, borderRadius:10, padding:"6px 10px",
+                  fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans }}>+ Mesure</button>
+            </div>
+          </div>
+          {rem.on && (
+            rem.due ? (
+              <button onClick={() => setSheet(true)}
+                style={{ width:"100%", display:"flex", alignItems:"center", gap:8, textAlign:"left", cursor:"pointer", fontFamily:sans, marginBottom:9,
+                  background:P.amberSoft, border:`1.5px solid ${P.amber}`, borderRadius:12, padding:"9px 11px", color:P.amberText, fontSize:12, fontWeight:800 }}>
+                <span>⏱</span><span style={{ flex:1 }}>Remesure due — dernière mesure il y a {rem.sinceMin} min</span><span style={{ fontSize:11 }}>Mesurer ›</span>
+              </button>
+            ) : (
+              <p style={{ margin:"0 0 8px", fontSize:10.5, fontWeight:600, fontFamily:mono, color:P.textSoft }}>⏱ Prochaine remesure dans {rem.leftMin} min</p>
+            )
+          )}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            {tiles.map(t => {
+              const has = t.v != null;
+              const st = !has ? "none" : t.bad ? "warn" : t.o ? "ok" : "plain";
+              const bg = st === "ok" ? P.greenSoft : st === "warn" ? P.amberSoft : P.surfaceAlt;
+              const bd = st === "ok" ? P.green : st === "warn" ? P.amber : P.border;
+              const col = st === "ok" ? P.greenText : st === "warn" ? P.amberText : has ? P.text : P.textSoft;
+              return (
+                <button key={t.k} onClick={() => onDetail(t.k === "SpO₂" || t.k === "EtCO₂" ? "ventil" : "hemo")}
+                  style={{ borderRadius:12, padding:"8px 10px 7px", border:`1.5px solid ${bd}`, background:bg, textAlign:"left", cursor:"pointer", fontFamily:sans }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, fontWeight:700, letterSpacing:"0.1em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase" }}>
+                    <span>{t.k}</span><span style={{ fontSize:12, fontWeight:800, color:col }}>{t.tr || ""}</span>
+                  </div>
+                  <div style={{ display:"flex", alignItems:"baseline", gap:5, margin:"2px 0 1px", color:col, opacity: has ? 1 : 0.7 }}>
+                    <span style={{ fontSize:24, fontWeight:800, fontFamily:mono }}>{has ? t.v : "—"}</span>
+                    <span style={{ fontSize:11, fontWeight:600, fontFamily:mono, color:P.textSoft }}>{t.u}</span>
+                  </div>
+                  <div style={{ fontSize:9.5, fontStyle:"italic", fontFamily:mono, color: st === "ok" || st === "warn" ? col : P.textSoft, fontWeight: st === "ok" || st === "warn" ? 700 : 600 }}>
+                    {has ? (t.sub || t.o || " ") : "à mesurer"}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {horsCible.length > 0 && (
+          <div style={{ display:"flex", gap:9, background:P.amberSoft, border:`1px solid ${P.amber}`, borderRadius:12, padding:"9px 11px", fontSize:11.5, color:P.amberText, lineHeight:1.45 }}>
+            <span>⚠️</span>
+            <span><b>Hors cible :</b> {horsCible.join(" · ")}. Remesurer ou ajuster selon ton protocole.</span>
+          </div>
+        )}
+
+        {/* Courbe de PAM */}
+        {series.filter(r => r.pam != null).length >= 2 && (() => {
+          const pts = series.filter(r => r.pam != null);
+          const target = tgt;
+          const W = 320, H = 130, L = 30, R = 310, T = 18, B = 104;
+          const lo = Math.min(40, ...pts.map(p => p.pam) , target) - 5, hi = Math.max(100, ...pts.map(p => p.pam), target) + 5;
+          const y = v => B - ((v - lo) / (hi - lo)) * (B - T);
+          const x = i => pts.length === 1 ? (L + R) / 2 : L + 20 + (i * (R - L - 40)) / (pts.length - 1);
+          const line = pts.map((p, i) => `${x(i).toFixed(1)},${y(p.pam).toFixed(1)}`).join(" ");
+          return (
+            <div style={card}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                <p style={{ ...hTitle, display:"flex", alignItems:"center", gap:8 }}><span style={sq(P.tealSoft)}>📈</span>PAM</p>
+                <span style={{ fontSize:11, fontWeight:800, fontFamily:mono, color:P.greenText, background:P.greenSoft, borderRadius:99, padding:"3px 8px" }}>{pts.length} mesures</span>
+              </div>
+              <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:12, padding:"6px 4px 2px" }}>
+                <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={`Courbe de PAM, cible ≥ ${target} mmHg`}>
+                  <rect x={L} y={T} width={R - L} height={Math.max(0, y(target) - T)} fill={`color-mix(in srgb, ${P.green} 12%, transparent)`} />
+                  <line x1={L} y1={y(target)} x2={R} y2={y(target)} stroke={P.green} strokeWidth="1.2" strokeDasharray="4 3" />
+                  <text x={R - 2} y={y(target) + 11} fontSize="8.5" fill={P.greenText} fontFamily={mono} fontWeight="700" textAnchor="end">cible ≥ {target}</text>
+                  {(vasoLog || []).map(v => {
+                    const first = pts[0].sec, last = pts[pts.length - 1].sec;
+                    let px;
+                    if (v.sec <= first) px = x(0); else if (v.sec >= last) px = x(pts.length - 1);
+                    else { const i = pts.findIndex((p, k) => k < pts.length - 1 && v.sec >= p.sec && v.sec < pts[k + 1].sec); const fr = (v.sec - pts[i].sec) / Math.max(1, pts[i + 1].sec - pts[i].sec); px = x(i) + fr * (x(i + 1) - x(i)); }
+                    return (
+                      <g key={v.id}>
+                        <line x1={px} y1={T - 6} x2={px} y2={B} stroke={P.rose} strokeWidth="1.3" strokeDasharray="3 3" />
+                        <text x={px} y={T - 8} fontSize="8" fontWeight="800" fill={P.roseText} fontFamily={mono} textAnchor="middle">{String(v.rate).replace(".", ",")}</text>
+                      </g>
+                    );
+                  })}
+                  <polyline points={line} fill="none" stroke={P.blue} strokeWidth="2.4" strokeLinejoin="round" strokeLinecap="round" />
+                  {pts.map((p, i) => (
+                    <g key={p.id}>
+                      <circle cx={x(i)} cy={y(p.pam)} r="4.5" fill={P.surface} stroke={p.pam < target ? P.amber : P.blue} strokeWidth="2.4" />
+                      <text x={x(i)} y={y(p.pam) - 8} fontSize="9" fontWeight="800" fill={P.text} fontFamily={mono} textAnchor="middle">{p.pam}</text>
+                      <text x={x(i)} y={H - 6} fontSize="8" fill={P.textSoft} fontFamily={mono} textAnchor="middle">{p.time}</text>
+                    </g>
+                  ))}
+                </svg>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Historique des mesures */}
+        {series.length > 0 && (
+          <div style={card}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+              <p style={{ ...hTitle, display:"flex", alignItems:"center", gap:8 }}><span style={sq(P.greenSoft)}>🗒️</span>Mesures</p>
+              <span style={{ fontSize:11, fontWeight:800, fontFamily:mono, color:P.greenText, background:P.greenSoft, borderRadius:99, padding:"3px 8px" }}>{series.length}</span>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"46px repeat(4, 1fr)", gap:4, fontSize:8.5, fontWeight:700, letterSpacing:"0.08em", color:P.textSoft, fontFamily:mono, textAlign:"center", paddingBottom:4 }}>
+              <span /><span>PAM</span><span>FC</span><span>SpO₂</span><span>EtCO₂</span>
+            </div>
+            {[...series].reverse().map(r => {
+              const cell = (v, bad) => (
+                <span style={{ textAlign:"center", borderRadius:7, padding:"3px 0", fontSize:11.5, fontWeight:700, fontFamily:mono,
+                  background: v == null ? "transparent" : bad ? P.amberSoft : P.greenSoft,
+                  color: v == null ? P.textSoft : bad ? P.amberText : P.greenText }}>{v ?? "·"}</span>
+              );
+              const target = tgt;
+              return (
+                <div key={r.id} style={{ borderTop:`1px solid ${P.borderSoft}` }}>
+                  <button onClick={() => setOpenRow(openRow === r.id ? null : r.id)}
+                    style={{ width:"100%", display:"grid", gridTemplateColumns:"46px repeat(4, 1fr)", gap:4, alignItems:"center", padding:"7px 0",
+                      background:"transparent", border:"none", cursor:"pointer", fontFamily:sans }}>
+                    <span style={{ fontSize:10, fontWeight:700, fontFamily:mono, color:P.textSoft, textAlign:"left" }}>{r.time}</span>
+                    {cell(r.pam, r.pam != null && r.pam < target)}
+                    {cell(r.fc, false)}
+                    {cell(r.sat, r.sat != null && (r.sat < 94 || r.sat > 98))}
+                    {cell(r.capno, r.capno != null && (r.capno < 35 || r.capno > 45))}
+                  </button>
+                  {openRow === r.id && (
+                    <div style={{ padding:"2px 0 9px", display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", fontSize:10.5, color:P.textSoft, fontFamily:mono }}>
+                      {r.fio2 != null && <span>FiO₂ {r.fio2} %</span>}
+                      {r.temp != null && <span>T° {r.temp}</span>}
+                      {r.gly != null && <span>Glyc. {r.gly} g/L</span>}
+                      <button onClick={() => setEditId(r.id)}
+                        style={{ marginLeft:"auto", background:P.blueSoft, border:`1px solid ${P.blue}`, borderRadius:8, padding:"4px 9px",
+                          fontSize:10.5, fontWeight:700, color:P.blueText, cursor:"pointer", fontFamily:sans }}>Modifier</button>
+                      <button onClick={() => { if (window.confirm(`Supprimer la mesure de ${r.time} ?`)) { onDeleteMesure(r.id); setOpenRow(null); } }}
+                        style={{ background:"transparent", border:`1px solid ${P.border}`, borderRadius:8, padding:"4px 9px",
+                          fontSize:10.5, fontWeight:700, color:P.roseText, cursor:"pointer", fontFamily:sans }}>Supprimer</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <p style={{ margin:"8px 0 0", fontSize:9.5, fontFamily:mono, color:P.textSoft }}>Chaque mesure est inscrite dans la chronologie et le compte rendu.</p>
+          </div>
+        )}
+
+        {/* Réglages ventilatoires horodatés */}
+        {ventLog && ventLog.length > 0 && (
+          <div style={card}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+              <p style={{ ...hTitle, display:"flex", alignItems:"center", gap:8 }}><span style={sq(P.tealSoft)}>🫁</span>Réglages ventilatoires</p>
+              <span style={{ fontSize:11, fontWeight:800, fontFamily:mono, color:P.tealText, background:P.tealSoft, borderRadius:99, padding:"3px 8px" }}>{ventLog.length}</span>
+            </div>
+            {[...ventLog].reverse().map((v, i) => (
+              <div key={v.id} style={{ display:"flex", gap:9, alignItems:"baseline", padding:"6px 0", borderTop:`1px solid ${P.borderSoft}` }}>
+                <span style={{ width:40, fontSize:10, fontWeight:700, fontFamily:mono, color:P.textSoft }}>{v.time}</span>
+                <span style={{ flex:1, fontSize:12, fontWeight:700, fontFamily:mono, color: i === 0 ? P.text : P.textMid }}>{v.text}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Neuro : réévaluations horodatées */}
+        <div style={card}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: (neuroLog || []).length ? 6 : 0 }}>
+            <p style={{ ...hTitle, display:"flex", alignItems:"center", gap:8 }}><span style={sq(P.violetSoft)}>🧠</span>Neuro</p>
+            <button onClick={() => setNeuroSheet(true)}
+              style={{ background:P.violetSoft, color:P.violetText, border:`1.5px solid ${P.violet}`, borderRadius:10, padding:"6px 10px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans }}>+ Réévaluation</button>
+          </div>
+          {(neuroLog || []).length === 0 && <p style={{ margin:"6px 0 0", fontSize:10.5, fontFamily:mono, color:P.textSoft }}>Glasgow et pupilles : aucune évaluation enregistrée.</p>}
+          {[...(neuroLog || [])].reverse().map((n, i, arr) => {
+            const prev = arr[i + 1], g = num(n.glasgow), pg = prev ? num(prev.glasgow) : null;
+            const arrow = g != null && pg != null ? (g > pg ? "↑" : g < pg ? "↓" : "→") : "";
+            return (
+              <div key={n.id} style={{ display:"flex", gap:9, alignItems:"baseline", padding:"6px 0", borderTop:`1px solid ${P.borderSoft}` }}>
+                <span style={{ width:40, fontSize:10, fontWeight:700, fontFamily:mono, color:P.textSoft }}>{n.time}</span>
+                <span style={{ flex:1, fontSize:12, fontWeight:700, fontFamily:mono, color: i === 0 ? P.text : P.textMid }}>
+                  {n.glasgow ? `Glasgow ${n.glasgow}${arrow ? ` ${arrow}` : ""}` : ""}{n.glasgow && n.pupilles ? " · " : ""}{n.pupilles || ""}
+                </span>
+                <button onClick={() => { if (window.confirm(`Supprimer l'évaluation de ${n.time} ?`)) onDeleteNeuro(n.id); }}
+                  aria-label="Supprimer" style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:15, cursor:"pointer", padding:"0 2px" }}>×</button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Soins : lignes dépliables dans la page (plus de fenêtre) */}
+        <div ref={accRef} style={{ ...card, padding:0, overflow:"hidden", flexShrink:0 }}>
+          <p style={{ ...hTitle, padding:"12px 12px 4px" }}>Soins</p>
+          {[
+            { tab:"ventil", icon:"🫁", bg:P.greenSoft, t:"Ventilation", s: (soinsSub ? soinsSub.ventil : ventParts.join(" · ")) || "à renseigner" },
+            { tab:"sedat",  icon:"💊", bg:P.violetSoft, t:"Sédation", s: (soinsSub ? soinsSub.sedat : sedParts.join(" · ")) || "à renseigner" },
+            { tab:"hemo",   icon:"💓", bg:P.tealSoft, t:"Hémodynamique", s: (soinsSub ? soinsSub.hemo : hemoParts.join(" · ")) || "courbe TA/FC · vasopresseurs · remplissage" },
+          ].map((r, i) => (
+            <div key={r.tab} style={{ borderTop:`1px solid ${P.borderSoft}` }}>
+              <button onClick={() => setOpenAcc(openAcc === r.tab ? null : r.tab)}
+                style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"11px 12px", background:"transparent", border:"none",
+                  cursor:"pointer", fontFamily:sans, textAlign:"left" }}>
+                <span style={sq(r.bg)}>{r.icon}</span>
+                <span style={{ flex:1, minWidth:0 }}>
+                  <span style={{ display:"block", fontFamily:disp, fontSize:13, fontWeight:800, color:P.text }}>{r.t}</span>
+                  <span style={{ display:"block", fontSize:10.5, fontFamily:mono, color:P.textSoft, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.s}</span>
+                </span>
+                <span style={{ fontSize:15, color:P.textSoft }}>{openAcc === r.tab ? "▴" : "▾"}</span>
+              </button>
+              {openAcc === r.tab && renderBody && <div style={{ padding:"0 12px 14px" }}>{renderBody(r.tab)}</div>}
+            </div>
+          ))}
+        </div>
+
+        {/* Orientation */}
+        <div style={card}>
+          <p style={{ ...hTitle, display:"flex", alignItems:"center", gap:8, marginBottom:9 }}><span style={sq(P.amberSoft)}>🧭</span>Orientation</p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            {(orientOptions || ORIENT_OPTIONS).map(o => {
+              const c = tone(o.color), on = orient.includes(o.id);
+              return (
+                <button key={o.id} onClick={() => toggleOrient(o.id)}
+                  style={{ textAlign:"left", cursor:"pointer", fontFamily:sans, borderRadius:12, padding:"9px 10px",
+                    border:`1px solid ${on ? c.accent : P.border}`, borderLeft:`4px solid ${c.accent}`,
+                    background: on ? `color-mix(in srgb, ${c.accent} 14%, ${P.surface})` : P.surfaceAlt }}>
+                  <span style={{ display:"block", fontFamily:disp, fontSize:12.5, fontWeight:800, color:P.text }}>{o.label}{on ? <span style={{ color:c.accent }}> ✓</span> : null}</span>
+                  <span style={{ display:"block", fontSize:10, color:P.textSoft }}>{o.sub}</span>
+                </button>
+              );
+            })}
+          </div>
+          <input value={dest} onChange={e => onDest(e.target.value)} placeholder="Destination (ex : CHU …)"
+            style={{ marginTop:9, width:"100%", boxSizing:"border-box", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+              borderRadius:12, padding:"10px 11px", fontSize:13, fontWeight:600, color:P.text, fontFamily:sans, outline:"none" }} />
+          <p style={{ margin:"6px 0 0", fontSize:9.5, fontFamily:mono, color:P.textSoft }}>Partagé avec la Régulation SAMU.</p>
+        </div>
+
+        <button onClick={onTransmission}
+          style={{ background:`linear-gradient(135deg, ${P.green}, color-mix(in srgb, ${P.green} 70%, #000))`, border:"none", color:"#fff",
+            borderRadius:16, padding:14, fontSize:14, fontWeight:800, fontFamily:disp, cursor:"pointer",
+            boxShadow:`0 6px 18px color-mix(in srgb, ${P.green} 35%, transparent)` }}>
+          🔍 Mode lecture ›
+        </button>
+        <button onClick={onBack}
+          style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:sans, padding:6 }}>
+          ← Retour à l'arrêt (le minuteur tourne)
+        </button>
+      </div>
+      {transport && (
+        <div style={{ position:"absolute", inset:0, zIndex:5, background:P.bg, display:"flex", flexDirection:"column", paddingTop:"env(safe-area-inset-top, 0px)" }}>
+          <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:`${isTraining() ? 24 : 9}px 12px 9px`, display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+            <button onClick={() => setTransport(false)} style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:10, padding:"8px 10px", fontSize:12, fontWeight:700, color:P.text, cursor:"pointer", fontFamily:sans }}>← Page</button>
+            <div style={{ lineHeight:1.05 }}>
+              <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.12em", color:P.blue, fontFamily:mono }}>🚑 TRANSPORT · DEPUIS LE RACS</div>
+              <div style={{ fontSize:22, fontWeight:800, fontFamily:mono, color:P.text }}>{roscEvt ? fmtSec(since) : "—"}</div>
+            </div>
+            {roscEvt && <button onClick={onRecidive}
+              style={{ marginLeft:"auto", background:`linear-gradient(135deg, ${P.rose}, #9B1010)`, border:"none", color:"#fff", borderRadius:11, padding:"9px 12px", fontSize:12, fontWeight:800, fontFamily:disp, cursor:"pointer" }}>🔴 Récidive ↩</button>}
+          </div>
+          <div style={{ flex:1, overflowY:"auto", padding:12, display:"flex", flexDirection:"column", gap:10 }}>
+            {rem.on && rem.due && (
+              <button onClick={() => setSheet(true)} style={{ display:"flex", gap:8, alignItems:"center", cursor:"pointer", fontFamily:sans, background:P.amberSoft, border:`1.5px solid ${P.amber}`, borderRadius:12, padding:"10px 12px", color:P.amberText, fontSize:13, fontWeight:800, textAlign:"left" }}>
+                ⏱ Remesure due — il y a {rem.sinceMin} min <span style={{ marginLeft:"auto" }}>Mesurer ›</span>
+              </button>
+            )}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              {["PAM", "FC", "SpO₂", "EtCO₂"].map(k => {
+                const t = tiles.find(x => x.k === k); const has = t.v != null;
+                const bg = !has ? P.surfaceAlt : t.bad ? P.amberSoft : t.o ? P.greenSoft : P.surfaceAlt;
+                const bd = !has ? P.border : t.bad ? P.amber : t.o ? P.green : P.border;
+                const col = !has ? P.textSoft : t.bad ? P.amberText : t.o ? P.greenText : P.text;
+                return (
+                  <div key={k} style={{ borderRadius:16, padding:"12px 14px", border:`2px solid ${bd}`, background:bg }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, fontWeight:800, letterSpacing:"0.1em", fontFamily:mono, color:P.textSoft, textTransform:"uppercase" }}>
+                      <span>{k}</span><span style={{ fontSize:16, color:col }}>{t.tr || ""}</span>
+                    </div>
+                    <div style={{ fontSize:50, fontWeight:800, fontFamily:mono, color:col, lineHeight:1.05 }}>{has ? t.v : "—"}</div>
+                    <div style={{ fontSize:10.5, fontStyle:"italic", fontFamily:mono, color:P.textSoft }}>{t.u}{has && t.sub ? ` · ${t.sub}` : ""}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              {["Température", "Glycémie"].map(k => {
+                const t = tiles.find(x => x.k === k); const has = t.v != null;
+                return (
+                  <div key={k} style={{ borderRadius:14, padding:"8px 12px", border:`1.5px solid ${has && t.bad ? P.amber : P.border}`, background: has && t.bad ? P.amberSoft : P.surface }}>
+                    <div style={{ fontSize:9.5, fontWeight:800, letterSpacing:"0.1em", fontFamily:mono, color:P.textSoft, textTransform:"uppercase" }}>{k}</div>
+                    <div style={{ fontSize:26, fontWeight:800, fontFamily:mono, color: has && t.bad ? P.amberText : P.text }}>{has ? t.v : "—"} <span style={{ fontSize:11, color:P.textSoft }}>{t.u}</span></div>
+                  </div>
+                );
+              })}
+            </div>
+            {enCours && enCours.length > 0 && (
+              <div style={{ display:"flex", flexWrap:"wrap", gap:7 }}>
+                {enCours.map(c => (
+                  <span key={c.k} style={{ borderRadius:11, padding:"6px 10px", fontSize:13, fontWeight:800, fontFamily:mono, background:P.surface, border:`1.5px solid ${c.tone === "rose" ? P.rose : c.tone === "violet" ? P.violet : P.teal}`, color:P.text }}>
+                    {c.label} {c.v}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:"auto" }}>
+              <button onClick={() => setSheet(true)} style={{ border:"none", borderRadius:14, padding:15, fontSize:15, fontWeight:800, fontFamily:disp, color:"#fff", cursor:"pointer", background:`linear-gradient(135deg, ${P.green}, color-mix(in srgb, ${P.green} 70%, #000))` }}>+ Mesure</button>
+              <button onClick={onTransmission} style={{ border:`1.5px solid ${P.border}`, borderRadius:14, padding:15, fontSize:15, fontWeight:800, fontFamily:disp, color:P.text, cursor:"pointer", background:P.surface }}>🔍 Mode lecture</button>
+            </div>
+            <p style={{ margin:0, fontSize:10, fontWeight:600, fontFamily:mono, color:P.textSoft, textAlign:"center" }}>Écran maintenu allumé</p>
+          </div>
+        </div>
+      )}
+      {neuroSheet && (
+        <NeuroSheet P={P} mono={mono} sans={sans} disp={disp} prefill={{}}
+          onSave={(v, t) => { onSaveNeuro(v, t); setNeuroSheet(false); }} onClose={() => setNeuroSheet(false)} />
+      )}
+      {editId != null && (() => {
+        const m = (mesures || []).find(x => x.id === editId);
+        if (!m) return null;
+        return (
+          <MesureSheet P={P} mono={mono} sans={sans} disp={disp} tc={tc} pamTarget={tgt} initial={m} prefill={{}}
+            onSave={(vals, time) => { onEditMesure(editId, vals, time); setEditId(null); setOpenRow(null); }}
+            onClose={() => setEditId(null)} />
+        );
+      })()}
+      {sheet && (
+        <MesureSheet P={P} mono={mono} sans={sans} disp={disp} tc={tc} pamTarget={tgt}
+          prefill={{ pas: tas ?? "", pad: tad ?? "", fc: fc ?? "", sat: spo2 ?? "", capno: etco2 ?? "", fio2: num(racs.fio2) ?? "", temp: temp ?? "", gly: gly ?? "" }}
+          onSave={(vals, time) => { onSaveMesure(vals, time); setSheet(false); }}
+          onClose={() => setSheet(false)} />
+      )}
+    </div>
+  );
+}
+
+// ── Mode lecture : résumé court à dire à voix haute lors de la remise du patient ──
+function buildLecture(o) {
+  const { ped, sec, events, racs, hemoList, etco2List, enCours, orientLabels, dest, causeLabels, ident, extra, pamTarget, glyLo } = o;
+  const num = v => { const n = parseFloat(String(v ?? "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
+  const fm = v => String(v).replace(".", ",");
+  const ros = events.find(e => e.id === "rosc");
+  const start = events.find(e => e.id === "start");
+  const since = ros ? Math.max(0, Math.round((sec - ros.sec) / 60)) : null;
+  const rcpMin = ros ? Math.max(0, Math.round((ros.sec - (start?.sec || 0)) / 60)) : null;
+  const nb = id => events.filter(e => e.id === id).length;
+  const chocs = nb("choc") + 2 * nb("doublechoc");
+  const rv = events.find(e => ["rv_fvtv", "rv_aesp", "rv_asy"].includes(e.id));
+  const rvLbl = rv ? ({ rv_fvtv:"FV/TV", rv_aesp:"AESP", rv_asy:"asystolie" })[rv.id] : null;
+
+  const lastHemo = hemoList.length ? hemoList[hemoList.length - 1] : null;
+  const tas = num(racs.tas) ?? num(lastHemo?.pas), tad = num(racs.tad) ?? num(lastHemo?.pad);
+  const pam = tas != null && tad != null ? Math.round((tas + 2 * tad) / 3) : null;
+  const fc = num(racs.fc) ?? num(lastHemo?.fc);
+  const spo2 = num(racs.sat);
+  const lastEt = etco2List.length ? etco2List[etco2List.length - 1] : null;
+  const etco2 = num(racs.capno) ?? num(lastEt?.val);
+  const temp = num(racs.tempRacs), gly = num(racs.glycemie);
+
+  const headTitle = [ident, rvLbl && `ACR ${rvLbl}`, extra, (causeLabels || []).slice(0, 2).map(l => `${l.split(" (")[0]} suspecté`).join(" · ") || null].filter(Boolean).join(" · ");
+
+  const lines = [];
+  if (ros) {
+    const p = [{ t:`RACS à ${ros.time}` }, { t:`${rcpMin} min de RCP` }];
+    if (chocs > 0) p.push({ t:`${chocs} choc${chocs > 1 ? "s" : ""}` });
+    if (nb("adr") > 0) p.push({ t:`${nb("adr")} adré` });
+    if (nb("amio") > 0) p.push({ t:`${nb("amio")} amio` });
+    lines.push({ id:"arret", k:"Arrêt", parts:p });
+  }
+  const st = [];
+  if (pam != null) { const bad = pam < pamTarget; st.push({ t:`PAM ${pam}${bad ? " ↓" : ""}${bad && ped ? ` (cible ≥ ${pamTarget})` : ""}`, w:bad }); }
+  if (fc != null) st.push({ t:`FC ${fc}` });
+  if (spo2 != null) { const bad = spo2 < 94 || spo2 > 98; st.push({ t:`SpO₂ ${spo2}${spo2 > 98 ? " ↑" : spo2 < 94 ? " ↓" : ""}`, w:bad }); }
+  if (etco2 != null) { const bad = etco2 < 35 || etco2 > 45; st.push({ t:`EtCO₂ ${etco2}${etco2 > 45 ? " ↑" : etco2 < 35 ? " ↓" : ""}`, w:bad }); }
+  if (temp != null) { const bad = temp > 37.5; st.push({ t:`${fm(temp)} °C`, w:bad }); }
+  if (gly != null) { const bad = gly < glyLo || gly > 1.8; st.push({ t:`glycémie ${fm(gly)}`, w:bad }); }
+  lines.push({ id:"etat", k:"État", parts: st.length ? st : [{ t:"constantes non saisies" }], tone: st.some(x => x.w) ? "warn" : "" });
+  if (enCours && enCours.length) {
+    lines.push({ id:"encours", k:"En cours", parts: enCours.map(c => ({ t:`${c.label} ${c.v}${c.sec != null ? ` (depuis ${Math.max(0, Math.round((sec - c.sec) / 60))} min)` : ""}` })) });
+  }
+  const evAfter = id => events.find(e => e.id === id && (e.sec ?? 0) >= (ros?.sec || 0));
+  const ecgEv = evAfter("ecg"), fastEv = evAfter("fast");
+  const ex = [];
+  if (ecgEv) ex.push({ t:`ECG : ${ecgEv.label.replace(/^ECG post-RACS\s*:?\s*/, "") || "fait"}` });
+  if (fastEv) { const d = fastEv.label.replace(/^Fast-écho\s*:?\s*/i, "").replace(/^FAST\s*/i, "").trim(); ex.push({ t:`FAST : ${d || "fait"}` }); }
+  if (ex.length) lines.push({ id:"examens", k:"Examens", parts:ex });
+  const miss = [];
+  if (!ecgEv) miss.push("ECG");
+  if (!racs.glasgow) miss.push("Glasgow");
+  if (!racs.pupilles) miss.push("pupilles");
+  if (gly == null) miss.push("glycémie");
+  if (miss.length) lines.push({ id:"nonfait", k:"Non fait", parts:[{ t:miss.join(" · ") }], tone:"todo" });
+  if ((orientLabels || []).length || (dest || "").trim()) {
+    lines.push({ id:"orient", k:"Orient.", parts:[{ t:[(orientLabels || []).join(" + "), (dest || "").trim()].filter(Boolean).join(" — ") }] });
+  }
+  return { headTitle, since, lines };
+}
+
+function ModeLecture({ P, mono, sans, disp, data, onClose, onFreeze }) {
+  useWakeLock(true);
+  const [size, setSize] = useLocalState("acr_lecture_size", 17);
+  const [hidden, setHidden] = useState([]);
+  const [frozen, setFrozen] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const visible = data.lines.filter(l => !hidden.includes(l.id));
+  const textOf = l => l.parts.map(p => p.t).join(" · ");
+  const shortText = () => [`${data.headTitle}${data.since != null ? ` · RACS depuis ${data.since} min` : ""}`, ...visible.map(l => `${l.k} : ${textOf(l)}`)].join("\n");
+  const copy = async () => {
+    const t = shortText();
+    try { await navigator.clipboard.writeText(t); } catch (e) {
+      try { const ta = document.createElement("textarea"); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); } catch (e2) {}
+    }
+    setCopied(true); setTimeout(() => setCopied(false), 1800);
+  };
+  const freeze = () => { const t = getNow(); setFrozen(t); onFreeze(shortText().replace(/\n/g, " | "), t); };
+  const sz = Math.max(13, Math.min(26, Number(size) || 17));
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:75, background:P.bg, display:"flex", flexDirection:"column", fontFamily:sans, paddingTop:"env(safe-area-inset-top, 0px)" }}>
+      <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:"9px 12px", display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+        <button onClick={onClose} style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:10, padding:"8px 10px", fontSize:12, fontWeight:700, color:P.text, cursor:"pointer", fontFamily:sans }}>← Fermer</button>
+        <div style={{ lineHeight:1.05 }}>
+          <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.12em", color:P.green, fontFamily:mono }}>MODE LECTURE</div>
+          <div style={{ fontSize:16, fontWeight:800, fontFamily:disp, color:P.text }}>Je transmets…</div>
+        </div>
+        <div style={{ marginLeft:"auto", display:"flex", gap:5 }}>
+          {[["A−", -2], ["A+", 2]].map(([l, d]) => (
+            <button key={l} onClick={() => setSize(Math.max(13, Math.min(26, sz + d)))} aria-label={d < 0 ? "Réduire le texte" : "Agrandir le texte"}
+              style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:9, padding:"6px 10px", fontSize:12, fontWeight:800, fontFamily:mono, color:P.text, cursor:"pointer" }}>{l}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ flex:1, overflowY:"auto", WebkitOverflowScrolling:"touch", padding:"12px 12px 24px", display:"flex", flexDirection:"column", gap:9 }}>
+        <div style={{ background:`linear-gradient(135deg, ${P.green}, color-mix(in srgb, ${P.green} 65%, #000))`, color:"#fff", borderRadius:16, padding:"12px 14px", flexShrink:0 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
+            <div style={{ minWidth:0 }}>
+              <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.12em", fontFamily:mono, opacity:0.85 }}>{data.since != null ? "DEPUIS LE RACS" : "SANS RACS"}</div>
+              <div style={{ fontSize:Math.round(sz * 1.12), fontWeight:800, fontFamily:disp, lineHeight:1.25, marginTop:3 }}>{data.headTitle || "Patient"}</div>
+            </div>
+            {data.since != null && <div style={{ fontSize:26, fontWeight:800, fontFamily:mono, whiteSpace:"nowrap" }}>{data.since}′</div>}
+          </div>
+        </div>
+        {data.lines.map(l => {
+          const off = hidden.includes(l.id);
+          const warn = l.tone === "warn", todo = l.tone === "todo";
+          return (
+            <button key={l.id} onClick={() => setHidden(h => off ? h.filter(x => x !== l.id) : [...h, l.id])}
+              style={{ display:"flex", gap:10, alignItems:"flex-start", textAlign:"left", cursor:"pointer", fontFamily:sans, flexShrink:0,
+                background: todo ? P.roseSoft : warn ? P.amberSoft : P.surface,
+                border:`1px solid ${todo ? P.rose : warn ? P.amber : P.border}`, borderRadius:14, padding:"10px 12px", opacity: off ? 0.35 : 1 }}>
+              <span style={{ width:62, flexShrink:0, paddingTop:4, fontSize:10, fontWeight:800, letterSpacing:"0.08em", fontFamily:mono, color:P.textSoft, textTransform:"uppercase" }}>{l.k}</span>
+              <span style={{ flex:1, minWidth:0, fontSize:sz, lineHeight:1.45, fontWeight:700, color: todo ? P.roseText : P.text, textDecoration: off ? "line-through" : "none" }}>
+                {l.parts.map((p, i) => (
+                  <span key={i}>{i > 0 ? " · " : ""}{p.w ? <span style={{ color:P.amberText, background:P.amberSoft, borderRadius:6, padding:"0 5px", boxShadow:`inset 0 0 0 1px ${P.amber}` }}>{p.t}</span> : p.t}</span>
+                ))}
+              </span>
+            </button>
+          );
+        })}
+        <p style={{ margin:"2px 0", fontSize:10, fontWeight:600, fontFamily:mono, color:P.textSoft, textAlign:"center" }}>Toucher une ligne pour la masquer à l'oral · écran maintenu allumé</p>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, flexShrink:0 }}>
+          <button onClick={copy} style={{ border:`1.5px solid ${P.border}`, background:P.surface, color:P.text, borderRadius:14, padding:11, fontSize:13, fontWeight:700, fontFamily:sans, cursor:"pointer" }}>{copied ? "✓ Copié" : "📋 Copier (court)"}</button>
+          <button onClick={freeze} disabled={!!frozen} style={{ border:`1.5px solid ${frozen ? P.green : P.border}`, background: frozen ? P.greenSoft : P.surface, color: frozen ? P.greenText : P.text, borderRadius:14, padding:11, fontSize:13, fontWeight:700, fontFamily:sans, cursor: frozen ? "default" : "pointer" }}>{frozen ? `✓ Figé à ${frozen}` : `🕒 Figer à ${getNow()}`}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Rappel discret d'export : au moins un cas archivé et aucune sauvegarde depuis 30 jours.
+function BackupReminder({ archivesCount }) {
+  const [, force] = useState(0);
+  const num = (k) => { try { return Number(localStorage.getItem(k)) || 0; } catch { return 0; } };
+  const now = Date.now();
+  const DAY = 86400000;
+  const last = num(LAST_EXPORT_KEY);
+  const snooze = num(BACKUP_SNOOZE_KEY);
+  if (archivesCount < 1 || isTraining()) return null;
+  if (snooze > now) return null;
+  // Première fois : on part d'aujourd'hui plutôt que d'alerter immédiatement.
+  if (!last) { try { localStorage.setItem(LAST_EXPORT_KEY, String(now)); } catch {} return null; }
+  const days = Math.floor((now - last) / DAY);
+  if (days < BACKUP_EVERY_DAYS) return null;
+  return (
+    <div style={{ marginTop:10, background:`color-mix(in srgb, ${P.amber} 12%, ${P.surface})`,
+      border:`1.5px solid ${P.amber}`, borderRadius:13, padding:"10px 12px",
+      display:"flex", alignItems:"center", gap:10, textAlign:"left" }}>
+      <span style={{ fontSize:18, flexShrink:0 }}>💾</span>
+      <div style={{ flex:1, minWidth:0 }}>
+        <p style={{ margin:0, fontSize:12, fontWeight:700, color:P.amberText }}>Sauvegarde conseillée</p>
+        <p style={{ margin:"2px 0 0", fontSize:10.5, color:P.amberText, opacity:0.85 }}>
+          Dernière sauvegarde il y a {days} jours · {archivesCount} cas archivé{archivesCount>1?"s":""}
+        </p>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:4, flexShrink:0 }}>
+        <button onClick={() => { exportBackup(); force(x => x + 1); }}
+          style={{ background:P.amber, border:"none", borderRadius:9, color:"#fff", padding:"7px 11px",
+            fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans }}>Exporter</button>
+        <button onClick={() => { try { localStorage.setItem(BACKUP_SNOOZE_KEY, String(Date.now() + 7*DAY)); } catch {} force(x => x + 1); }}
+          style={{ background:"transparent", border:"none", color:P.amberText, padding:"2px", fontSize:10,
+            cursor:"pointer", fontFamily:sans }}>Plus tard</button>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [pat, setPat] = useLocalState("acr_adulte_pat", { nom:"", prenom:"", ddn:"", age:"", sexe:"", temp:"", atcd:"", traitement:"", histoire:"", mecanisme:"", lieu:"" });
   const sf = k => v => setPat(p => ({ ...p, [k]: v }));
@@ -9183,10 +11423,12 @@ function App() {
   const alertRef = useRef(null);
 
   useEffect(() => {
-    if (!running || sec === 0 || sec % 120 !== 0) return;
+    // Synchronisé avec le cycle RCP (bip + flash rythme) : tient compte de la remise à zéro du cycle
+    if (!running || sec <= cycleOffset || (sec - cycleOffset) % 120 !== 0) return;
     setAlert("Analyser le rythme · Changer le masseur");
     clearTimeout(alertRef.current);
     alertRef.current = setTimeout(() => setAlert(null), 7000);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sec, running]);
 
   const [confirmAdd, setConfirmAdd] = useState(null); // { label, key, event }
@@ -9735,7 +11977,8 @@ function App() {
     setIot({ cormack:"", sonde:"", repere:"", capno:"", difficile:false, techniquesDifficiles:[], nbTentatives:"", inhalation:false });
     setEtco2List([]);
     setCcfPausedTotal(0); setCcfPausedSince(null);
-    setHemoList([]); setAmineList([]);
+    setHemoList([]); setAmineList([]); setVasoLog([]); setVasoExtra([]); setTempMode("");
+    setOrientList([]); setTcOn(false); setMesures([]); setNeuroLog([]); setVentLog([]); setSedLog([]); setSedExtra([]); setShowRacsPage(false);
     setPat({ nom:"", prenom:"", ddn:"", age:"", sexe:"", atcd:"", traitement:"", histoire:"", mecanisme:"", lieu:"" });
   };
 
@@ -9765,6 +12008,688 @@ function App() {
   // Déverrouillage VLI → passation au VLM : une fois débloqué, la grille complète
   // reste accessible pour le reste de la session (pas de retour arrière possible).
   const [vliUnlocked, setVliUnlocked] = useLocalState("acr_vli_unlocked", false);
+
+  // Page post-RACS plein écran : s'ouvre à la fin du bandeau « Annuler » du RACS
+  const [racsAuto, setRacsAuto] = useLocalState("acr_racs_auto", true);
+  const [showRacsPage, setShowRacsPage] = useState(false);
+  const [showLecture, setShowLecture] = useState(false);
+  const [orientList, setOrientList] = useLocalState("acr_adulte_orient", []);
+  const [tcOn, setTcOn] = useLocalState("acr_adulte_tc", false); // traumatisme crânien → objectif PAM ≥ 80
+  const [mesures, setMesures] = useLocalState("acr_adulte_mesures", []);
+  const MES_TO_RACS = { pas:"tas", pad:"tad", fc:"fc", sat:"sat", capno:"capno", fio2:"fio2", temp:"tempRacs", gly:"glycemie" };
+  const saveMesure = (vals, timeStr) => {
+    const t = timeStr || getNow();
+    const clean = {};
+    MES_KEYS.forEach(k => { if (mesHas(vals[k])) clean[k] = String(vals[k]).replace(",", "."); });
+    if (!Object.keys(clean).length) return;
+    const id = Date.now();
+    setMesures(prev => [...prev, { id, sec, time: t, ...clean }]);
+    const patch = {};
+    Object.keys(clean).forEach(k => { patch[MES_TO_RACS[k]] = clean[k]; });
+    setRacs(p => ({ ...p, ...patch }));
+    if (clean.pas != null || clean.pad != null || clean.fc != null)
+      setHemoList(prev => [...prev, { sec, time: t, pas: clean.pas ?? racs.tas, pad: clean.pad ?? racs.tad, fc: clean.fc ?? racs.fc }]);
+    if (clean.capno != null) setEtco2List(prev => [...prev, { val: clean.capno, sec, time: t }]);
+    const pasV = mesNum(clean.pas ?? racs.tas), padV = mesNum(clean.pad ?? racs.tad);
+    const parts = [];
+    if ((clean.pas != null || clean.pad != null) && pasV != null && padV != null) parts.push(`TA ${pasV}/${padV} (PAM ${Math.round((pasV + 2 * padV) / 3)})`);
+    else { if (clean.pas != null) parts.push(`TAs ${clean.pas}`); if (clean.pad != null) parts.push(`TAd ${clean.pad}`); }
+    if (clean.fc != null) parts.push(`FC ${clean.fc}`);
+    if (clean.sat != null) parts.push(`SpO₂ ${clean.sat}%`);
+    if (clean.capno != null) parts.push(`EtCO₂ ${clean.capno}`);
+    if (clean.fio2 != null) parts.push(`FiO₂ ${clean.fio2}%`);
+    if (clean.temp != null) parts.push(`T° ${clean.temp}`);
+    if (clean.gly != null) parts.push(`Glycémie ${clean.gly} g/L`);
+    setEvents(prev => [...prev, { id:"racs_mesure", mid:id, label:`Mesure post-RACS : ${parts.join(" · ")}`, icon:"📋", time:t, sec }]);
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(e) {}
+  };
+  const deleteMesure = (id) => {
+    const m = mesures.find(x => x.id === id);
+    if (!m) return;
+    const rest = mesures.filter(x => x.id !== id);
+    setMesures(rest);
+    setEvents(prev => prev.filter(e => e.mid !== id));
+    setHemoList(prev => prev.filter(h => !(h.sec === m.sec && h.time === m.time)));
+    setEtco2List(prev => prev.filter(e => !(e.sec === m.sec && e.time === m.time)));
+    const carried = carryVals(rest), patch = {};
+    MES_KEYS.forEach(k => { if (mesHas(m[k])) patch[MES_TO_RACS[k]] = carried[k] ?? ""; });
+    setRacs(p => ({ ...p, ...patch }));
+  };
+  const editMesure = (id, vals, timeStr) => doEditMesure({ mesures, id, vals, timeStr, setMesures, setEvents, setHemoList, setEtco2List, setRacs, map:MES_TO_RACS });
+  const [remMin, setRemMin] = useLocalState("acr_remesure_min", 0);
+  const remAdult = remesureState(mesures, events.find(e => e.id === "rosc"), sec, remMin);
+  useRemesureAlert(remAdult.due);
+  const [neuroLog, setNeuroLog] = useLocalState("acr_adulte_neuro", []);
+  const [ventLog, setVentLog] = useLocalState("acr_adulte_ventlog", []);
+  const saveNeuro = (v, t) => {
+    const id = Date.now();
+    setNeuroLog(prev => [...prev, { id, sec, time:t, glasgow:v.glasgow, pupilles:v.pupilles }]);
+    setRacs(p => ({ ...p, ...(v.glasgow ? { glasgow:v.glasgow } : {}), ...(v.pupilles ? { pupilles:v.pupilles } : {}) }));
+    const parts = [v.glasgow && `Glasgow ${v.glasgow}`, v.pupilles && `pupilles : ${v.pupilles}`].filter(Boolean);
+    setEvents(prev => [...prev, { id:"racs_neuro", nid:id, label:`Réévaluation neuro : ${parts.join(" · ")}`, icon:"🧠", time:t, sec }]);
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(e) {}
+  };
+  const deleteNeuro = (id) => {
+    const rest = neuroLog.filter(n => n.id !== id);
+    setNeuroLog(rest);
+    setEvents(prev => prev.filter(e => e.nid !== id));
+    const lastG = [...rest].reverse().find(n => n.glasgow), lastP = [...rest].reverse().find(n => n.pupilles);
+    setRacs(p => ({ ...p, glasgow: lastG?.glasgow || "", pupilles: lastP?.pupilles || "" }));
+  };
+  const commitVentLog = () => {
+    const cur = { volume:racs.volume, fr:racs.fr, pep:racs.pep, fio2:racs.fio2 };
+    if (!["volume", "fr", "pep", "fio2"].some(k => mesHas(cur[k]))) return;
+    const last = ventLog.length ? ventLog[ventLog.length - 1].vals : {};
+    if (["volume", "fr", "pep", "fio2"].every(k => String(cur[k] ?? "") === String(last[k] ?? ""))) return;
+    const text = [mesHas(cur.volume) && `Vt ${cur.volume}`, mesHas(cur.fr) && `FR ${cur.fr}`, mesHas(cur.pep) && `PEP ${cur.pep}`, mesHas(cur.fio2) && `FiO₂ ${cur.fio2} %`].filter(Boolean).join(" · ");
+    const t = getNow();
+    setVentLog(prev => [...prev, { id:Date.now(), sec, time:t, vals:{ ...cur }, text }]);
+    setEvents(prev => [...prev, { id:"racs_vent", label:`Réglages ventilatoires : ${text}`, icon:"🫁", time:t, sec }]);
+  };
+  const setTc = (on) => {
+    setTcOn(on);
+    setEvents(prev => {
+      const rest = prev.filter(e => e.id !== "tc");
+      return on ? [...rest, { id:"tc", label:"Traumatisme crânien — objectif PAM ≥ 80 mmHg", icon:"🧠", time:getNow(), sec }] : rest;
+    });
+  };
+  const eventsLiveRef = useRef(events);
+  eventsLiveRef.current = events;
+  const racsPageTimerRef = useRef(null);
+  useEffect(() => {
+    const ev = confirmAdd?.event;
+    if (!ev || ev.id !== "rosc") return;
+    if (!racsAuto || (isVLI && !vliUnlocked)) return;
+    clearTimeout(racsPageTimerRef.current);
+    racsPageTimerRef.current = setTimeout(() => {
+      // Toujours là ? (sinon le RACS a été annulé depuis le bandeau)
+      if (eventsLiveRef.current.some(e => e.id === "rosc" && e.sec === ev.sec && e.time === ev.time)) setShowRacsPage(true);
+    }, 3100);
+  }, [confirmAdd]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => clearTimeout(racsPageTimerRef.current), []);
+  // ── Sédation : dilutions mémorisées, journal débits/bolus, lignes libres ──
+  const [sedDil, setSedDil] = useLocalState("acr_sedation_dilutions", SED_DEFAULT_DIL);
+  const [sedLog, setSedLog] = useLocalState("acr_adulte_sedlog", []);
+  const [sedExtra, setSedExtra] = useLocalState("acr_adulte_sedextra", []);
+  const sedPush = (entry, label) => {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    const e = { id, sec, ...entry, text: label };
+    setSedLog(prev => [...prev, e]);
+    setEvents(prev => [...prev, { id:"racs_sedation", sid:id, label, icon:"💊", time:entry.time, sec }]);
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(err) {}
+  };
+  const sedDebit = (drugKey, name, rate, time) => {
+    const r = String(rate).replace(",", ".");
+    const base = SED_DRUGS.find(d => d.key === drugKey);
+    let dl, unit;
+    if (base) { dl = sedDil[drugKey] || base.def; unit = base.unit; setRacs(p => ({ ...p, [base.rateKey]: r })); }
+    else { const x = sedExtra.find(z => z.id === drugKey); if (!x) return; dl = { qty:x.qty, vol:x.vol }; unit = x.unit; setSedExtra(prev => prev.map(z => z.id === drugKey ? { ...z, rate:r } : z)); }
+    const ph = sedPerHour(r, dl);
+    sedPush({ kind:"debit", drug:drugKey, name, rate:r, time }, `${name} ${r.replace(".", ",")} mL/h${ph != null ? ` (${sedFmt(ph, unit === "µg" ? 1 : 2)} ${unit}/h)` : ""}`);
+  };
+  const sedBolus = (drugKey, name, dose, unit, time) => {
+    const d = String(dose).replace(",", ".");
+    if (drugKey === "curare") setRacs(p => ({ ...p, curare: d }));
+    sedPush({ kind:"bolus", drug:drugKey, name, dose:d, unit, time }, `${name} bolus ${d.replace(".", ",")} ${unit}`);
+  };
+  const sedDeleteLog = (id) => {
+    setSedLog(prev => prev.filter(e => e.id !== id));
+    setEvents(prev => prev.filter(e => e.sid !== id));
+  };
+
+  // ── Hémodynamique : dilution noradrénaline mémorisée, paliers horodatés avec PAM, autres vasopresseurs ──
+  const [vasoDil, setVasoDil] = useLocalState("acr_vaso_dilutions", { norad: VASO_DEFAULT_DIL });
+  const [vasoLog, setVasoLog] = useLocalState("acr_adulte_vasolog", []);
+  const [vasoExtra, setVasoExtra] = useLocalState("acr_adulte_vasoextra", []);
+  const [tempMode, setTempMode] = useLocalState("acr_adulte_tempmode", "");
+  const pamPts = pamPoints(mesures, hemoList);
+  const livePam = (() => { const a = mesNum(racs.tas), d = mesNum(racs.tad); return a > 0 && d > 0 ? Math.round((a + 2 * d) / 3) : null; })();
+  const vasoMarks = vasoLog.filter(e => e.drug === "norad").map(e => ({ type:`NAD ${e.rate}`, sec:e.sec }));
+  const vasoDebit = (drugKey, name, rate, time) => {
+    const r = String(rate).replace(",", ".");
+    let dl, unit, before;
+    if (drugKey === "norad") { dl = vasoDil.norad || VASO_DEFAULT_DIL; unit = "mg"; before = racs.noradrV; setRacs(p => ({ ...p, noradrV: r })); }
+    else {
+      const x = vasoExtra.find(z => z.id === drugKey); if (!x) return;
+      dl = { qty:x.qty, vol:x.vol }; unit = x.unit; before = x.rate;
+      setVasoExtra(list => list.map(z => z.id === drugKey ? { ...z, rate:r } : z));
+    }
+    const pam = livePam != null ? livePam : (pamPts.length ? pamPts[pamPts.length - 1].pam : null);
+    const ugh = vasoUg(r, dl, unit), kg = mesNum(pat.poids);
+    const dose = ugh == null ? "" : ` (${unit === "µg" ? `${sedFmt(ugh, 1)} µg/h` : `${sedFmt(ugh / 1000, 2)} mg/h`}${kg > 0 ? ` · ${sedFmt(ugh / 60 / kg, 3)} µg/kg/min` : ""})`;
+    const fm = v => String(v).replace(".", ",");
+    const text = `${name} ${mesNum(before) > 0 ? `${fm(before)} → ` : ""}${fm(r)} mL/h${dose}`;
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    setVasoLog(list => [...list, { id, sec, time, drug:drugKey, name, rate:r, prev:mesNum(before) > 0 ? String(before) : "", pam, text }]);
+    setEvents(list => [...list, { id:"racs_vaso", sid:id, label:`${text}${pam != null ? ` · PAM ${pam}` : ""}`, icon:"💉", time, sec }]);
+    try { if (navigator.vibrate) navigator.vibrate(28); } catch(err) {}
+  };
+  const vasoDeleteLog = (id) => {
+    const e = vasoLog.find(z => z.id === id);
+    // Supprimer le tout dernier palier d'un produit rétablit son débit précédent
+    const isLast = e && !vasoLog.some(z => z.drug === e.drug && z.sec > e.sec) && vasoLog.filter(z => z.drug === e.drug).sort((a, b) => a.sec - b.sec).pop()?.id === id;
+    if (e && isLast) {
+      if (e.drug === "norad") setRacs(p => ({ ...p, noradrV: e.prev || "" }));
+      else setVasoExtra(list => list.map(z => z.id === e.drug ? { ...z, rate: e.prev || "" } : z));
+    }
+    setVasoLog(list => list.filter(z => z.id !== id));
+    setEvents(list => list.filter(z => z.sid !== id));
+  };
+  const setTempControl = (v) => {
+    const nv = tempMode === v ? "" : v;
+    setTempMode(nv);
+    setEvents(list => {
+      const rest = list.filter(z => z.id !== "racs_temp");
+      if (!nv) return rest;
+      return [...rest, { id:"racs_temp", label:`Contrôle de la température : ${nv === "couverture" ? "couverture" : "refroidissement actif"}`, icon:"🌡️", time:getNow(), sec }];
+    });
+  };
+
+  // ── Contenu des soins post-RACS : déplié dans la page post-RACS (plus de fenêtre) ──
+  const renderRacsBody = (tab) => {
+    if (tab === "ventil") return (
+                  <div style={{ width:"100%" }}>
+                    {/* FR / Vt */}
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:4 }}>
+                      {[
+                        { label:"Fréq. resp.", key:"fr",     ph:"12",  unit:"/min"  },
+                        { label:"Vol. Vt",     key:"volume", ph:"500", unit:"mL"    },
+                      ].map(f => (
+                        <div key={f.key} style={{ minWidth:0 }}>
+                          <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                            textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>{f.label}</p>
+                          <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                            <input type="number" inputMode="decimal" value={racs[f.key]}
+                              onChange={e => sr(f.key)(e.target.value)} placeholder={f.ph}
+                              style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                                borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
+                                fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
+                              onFocus={e => e.target.style.borderColor = P.blue}
+                              onBlur={e  => e.target.style.borderColor = P.border} />
+                            <span style={{ fontSize:9, color:P.textSoft, flexShrink:0, whiteSpace:"nowrap" }}>{f.unit}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {(() => {
+                      const pbw = idealBodyWeight(pat.taille, pat.sexe);
+                      const vt = parseFloat(String(racs.volume).replace(",", "."));
+                      const ratio = pbw && vt > 0 ? vt / pbw : null;
+                      const okVt = ratio != null && ratio >= 6 && ratio <= 8;
+                      const chip = (on, label, k, v) => (
+                        <button onClick={() => sf(k)(on ? "" : v)}
+                          style={{ flex:1, padding:"8px 0", borderRadius:9, fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:sans,
+                            border:`1.5px solid ${on ? P.green : P.border}`, background: on ? P.greenSoft : P.surface,
+                            color: on ? P.greenText : P.textSoft }}>{label}</button>
+                      );
+                      return (
+                        <div style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:12, padding:"10px 11px", margin:"6px 0 12px" }}>
+                          <p style={{ margin:"0 0 7px", fontSize:9, fontWeight:700, color:P.textSoft, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:mono }}>
+                            Poids idéal · Vt cible
+                          </p>
+                          <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                            <input type="number" inputMode="decimal" value={pat.taille || ""} onChange={e => sf("taille")(e.target.value)} placeholder="Taille"
+                              style={{ width:78, background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:8, padding:"8px 4px",
+                                fontSize:14, color:P.text, fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }} />
+                            <span style={{ fontSize:9, color:P.textSoft }}>cm</span>
+                            {chip(pat.sexe === "H", "Homme", "sexe", "H")}
+                            {chip(pat.sexe === "F", "Femme", "sexe", "F")}
+                          </div>
+                          {pbw ? (
+                            <div style={{ marginTop:8, fontSize:11.5, color:P.textMid, lineHeight:1.55 }}>
+                              Poids idéal <b style={{ fontFamily:mono, color:P.text }}>{pbw.toFixed(0)} kg</b> · Vt cible 6 mL/kg ={" "}
+                              <b style={{ fontFamily:mono, color:P.greenText }}>{Math.round(pbw * 6)} mL</b>
+                              <span style={{ color:P.textSoft }}> (6–8 mL/kg : {Math.round(pbw * 6)}–{Math.round(pbw * 8)} mL)</span>
+                              {ratio != null && (
+                                <div style={{ marginTop:5, fontWeight:700, color: okVt ? P.greenText : P.amberText }}>
+                                  Vt actuel {Math.round(vt)} mL = <span style={{ fontFamily:mono }}>{ratio.toFixed(1).replace(".", ",")} mL/kg</span>
+                                  {okVt ? " ✓ dans la cible" : ratio > 8 ? " ⚠ au-dessus de 8 mL/kg" : " ⚠ en dessous de 6 mL/kg"}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <p style={{ margin:"7px 0 0", fontSize:10.5, color:P.textSoft, fontStyle:"italic" }}>
+                              Renseigner la taille et le sexe pour obtenir le Vt cible (6 mL/kg de poids idéal).
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* PEP / SpO2 avec objectif SpO2 */}
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:4 }}>
+                      <div style={{ minWidth:0 }}>
+                        <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>PEP</p>
+                        <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                          <input type="number" inputMode="decimal" value={racs.pep}
+                            onChange={e => sr("pep")(e.target.value)} placeholder="5"
+                            style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                              borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
+                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
+                            onFocus={e => e.target.style.borderColor = P.blue}
+                            onBlur={e  => e.target.style.borderColor = P.border} />
+                          <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>cmH₂O</span>
+                        </div>
+                      </div>
+                      {/* SpO2 — alerte si hors cible 94–98% (hyperoxie/hypoxie) */}
+                      {(() => {
+                        const s = parseFloat(String(racs.sat).replace(",","."));
+                        const out = !isNaN(s) && (s < 94 || s > 98);
+                        return (
+                          <div style={{ minWidth:0 }}>
+                            <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>SpO₂</p>
+                            <div style={{ display:"flex", alignItems:"center", gap:4,
+                              background: out ? P.roseSoft : "transparent", borderRadius:8 }}>
+                              <input type="number" inputMode="decimal" value={racs.sat}
+                                onChange={e => sr("sat")(e.target.value)} placeholder="96"
+                                style={{ flex:1, minWidth:0, background: out ? "transparent" : P.surfaceAlt,
+                                  border:`1.5px solid ${out ? P.rose : P.border}`,
+                                  borderRadius:8, padding:"9px 4px", fontSize:15, color: out ? P.roseText : P.text,
+                                  fontFamily:mono, outline:"none", textAlign:"center", fontWeight: out ? 800 : 600, boxSizing:"border-box" }}
+                                onFocus={e => e.target.style.borderColor = P.blue}
+                                onBlur={e  => e.target.style.borderColor = out ? P.rose : P.border} />
+                              <span style={{ fontSize:9, color: out ? P.roseText : P.textSoft, flexShrink:0, fontWeight: out?700:400 }}>%</span>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    {(() => {
+                      const s = parseFloat(String(racs.sat).replace(",","."));
+                      const out = !isNaN(s) && (s < 94 || s > 98);
+                      return (
+                        <p style={{ margin:"0 0 10px", fontSize:9, textAlign:"right",
+                          color: out ? P.roseText : P.textSoft, fontWeight: out ? 700 : 400,
+                          fontStyle: out ? "normal" : "italic" }}>
+                          {out ? (s > 98 ? "⚠️ SpO₂ > 98% — risque d'hyperoxie, diminuer FiO₂" : "⚠️ SpO₂ < 94% — hypoxie") : "Objectif SpO₂ 94–98 %"}
+                        </p>
+                      );
+                    })()}
+
+                    {/* FiO2 / EtCO2 avec objectif Capno */}
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:4 }}>
+                      <div style={{ minWidth:0 }}>
+                        <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>FiO₂</p>
+                        <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                          <input type="number" inputMode="decimal" value={racs.fio2}
+                            onChange={e => sr("fio2")(e.target.value)} placeholder="100"
+                            style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                              borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
+                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
+                            onFocus={e => e.target.style.borderColor = P.blue}
+                            onBlur={e  => e.target.style.borderColor = P.border} />
+                          <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>%</span>
+                        </div>
+                      </div>
+                      {/* EtCO2 — alerte si hors cible 35–45mmHg + tendance vs dernière valeur enregistrée */}
+                      {(() => {
+                        const v = parseFloat(String(racs.capno).replace(",","."));
+                        const out = !isNaN(v) && (v < 35 || v > 45);
+                        const lastVal = etco2List.length > 0 ? etco2List[etco2List.length - 1].val : null;
+                        return (
+                          <div style={{ minWidth:0, position:"relative" }}>
+                            <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>EtCO₂</p>
+                            {lastVal != null && <TrendBadge current={racs.capno} last={lastVal} P={P} goodDir="up" />}
+                            <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                              <input type="number" inputMode="decimal" value={racs.capno}
+                                onChange={e => sr("capno")(e.target.value)} placeholder="35"
+                                style={{ flex:1, minWidth:0, background: out ? P.roseSoft : P.greenSoft,
+                                  border:`1.5px solid ${out ? P.rose : P.green}`,
+                                  borderRadius:8, padding:"9px 4px", fontSize:15, color: out ? P.roseText : P.greenText,
+                                  fontFamily:mono, outline:"none", textAlign:"center", fontWeight:800, boxSizing:"border-box" }}
+                                onFocus={e => e.target.style.borderColor = P.blue}
+                                onBlur={e  => e.target.style.borderColor = out ? P.rose : P.green} />
+                              <span style={{ fontSize:9, color: out ? P.roseText : P.greenText, flexShrink:0, fontWeight:700 }}>mmHg</span>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    {(() => {
+                      const v = parseFloat(String(racs.capno).replace(",","."));
+                      const out = !isNaN(v) && (v < 35 || v > 45);
+                      return (
+                        <p style={{ margin:"0 0 4px", fontSize:9.5, textAlign:"right",
+                          color: out ? P.roseText : P.greenText, fontWeight: out ? 700 : 600 }}>
+                          {isNaN(v) ? "Objectif EtCO₂ 35–45 mmHg" : out ? "⚠️ EtCO₂ hors cible" : "✓ EtCO₂ dans la cible (35–45 mmHg)"}
+                        </p>
+                      );
+                    })()}
+
+                    {/* Graphique live EtCO2 */}
+                    {etco2List.length > 0 && (
+                      <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"10px 12px", marginTop:10 }}>
+                        <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:700, color:P.textMid,
+                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
+                          EtCO₂ — {etco2List.length} mesure{etco2List.length>1?"s":""}
+                        </p>
+                        <Etco2Curve data={etco2List} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />
+                      </div>
+                    )}
+                  </div>
+    );
+    if (tab === "sedat") return (
+                  <SedationTab P={P} mono={mono} sans={sans} disp={disp} racs={racs} dil={sedDil}
+                    onDil={(k, v) => setSedDil(p => ({ ...p, [k]: v }))}
+                    log={sedLog} extra={sedExtra} poids={pat.poids} onPoids={sf("poids")} sec={sec}
+                    onDebit={sedDebit} onBolus={sedBolus}
+                    onAddExtra={(x) => setSedExtra(prev => [...prev, { id:`x${Date.now()}`, rate:"", ...x }])}
+                    onDeleteExtra={(id) => setSedExtra(prev => prev.filter(z => z.id !== id))}
+                    onDeleteLog={sedDeleteLog}
+                    autresDrogues={racs.autresDrogues} onAutres={sr("autresDrogues")} />
+    );
+    if (tab === "hemo") return (
+                  <div style={{ width:"100%" }}>
+
+                    {/* TAs / TAd / FC — 3 champs séparés, avec tendance vs dernière mesure enregistrée */}
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, marginBottom:4 }}>
+                      {[
+                        { label:"TAs",        key:"tas", ph:"120", accent:P.rose, goodDir:"up" },
+                        { label:"TAd",        key:"tad", ph:"80",  accent:P.rose, goodDir:"up" },
+                        { label:"FC /min",    key:"fc",  ph:"80",  accent:P.rose, goodDir:"down" },
+                      ].map(f => {
+                        const lastVal = hemoList.length > 0 ? hemoList[hemoList.length - 1][f.key] : null;
+                        return (
+                        <div key={f.key} style={{ minWidth:0, position:"relative" }}>
+                          <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                            textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>{f.label}</p>
+                          {lastVal != null && <TrendBadge current={racs[f.key]} last={lastVal} P={P} goodDir={f.goodDir} />}
+                          <input type="number" inputMode="decimal" value={racs[f.key]}
+                            onChange={e => sr(f.key)(e.target.value)} placeholder={f.ph}
+                            style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                              borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
+                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600,
+                              boxSizing:"border-box" }}
+                            onFocus={e => e.target.style.borderColor = f.accent}
+                            onBlur={e  => e.target.style.borderColor = P.border} />
+                        </div>
+                        );
+                      })}
+                    </div>
+                    {hemoList.length > 0 && (
+                      <p style={{ margin:"6px 0 10px", fontSize:9, color:P.textSoft, textAlign:"right", fontStyle:"italic" }}>
+                        vs dernière mesure enregistrée
+                      </p>
+                    )}
+
+                    {/* PAM calculée */}
+                    {(() => {
+                      const sys = parseFloat(racs.tas), dia = parseFloat(racs.tad);
+                      const pam = (!isNaN(sys) && !isNaN(dia) && sys>0 && dia>0)
+                        ? Math.round((sys + 2*dia) / 3) : null;
+                      return (
+                        <div style={{ marginBottom:12 }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2 }}>
+                            <span style={{ fontSize:9, color:P.textSoft, fontFamily:mono,
+                              textTransform:"uppercase", letterSpacing:"0.08em" }}>PAM calculée</span>
+                            <span style={{ fontSize:16, fontWeight:700, fontFamily:mono,
+                              color: pam!==null ? (pam>=65?P.greenText:P.roseText) : P.textSoft }}>
+                              {pam!==null ? `${pam} mmHg` : "—"}
+                            </span>
+                          </div>
+                          <p style={{ margin:0, fontSize:9, color:P.textSoft, fontStyle:"italic" }}>
+                            Objectif PAM {">"} 65 mmHg · post-TC {">"} 80 mmHg
+                          </p>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Graphique live — évolution TA/FC (les mesures déjà enregistrées) */}
+                    {hemoList.length > 0 && (
+                      <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"10px 12px", marginBottom:12 }}>
+                        <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:700, color:P.textMid,
+                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
+                          Évolution — {hemoList.length} mesure{hemoList.length>1?"s":""}
+                        </p>
+                        <HemoCurve hemoList={hemoList} amineList={[...amineList, ...vasoMarks]} P={P} mono={mono}
+                          refSec={events.find(e=>e.id==="rosc")?.sec||0} />
+                      </div>
+                    )}
+
+                    {/* Température — contrôle ciblé (ERC 2025 : prévention stricte de l'hyperthermie) */}
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
+                      background: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.roseSoft : P.amberSoft,
+                      border:`1px solid ${parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
+                      borderRadius:9, padding:"7px 10px" }}>
+                      <span style={{ fontSize:13, flexShrink:0 }}>🌡️</span>
+                      <input type="number" inputMode="decimal" step="0.1" value={racs.tempRacs}
+                        onChange={e => sr("tempRacs")(e.target.value)} placeholder="36,5"
+                        style={{ width:62,
+                          background:P.surface,
+                          border:`1px solid ${parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
+                          borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
+                          fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
+                          boxSizing:"border-box", flexShrink:0 }}
+                        onFocus={e => e.target.style.borderColor = P.amberText}
+                        onBlur={e  => e.target.style.borderColor = P.amber} />
+                      <span style={{ fontSize:12,
+                        color: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
+                        fontWeight:600, flexShrink:0 }}>°C</span>
+                      <span style={{ fontSize:10,
+                        color: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
+                        fontWeight: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? 700 : 400,
+                        lineHeight:1.3 }}>
+                        {parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5
+                          ? "⚠️ > 37,5 °C — hyperthermie à traiter"
+                          : "Objectif : éviter > 37,5 °C (72h)"}
+                      </span>
+                    </div>
+
+                    <div style={{ display:"flex", gap:6, flexWrap:"wrap", margin:"-2px 0 10px" }}>
+                      {[["couverture","Couverture"],["actif","Refroidissement actif"]].map(([v, l]) => (
+                        <button key={v} onClick={() => setTempControl(v)}
+                          style={{ border:`1.5px solid ${tempMode === v ? P.teal : P.border}`, background: tempMode === v ? P.tealSoft : P.surface, color: tempMode === v ? P.tealText : P.textMid,
+                            borderRadius:99, padding:"6px 11px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans }}>{l}</button>
+                      ))}
+                    </div>
+
+                    {/* Glycémie — ACSOS : éviter hypo/hyperglycémie */}
+                    {(() => {
+                      const g = parseFloat(String(racs.glycemie).replace(",","."));
+                      const out = !isNaN(g) && (g < 1.0 || g > 1.8);
+                      return (
+                        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
+                          background: out ? P.roseSoft : P.amberSoft,
+                          border:`1px solid ${out ? P.rose : P.amber}`,
+                          borderRadius:9, padding:"7px 10px" }}>
+                          <span style={{ fontSize:13, flexShrink:0 }}>🩸</span>
+                          <input type="number" inputMode="decimal" step="0.01" value={racs.glycemie}
+                            onChange={e => sr("glycemie")(e.target.value)} placeholder="1,20"
+                            style={{ width:62, background:P.surface, border:`1px solid ${out ? P.rose : P.amber}`,
+                              borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
+                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
+                              boxSizing:"border-box", flexShrink:0 }}
+                            onFocus={e => e.target.style.borderColor = P.amberText}
+                            onBlur={e  => e.target.style.borderColor = P.amber} />
+                          <span style={{ fontSize:12, color: out ? P.roseText : P.amberText, fontWeight:600, flexShrink:0 }}>g/L</span>
+                          <span style={{ fontSize:10, color: out ? P.roseText : P.amberText,
+                            fontWeight: out ? 700 : 400, lineHeight:1.3 }}>
+                            {out ? "⚠️ Hors cible — corriger hypo/hyperglycémie" : "Objectif : 1,0-1,8 g/L (éviter hypo/hyper)"}
+                          </span>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Pupilles — examen neurologique rapide */}
+                    <div style={{ marginBottom:10 }}>
+                      <Lbl>Pupilles</Lbl>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                        {["Normales","Anormales","Non fait"].map(v => (
+                          <button key={v} onClick={() => {
+                              if (v === "Anormales") { setRacsPupillesExpanded(x => !x); return; }
+                              sr("pupilles")(v); setRacsPupillesExpanded(false);
+                            }}
+                            style={{ padding:"8px 4px", borderRadius:9, fontSize:10.5, fontWeight:600,
+                              border:`1.5px solid ${P.violet}`,
+                              background: (v==="Anormales" && racsPupillesExpanded) || (v!=="Anormales" && racs.pupilles===v) ? P.violet : P.surface,
+                              color: (v==="Anormales" && racsPupillesExpanded) || (v!=="Anormales" && racs.pupilles===v) ? "#fff" : P.violetText,
+                              cursor:"pointer", fontFamily:sans }}>
+                            {v}
+                          </button>
+                        ))}
+                      </div>
+                      {racs.pupilles && !["Normales","Non fait"].includes(racs.pupilles) && !racsPupillesExpanded && (
+                        <p style={{ margin:"6px 0 0", fontSize:10.5, color:P.violetText, fontWeight:700 }}>{racs.pupilles}</p>
+                      )}
+                      {racsPupillesExpanded && (
+                        <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:5 }}>
+                          {PUPILLES_DETAIL.map(({v,left,right}) => (
+                            <button key={v} onClick={() => { sr("pupilles")(v); setRacsPupillesExpanded(false); }}
+                              style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 11px",
+                                borderRadius:9, border:`1.5px solid ${P.border}`, background:P.surface,
+                                fontSize:11.5, fontWeight:600, color:P.text, cursor:"pointer",
+                                fontFamily:sans, textAlign:"left" }}>
+                              <PupilIcon left={left} right={right} />{v}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Traumatique : remplissage / transfusion en tête, avant le vasopresseur */}
+                    {isTrauma && <RemplissageSection racs={racs} setRacs={setRacs} />}
+
+                    {/* Noradrénaline par paliers + autres vasopresseurs (dilution réglable, PAM liée) */}
+                    <VasoPanel P={P} mono={mono} sans={sans} disp={disp} racs={racs} dil={vasoDil}
+                      onDil={(k, v) => setVasoDil(p => ({ ...p, [k]: v }))}
+                      log={vasoLog} extra={vasoExtra} poids={pat.poids} sec={sec}
+                      pamPts={pamPts} livePam={livePam} tc={tcOn}
+                      onDebit={vasoDebit}
+                      onAddExtra={(x) => setVasoExtra(prev => [...prev, { id:`v${Date.now()}`, rate:"", ...x }])}
+                      onDeleteExtra={(id) => setVasoExtra(prev => prev.filter(z => z.id !== id))}
+                      onDeleteLog={vasoDeleteLog} />
+
+                    {/* Dobutamine */}
+                    <div style={{ marginBottom:12 }}>
+                      <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                        textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Dobutamine</p>
+                      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                        <input type="number" inputMode="decimal" value={racs.dobut}
+                          onChange={e => sr("dobut")(e.target.value)} placeholder="5"
+                          style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
+                            borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
+                            fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
+                          onFocus={e => e.target.style.borderColor = P.rose}
+                          onBlur={e  => e.target.style.borderColor = P.border} />
+                        <span style={{ fontSize:9, color:P.textSoft, flexShrink:0, whiteSpace:"nowrap" }}>μg/kg/min</span>
+                      </div>
+                    </div>
+
+                    {/* ── Remplissage vasculaire ── */}
+                    {!isTrauma && <RemplissageSection racs={racs} setRacs={setRacs} />}
+
+                    <p style={{ margin:"10px 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
+                      textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Autres thérapeutiques</p>
+                    <TArea value={racs.autresHemo} onChange={sr("autresHemo")}
+                      placeholder="Ex : Vasopressine 0,03 U/min..." rows={2} />
+                  </div>
+    );
+    return null;
+  };
+
+  // Résumé texte des soins (une ligne de chronologie quand il change)
+  const buildRacsLog = () => {
+        const _hd = sedPerHour(racs.hypnovelV, sedDil.hypnovel || SED_DEFAULT_DIL.hypnovel);
+        const _sd = sedPerHour(racs.sufentaV,  sedDil.sufenta  || SED_DEFAULT_DIL.sufenta);
+        const hypnovelDose  = _hd != null ? sedFmt(_hd, 2) : null;
+        const sufentaDose   = _sd != null ? sedFmt(_sd, 1) : null;
+        const _nd = vasoDil.norad || VASO_DEFAULT_DIL;
+        const _nph = sedPerHour(racs.noradrV, _nd);
+        const noradrDose    = _nph != null ? sedFmt(_nph, 2) : null;
+
+        const buildLog = () => {
+          const p = [];
+          if (racs.fr)            p.push(`FR ${racs.fr}/min`);
+          if (racs.volume) {
+            const _pbw = idealBodyWeight(pat.taille, pat.sexe), _v = parseFloat(String(racs.volume).replace(",", "."));
+            p.push(`Vt ${racs.volume} mL${_pbw && _v > 0 ? ` (${(_v / _pbw).toFixed(1).replace(".", ",")} mL/kg PI)` : ""}`);
+          }
+          if (racs.pep)           p.push(`PEP ${racs.pep} cmH₂O`);
+          if (racs.sat)           p.push(`SpO₂ ${racs.sat}%`);
+          if (racs.fio2)          p.push(`FiO₂ ${racs.fio2}%`);
+          if (racs.capno)         p.push(`EtCO₂ ${racs.capno} mmHg`);
+          if (racs.hypnovelV)     p.push(`Hypnovel ${racs.hypnovelV} mL/h → ${hypnovelDose} mg/h`);
+          if (racs.sufentaV)      p.push(`Sufentanyl ${racs.sufentaV} mL/h → ${sufentaDose} μg/h`);
+          if (racs.curare)        p.push(`Curare ${racs.curare} mg`);
+          sedExtra.forEach(x => { const _p = sedPerHour(x.rate, x); if (mesNum(x.rate) > 0) p.push(`${x.name} ${x.rate} mL/h${_p != null ? ` → ${sedFmt(_p, 2)} ${x.unit}/h` : ""}`); });
+          if (racs.autresDrogues) p.push(racs.autresDrogues);
+          if (racs.tas && racs.tad) p.push(`TA ${racs.tas}/${racs.tad} mmHg (PAM ${Math.round((parseFloat(racs.tas)+2*parseFloat(racs.tad))/3)} mmHg)`);
+          else if (racs.tas)        p.push(`TAs ${racs.tas} mmHg`);
+          if (racs.remplissages && racs.remplissages.length > 0) {
+            const total = racs.remplissages.reduce((s,r)=>s+r.vol,0);
+            p.push(`Remplissage total : ${total} mL (${racs.remplissages.map(r=>`${r.vol}mL ${r.sol}`).join(", ")})`);
+          }
+          if (racs.fc)            p.push(`FC ${racs.fc}/min`);
+          if (racs.tempRacs)      p.push(`T° ${racs.tempRacs} °C`);
+          if (racs.pupilles)      p.push(`Pupilles ${racs.pupilles}`);
+          if (racs.noradrV)       p.push(`Noradrénaline ${racs.noradrV} mL/h → ${noradrDose} mg/h (${_nd.qty}mg/${_nd.vol}cc)`);
+          vasoExtra.forEach(x => { const _p = sedPerHour(x.rate, x); if (mesNum(x.rate) > 0) p.push(`${x.name} ${x.rate} mL/h${_p != null ? ` → ${sedFmt(_p, 2)} ${x.unit}/h` : ""}`); });
+          if (tempMode)           p.push(`Température : ${tempMode === "couverture" ? "couverture" : "refroidissement actif"}`);
+          if (racs.dobut)         p.push(`Dobutamine ${racs.dobut} μg/kg/min`);
+          if (racs.autresHemo)    p.push(racs.autresHemo);
+          return p.length ? `Soins post-RACS : ${p.join(" · ")}` : "Soins post-RACS initiés";
+        };
+
+    return buildLog();
+  };
+
+  // ── Soins post-RACS unifiés : plus de bouton « Enregistrer » ──
+  // Les constantes saisies dans les lignes dépliées deviennent des mesures horodatées (3 s après la dernière frappe,
+  // ou à la fermeture) ; le résumé des soins est ajouté à la chronologie quand il change.
+  const commitRacsMesures = () => {
+    const cur = { pas:racs.tas, pad:racs.tad, fc:racs.fc, sat:racs.sat, capno:racs.capno, fio2:racs.fio2, temp:racs.tempRacs, gly:racs.glycemie };
+    const last = carryVals(mesures), chg = {};
+    MES_KEYS.forEach(k => {
+      if (!mesHas(cur[k]) || mesNum(cur[k]) == null) return;
+      const v = String(cur[k]).replace(",", ".");
+      if (v !== String(last[k] ?? "")) chg[k] = v;
+    });
+    if (Object.keys(chg).length) saveMesure(chg, getNow());
+    commitVentLog();
+  };
+  const racsLogRef = useRef("");
+  const flushRacsLog = () => {
+    const t = buildRacsLog();
+    if (!t || t === "Soins post-RACS initiés" || t === racsLogRef.current) return;
+    racsLogRef.current = t;
+    setEvents(prev => [...prev, { id:"racs_soins", label:t, icon:"🫀", time:getNow(), sec }]);
+  };
+  const closeRacsPage = () => { commitRacsMesures(); flushRacsLog(); setShowRacsPage(false); };
+  useEffect(() => {
+    if (!showRacsPage) return;
+    const t = setTimeout(commitRacsMesures, 3000);
+    return () => clearTimeout(t);
+  }, [racs.tas, racs.tad, racs.fc, racs.sat, racs.capno, racs.fio2, racs.tempRacs, racs.glycemie, racs.volume, racs.fr, racs.pep, showRacsPage]); // eslint-disable-line react-hooks/exhaustive-deps
+  const openSoins = () => { if (isVLI && !vliUnlocked) setModalRacs(true); else setShowRacsPage(true); };
+  const lastLogOf = (list, drug) => [...list].filter(e => e.drug === drug).sort((a, b) => a.sec - b.sec).pop();
+  const fmRate = v => String(v).replace(".", ",");
+  const enCoursList = [
+    mesNum(racs.noradrV) > 0 && { k:"nad", label:"Noradrénaline", v:`${fmRate(racs.noradrV)} mL/h`, sec:lastLogOf(vasoLog, "norad")?.sec, tone:"rose" },
+    mesNum(racs.dobut) > 0 && { k:"dob", label:"Dobutamine", v:`${fmRate(racs.dobut)} µg/kg/min`, tone:"rose" },
+    ...vasoExtra.filter(x => mesNum(x.rate) > 0).map(x => ({ k:x.id, label:x.name, v:`${fmRate(x.rate)} mL/h`, sec:lastLogOf(vasoLog, x.id)?.sec, tone:"rose" })),
+    mesNum(racs.hypnovelV) > 0 && { k:"hyp", label:"Hypnovel", v:`${fmRate(racs.hypnovelV)} mL/h`, sec:lastLogOf(sedLog, "hypnovel")?.sec, tone:"violet" },
+    mesNum(racs.sufentaV) > 0 && { k:"suf", label:"Sufentanyl", v:`${fmRate(racs.sufentaV)} mL/h`, sec:lastLogOf(sedLog, "sufenta")?.sec, tone:"violet" },
+    ...sedExtra.filter(x => mesNum(x.rate) > 0).map(x => ({ k:x.id, label:x.name, v:`${fmRate(x.rate)} mL/h`, sec:lastLogOf(sedLog, x.id)?.sec, tone:"violet" })),
+    (racs.fio2 || racs.fr || racs.pep) && { k:"vent", label:"Ventilation", v: racs.fio2 ? `FiO₂ ${racs.fio2} %` : racs.fr ? `FR ${racs.fr}` : `PEP ${racs.pep}`,
+      sub:[racs.fr && `FR ${racs.fr}`, racs.pep && `PEP ${racs.pep}`].filter(Boolean).join(" · ") || undefined, tone:"teal" },
+  ].filter(Boolean);
+  const bannerPam = livePam != null ? livePam : (pamPts.length ? pamPts[pamPts.length - 1].pam : null);
+  const bannerText0 = [bannerPam != null && `PAM ${bannerPam}`, mesNum(racs.noradrV) > 0 && `NAD ${fmRate(racs.noradrV)} mL/h`, mesNum(racs.sat) != null && `SpO₂ ${racs.sat}`].filter(Boolean).join(" · ") || "Constantes à renseigner";
+  const bannerText = bannerText0 + (remAdult.due ? " · ⏱ REMESURE" : "");
+
+  const setOrient = (arr) => {
+    setOrientList(arr);
+    setEvents(prev => {
+      const rest = prev.filter(e => e.id !== "orientation");
+      if (!arr.length) return rest;
+      const lbl = arr.map(id => ORIENT_OPTIONS.find(o => o.id === id)?.label).filter(Boolean).join(" + ");
+      return [...rest, { id:"orientation", label:`Orientation : ${lbl}`, icon:"🧭", time:getNow(), sec }];
+    });
+  };
 
   // Tour guidé du module Adulte/Trauma — une fois par module (distinct de celui
   // de l'accueil), déclenché une fois l'écran actif atteint (après "Démarrer").
@@ -9818,7 +12743,7 @@ function App() {
       `${pendingImage.type === "ecg" ? "📈" : "📷"} ${title} ajouté${pendingImage.type==="ecg"?"":"e"}`, pendingImage.type === "ecg" ? "📈" : "📷");
     setPendingImage(null); setPendingTitle(""); setPhotoStep("choice");
   };
-  const deletePhoto = (id) => setImages(prev => prev.filter(im => im.id !== id));
+  const deletePhoto = (id) => { if (!window.confirm("Supprimer cette photo / ce tracé ?")) return; setImages(prev => prev.filter(im => im.id !== id)); };
   const [pupillesInitExpanded, setPupillesInitExpanded] = useState(false);
   const [racsPupillesExpanded, setRacsPupillesExpanded] = useState(false);
   const [modalVliTransition, setModalVliTransition] = useState(false);
@@ -9839,6 +12764,9 @@ function App() {
     document.body.classList.remove("acr-night", "acr-day");
     document.body.classList.add(theme === "day" ? "acr-day" : "acr-night");
   }, [theme]);
+
+  // Stockage persistant : évite la purge du localStorage par le navigateur
+  useEffect(() => { requestPersistentStorage(); }, []);
 
   // Archives locales des arrêts
   const [archives, setArchives] = useState(() => loadArchives());
@@ -9890,6 +12818,15 @@ function App() {
     } catch { return false; }
   })();
   const aSessionEnCours = sessionAdulte || sessionPed;
+  const trainingOn = useTraining();
+  const startTraining = () => {
+    if (aSessionEnCours) {
+      window.alert("Une réanimation réelle non clôturée est en cours.\nClôture-la ou efface-la avant de lancer un entraînement, pour ne pas la mélanger avec un essai.");
+      return;
+    }
+    if (!window.confirm("Lancer un entraînement ?\n\n• rien n'est archivé\n• rien n'entre dans les statistiques\n• le mode équipe est désactivé\n• le compte-rendu porte la mention ENTRAÎNEMENT\n\nChoisis ensuite le module à utiliser.")) return;
+    setTrainingFlag(true);
+  };
 
   // ── PAGE D'ACCUEIL GLOBALE ────────────────────────────────────────────────
   if (!module) return (
@@ -10032,7 +12969,7 @@ function App() {
             ⚠ Session non clôturée
           </p>
           <p style={{ margin:"0 0 10px", fontSize:13, color:P.amberText }}>
-            {sessionAdulte && sessionPed ? "Une réa adulte et une réa pédiatrique sont en cours de saisie." : `Une réa ${sessionAdulte ? "adulte" : "pédiatrique"} est en cours de saisie.`}
+            {trainingOn ? "Un entraînement est en cours (rien ne sera archivé)." : sessionAdulte && sessionPed ? "Une réa adulte et une réa pédiatrique sont en cours de saisie." : `Une réa ${sessionAdulte ? "adulte" : "pédiatrique"} est en cours de saisie.`}
           </p>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
             {sessionAdulte && (<button onClick={() => setModule("adulte_extra")}
@@ -10163,6 +13100,18 @@ function App() {
         🏥 ACR Adulte Intra-hospitalier — bientôt disponible
       </button>
 
+      <BackupReminder archivesCount={archives.length} />
+
+      {/* Mode entraînement — discret, en bas de l'accueil */}
+      {!trainingOn && (
+        <button onClick={startTraining}
+          style={{ marginTop:6, background:"transparent", border:`1px dashed ${P.border}`, color:P.textSoft,
+            borderRadius:99, padding:"6px 12px", fontSize:10.5, fontWeight:600, cursor:"pointer",
+            fontFamily:mono }}>
+          🎓 Mode entraînement
+        </button>
+      )}
+
       {/* ── Modal de choix ACR VLI : Adulte ou Pédiatrique ── */}
       {showVliChoice && (
         <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.55)",
@@ -10225,7 +13174,7 @@ function App() {
                 📊 Stats
               </button>
               <button onClick={() => {
-                if (typeof window !== "undefined" && window.confirm("Effacer définitivement tous les arrêts archivés ?")) {
+                if (typeof window !== "undefined" && window.confirm("Effacer définitivement TOUS les arrêts archivés ?\nCette action est irréversible.")) {
                   setArchives(clearArchives());
                 }
               }} style={{ background:"transparent", border:"none", color:P.roseText,
@@ -10245,8 +13194,9 @@ function App() {
                        : a.outcome === "Décès" ? { c:P.slateText, s:P.slateSoft }
                        : { c:P.textSoft, s:P.surfaceAlt };
               return (
-                <div key={a.key} style={{ display:"flex", alignItems:"center", gap:10,
+                <div key={a.key} style={{ display:"flex", flexDirection:"column", gap:8,
                   background:P.surface, border:`1px solid ${P.border}`, borderRadius:13, padding:"11px 13px" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                   <button onClick={() => setViewArchive(a)}
                     style={{ flex:1, minWidth:0, background:"transparent", border:"none",
                       cursor:"pointer", fontFamily:sans, textAlign:"left", display:"flex",
@@ -10267,11 +13217,16 @@ function App() {
                     </div>
                   </button>
                   <button onClick={() => {
-                    if (typeof window !== "undefined" && window.confirm(`Supprimer l'arrêt « ${a.label} » ?`)) {
+                    if (typeof window !== "undefined" && window.confirm(`Supprimer définitivement l'arrêt « ${a.label} » (${dateStr}) ?\nCette action est irréversible.`)) {
                       setArchives(deleteArchive(a.key));
                     }
                   }} style={{ background:"transparent", border:"none", color:P.textSoft,
                     fontSize:18, cursor:"pointer", padding:"0 4px", flexShrink:0, lineHeight:1 }}>×</button>
+                </div>
+                {a.outcome === "RACS" && (
+                  <J30Editor archive={a} P={P} mono={mono} sans={sans}
+                    onChange={dv => setArchives(updateArchive(a.key, { devenir: dv || undefined }))} />
+                )}
                 </div>
               );
             })}
@@ -10606,6 +13561,26 @@ function App() {
               </p>
             </div>
             <span style={{ fontSize:16, color:P.textSoft, flexShrink:0 }}>›</span>
+          </button>
+
+          <button onClick={() => setRacsAuto(v => !v)}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:12,
+              background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:13,
+              padding:"13px 14px", cursor:"pointer", fontFamily:sans, textAlign:"left",
+              marginBottom: 14 }}>
+            <span style={{ width:36, height:36, borderRadius:10, background:P.greenSoft,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🫀</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:P.text, fontFamily:disp }}>Ouvrir les soins post-RACS automatiquement</p>
+              <p style={{ margin:0, fontSize:11.5, color:P.textSoft, lineHeight:1.4 }}>
+                {racsAuto ? "Activé — la page s'ouvre après le bandeau « Annuler » du RACS" : "Désactivé — ouverture manuelle depuis la grille d'actions"}
+              </p>
+            </div>
+            <span style={{ width:42, height:24, borderRadius:99, flexShrink:0, position:"relative",
+              background: racsAuto ? P.green : P.border, transition:"background .15s" }}>
+              <span style={{ position:"absolute", top:3, left: racsAuto ? 21 : 3, width:18, height:18, borderRadius:99,
+                background:"#fff", transition:"left .15s" }} />
+            </span>
           </button>
 
           <button onClick={() => {
@@ -12130,6 +15105,41 @@ function App() {
 
       {/* ── Modal Soins post-RACS ── */}
       {/* ── Soins post-RACS — VLI restreint : surveillance seule, sans amines/sédation ── */}
+      {showRacsPage && !(isVLI && !vliUnlocked) && (
+        <PostRacsPage P={P} mono={mono} sans={sans} disp={disp} sec={sec}
+          roscEvt={events.find(e => e.id === "rosc")} events={events} racs={racs} renderBody={renderRacsBody} enCours={enCoursList}
+          hemoList={hemoList} etco2List={etco2List} suspectedAd={suspectedAd}
+          orient={orientList} onOrient={setOrient} tc={tcOn} onTc={setTc} mesures={mesures} vasoLog={vasoLog} onSaveMesure={saveMesure} onDeleteMesure={deleteMesure} dest={regulDest} onDest={setRegulDest}
+          remMin={remMin} onRemMin={setRemMin} neuroLog={neuroLog} onSaveNeuro={saveNeuro} onDeleteNeuro={deleteNeuro} ventLog={ventLog} onEditMesure={editMesure}
+          onBack={closeRacsPage}
+          onRecidive={() => {
+            commitRacsMesures(); flushRacsLog();
+            const roscTime = events.find(e => e.id === "rosc")?.time || "?";
+            addEvent("re_arret", `↩ Récidive d'arrêt — RACS précédent à ${roscTime}`, "🔴");
+            setEvents(prev => prev.filter(e => e.id !== "rosc"));
+            setAdrTimerStart(Date.now());
+            setCycleOffset(sec);
+            prevCpRef.current = null;
+            setRunning(true);
+            setShowRacsPage(false);
+          }}
+          onEcg={() => setModalEcg(true)}
+          onFast={() => (isTrauma ? setModalFastTrauma(true) : setModalFast(true))}
+          onCause={() => { closeRacsPage(); setMainTab("etio"); }}
+          onTransmission={() => setShowLecture(true)} />
+      )}
+      {showLecture && (
+        <ModeLecture P={P} mono={mono} sans={sans} disp={disp}
+          data={buildLecture({ ped:false, sec, events, racs, hemoList, etco2List, enCours:enCoursList,
+            orientLabels: orientList.map(id => ORIENT_OPTIONS.find(o => o.id === id)?.label).filter(Boolean), dest:regulDest,
+            causeLabels: suspectedAd.map(id => CAUSES_HOTT.find(c => c.id === id)?.label).filter(Boolean),
+            ident: [pat.sexe === "H" ? "H" : pat.sexe === "F" ? "F" : null, pat.age ? (/^\d+$/.test(String(pat.age).trim()) ? `${String(pat.age).trim()} ans` : pat.age) : null].filter(Boolean).join(" ") || "Adulte",
+            extra: isTrauma ? (pat.mecanisme ? `trauma : ${pat.mecanisme}` : "trauma") : null,
+            pamTarget: tcOn ? 80 : 65, glyLo: 1.0 })}
+          onClose={() => setShowLecture(false)}
+          onFreeze={(txt, t) => setEvents(prev => [...prev, { id:"transmission", label:`Transmission figée : ${txt}`, icon:"🔍", time:t, sec }])} />
+      )}
+
       {modalRacs && isVLI && !vliUnlocked && (
         <div style={{ position:"fixed", inset:0, background:"rgba(28,43,58,0.6)", zIndex:80,
           display:"flex", flexDirection:"column", justifyContent:"flex-end", backdropFilter:"blur(2px)" }}
@@ -12260,568 +15270,6 @@ function App() {
         </div>
       )}
 
-      {modalRacs && !(isVLI && !vliUnlocked) && (() => {
-        // Calculs de dilution
-        // Calculs de dilution
-        const hypnovelDose  = racs.hypnovelV ? (parseFloat(racs.hypnovelV) * 1).toFixed(1)    : null;
-        const sufentaDose   = racs.sufentaV  ? (parseFloat(racs.sufentaV)  * 5).toFixed(1)    : null;
-        const noradrDose    = racs.noradrV   ? (parseFloat(racs.noradrV)   * 0.2).toFixed(2)  : null;
-
-        const buildLog = () => {
-          const p = [];
-          if (racs.fr)            p.push(`FR ${racs.fr}/min`);
-          if (racs.volume)        p.push(`Vt ${racs.volume} mL`);
-          if (racs.pep)           p.push(`PEP ${racs.pep} cmH₂O`);
-          if (racs.sat)           p.push(`SpO₂ ${racs.sat}%`);
-          if (racs.fio2)          p.push(`FiO₂ ${racs.fio2}%`);
-          if (racs.capno)         p.push(`EtCO₂ ${racs.capno} mmHg`);
-          if (racs.hypnovelV)     p.push(`Hypnovel ${racs.hypnovelV} mL/h → ${hypnovelDose} mg/h`);
-          if (racs.sufentaV)      p.push(`Sufentanyl ${racs.sufentaV} mL/h → ${sufentaDose} μg/h`);
-          if (racs.curare)        p.push(`Curare ${racs.curare} mg`);
-          if (racs.autresDrogues) p.push(racs.autresDrogues);
-          if (racs.tas && racs.tad) p.push(`TA ${racs.tas}/${racs.tad} mmHg (PAM ${Math.round((parseFloat(racs.tas)+2*parseFloat(racs.tad))/3)} mmHg)`);
-          else if (racs.tas)        p.push(`TAs ${racs.tas} mmHg`);
-          if (racs.remplissages && racs.remplissages.length > 0) {
-            const total = racs.remplissages.reduce((s,r)=>s+r.vol,0);
-            p.push(`Remplissage total : ${total} mL (${racs.remplissages.map(r=>`${r.vol}mL ${r.sol}`).join(", ")})`);
-          }
-          if (racs.fc)            p.push(`FC ${racs.fc}/min`);
-          if (racs.tempRacs)      p.push(`T° ${racs.tempRacs} °C`);
-          if (racs.pupilles)      p.push(`Pupilles ${racs.pupilles}`);
-          if (racs.noradrV)       p.push(`Noradrénaline ${racs.noradrV} mL/h → ${noradrDose} mg/h (8mg/40cc)`);
-          if (racs.dobut)         p.push(`Dobutamine ${racs.dobut} μg/kg/min`);
-          if (racs.autresHemo)    p.push(racs.autresHemo);
-          return p.length ? `Soins post-RACS : ${p.join(" · ")}` : "Soins post-RACS initiés";
-        };
-
-        const inputSt = (accent) => ({
-          flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:9,
-          padding:"10px 8px", fontSize:15, color:P.text, fontFamily:mono, outline:"none",
-          textAlign:"center", fontWeight:600, boxSizing:"border-box"
-        });
-
-        const racsTabs = [
-          { id:"ventil", label:"Ventilation", icon:"🌬️" },
-          { id:"sedat",  label:"Sédation",    icon:"💊"  },
-          { id:"hemo",   label:"Hémo.",       icon:"💓"  },
-        ];
-
-        return (
-          <div style={{ position:"fixed", inset:0, background:"rgba(28,43,58,0.6)", zIndex:80,
-            display:"flex", flexDirection:"column", justifyContent:"flex-end",
-            backdropFilter:"blur(2px)" }} onClick={() => setModalRacs(false)}>
-            <div onClick={e => e.stopPropagation()}
-              style={{ background:P.surface, width:"100%", borderRadius:"20px 20px 0 0",
-                padding:"20px 16px 36px", boxShadow:"0 -12px 40px rgba(0,0,0,0.18)",
-                fontFamily:sans, maxHeight:"90vh", display:"flex", flexDirection:"column" }}>
-
-              {/* Titre */}
-              <div style={{ display:"flex", alignItems:"center", gap:11, marginBottom:16, flexShrink:0 }}>
-                <div style={{ width:42, height:42, borderRadius:13,
-                  background:`linear-gradient(135deg, ${P.green}, ${P.greenText})`,
-                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:22,
-                  boxShadow:`0 5px 16px color-mix(in srgb, ${P.green} 32%, transparent)` }}>🫀</div>
-                <div>
-                  <p style={{ margin:"0 0 1px", fontSize:9.5, fontWeight:700, color:P.green,
-                    textTransform:"uppercase", letterSpacing:"0.14em", fontFamily:mono }}>Après RACS</p>
-                  <p style={{ margin:0, fontSize:18, fontWeight:800, color:P.text, fontFamily:disp, letterSpacing:"-0.01em", lineHeight:1 }}>Soins post-RACS</p>
-                </div>
-                <button onClick={() => setModalRacs(false)}
-                  style={{ marginLeft:"auto", background:"transparent", border:"none",
-                    color:P.textSoft, fontSize:20, cursor:"pointer", padding:4 }}>×</button>
-              </div>
-
-              {/* Onglets */}
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5,
-                background:P.surfaceAlt, borderRadius:12, padding:4, marginBottom:16, flexShrink:0 }}>
-                {racsTabs.map(t => (
-                  <button key={t.id} onClick={() => setRacsTab(t.id)}
-                    style={{ padding:"9px 4px", borderRadius:9, border:"none",
-                      background: racsTab===t.id ? P.greenSoft : "transparent",
-                      color: racsTab===t.id ? P.greenText : P.textSoft,
-                      fontSize:12, fontWeight: racsTab===t.id ? 800 : 600, cursor:"pointer",
-                      fontFamily: racsTab===t.id ? disp : sans,
-                      boxShadow: racsTab===t.id ? `inset 0 0 0 1px color-mix(in srgb, ${P.green} 30%, transparent)` : "none",
-                      display:"flex", alignItems:"center", justifyContent:"center", gap:5,
-                      transition:"all 0.15s" }}>
-                    <span>{t.icon}</span>{t.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Contenu — scrollable */}
-              <div style={{ flex:1, overflowY:"auto" }}>
-
-                {racsTab === "ventil" && (
-                  <div style={{ width:"100%" }}>
-                    {/* FR / Vt */}
-                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:4 }}>
-                      {[
-                        { label:"Fréq. resp.", key:"fr",     ph:"12",  unit:"/min"  },
-                        { label:"Vol. Vt",     key:"volume", ph:"500", unit:"mL"    },
-                      ].map(f => (
-                        <div key={f.key} style={{ minWidth:0 }}>
-                          <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
-                            textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>{f.label}</p>
-                          <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                            <input type="number" inputMode="decimal" value={racs[f.key]}
-                              onChange={e => sr(f.key)(e.target.value)} placeholder={f.ph}
-                              style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-                                borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
-                                fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                              onFocus={e => e.target.style.borderColor = P.blue}
-                              onBlur={e  => e.target.style.borderColor = P.border} />
-                            <span style={{ fontSize:9, color:P.textSoft, flexShrink:0, whiteSpace:"nowrap" }}>{f.unit}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    <p style={{ margin:"0 0 10px", fontSize:9, color:P.textSoft, fontStyle:"italic", textAlign:"right" }}>
-                      Objectif Vt 6 mL/kg de poids idéal
-                    </p>
-
-                    {/* PEP / SpO2 avec objectif SpO2 */}
-                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:4 }}>
-                      <div style={{ minWidth:0 }}>
-                        <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
-                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>PEP</p>
-                        <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                          <input type="number" inputMode="decimal" value={racs.pep}
-                            onChange={e => sr("pep")(e.target.value)} placeholder="5"
-                            style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-                              borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
-                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                            onFocus={e => e.target.style.borderColor = P.blue}
-                            onBlur={e  => e.target.style.borderColor = P.border} />
-                          <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>cmH₂O</span>
-                        </div>
-                      </div>
-                      {/* SpO2 — alerte si hors cible 94–98% (hyperoxie/hypoxie) */}
-                      {(() => {
-                        const s = parseFloat(String(racs.sat).replace(",","."));
-                        const out = !isNaN(s) && (s < 94 || s > 98);
-                        return (
-                          <div style={{ minWidth:0 }}>
-                            <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
-                              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>SpO₂</p>
-                            <div style={{ display:"flex", alignItems:"center", gap:4,
-                              background: out ? P.roseSoft : "transparent", borderRadius:8 }}>
-                              <input type="number" inputMode="decimal" value={racs.sat}
-                                onChange={e => sr("sat")(e.target.value)} placeholder="96"
-                                style={{ flex:1, minWidth:0, background: out ? "transparent" : P.surfaceAlt,
-                                  border:`1.5px solid ${out ? P.rose : P.border}`,
-                                  borderRadius:8, padding:"9px 4px", fontSize:15, color: out ? P.roseText : P.text,
-                                  fontFamily:mono, outline:"none", textAlign:"center", fontWeight: out ? 800 : 600, boxSizing:"border-box" }}
-                                onFocus={e => e.target.style.borderColor = P.blue}
-                                onBlur={e  => e.target.style.borderColor = out ? P.rose : P.border} />
-                              <span style={{ fontSize:9, color: out ? P.roseText : P.textSoft, flexShrink:0, fontWeight: out?700:400 }}>%</span>
-                            </div>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                    {(() => {
-                      const s = parseFloat(String(racs.sat).replace(",","."));
-                      const out = !isNaN(s) && (s < 94 || s > 98);
-                      return (
-                        <p style={{ margin:"0 0 10px", fontSize:9, textAlign:"right",
-                          color: out ? P.roseText : P.textSoft, fontWeight: out ? 700 : 400,
-                          fontStyle: out ? "normal" : "italic" }}>
-                          {out ? (s > 98 ? "⚠️ SpO₂ > 98% — risque d'hyperoxie, diminuer FiO₂" : "⚠️ SpO₂ < 94% — hypoxie") : "Objectif SpO₂ 94–98 %"}
-                        </p>
-                      );
-                    })()}
-
-                    {/* FiO2 / EtCO2 avec objectif Capno */}
-                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:4 }}>
-                      <div style={{ minWidth:0 }}>
-                        <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
-                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>FiO₂</p>
-                        <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                          <input type="number" inputMode="decimal" value={racs.fio2}
-                            onChange={e => sr("fio2")(e.target.value)} placeholder="100"
-                            style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-                              borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
-                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                            onFocus={e => e.target.style.borderColor = P.blue}
-                            onBlur={e  => e.target.style.borderColor = P.border} />
-                          <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>%</span>
-                        </div>
-                      </div>
-                      {/* EtCO2 — alerte si hors cible 35–45mmHg + tendance vs dernière valeur enregistrée */}
-                      {(() => {
-                        const v = parseFloat(String(racs.capno).replace(",","."));
-                        const out = !isNaN(v) && (v < 35 || v > 45);
-                        const lastVal = etco2List.length > 0 ? etco2List[etco2List.length - 1].val : null;
-                        return (
-                          <div style={{ minWidth:0, position:"relative" }}>
-                            <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
-                              textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>EtCO₂</p>
-                            {lastVal != null && <TrendBadge current={racs.capno} last={lastVal} P={P} goodDir="up" />}
-                            <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                              <input type="number" inputMode="decimal" value={racs.capno}
-                                onChange={e => sr("capno")(e.target.value)} placeholder="35"
-                                style={{ flex:1, minWidth:0, background: out ? P.roseSoft : P.greenSoft,
-                                  border:`1.5px solid ${out ? P.rose : P.green}`,
-                                  borderRadius:8, padding:"9px 4px", fontSize:15, color: out ? P.roseText : P.greenText,
-                                  fontFamily:mono, outline:"none", textAlign:"center", fontWeight:800, boxSizing:"border-box" }}
-                                onFocus={e => e.target.style.borderColor = P.blue}
-                                onBlur={e  => e.target.style.borderColor = out ? P.rose : P.green} />
-                              <span style={{ fontSize:9, color: out ? P.roseText : P.greenText, flexShrink:0, fontWeight:700 }}>mmHg</span>
-                            </div>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                    {(() => {
-                      const v = parseFloat(String(racs.capno).replace(",","."));
-                      const out = !isNaN(v) && (v < 35 || v > 45);
-                      return (
-                        <p style={{ margin:"0 0 4px", fontSize:9.5, textAlign:"right",
-                          color: out ? P.roseText : P.greenText, fontWeight: out ? 700 : 600 }}>
-                          {isNaN(v) ? "Objectif EtCO₂ 35–45 mmHg" : out ? "⚠️ EtCO₂ hors cible" : "✓ EtCO₂ dans la cible (35–45 mmHg)"}
-                        </p>
-                      );
-                    })()}
-
-                    {/* Graphique live EtCO2 */}
-                    {etco2List.length > 0 && (
-                      <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"10px 12px", marginTop:10 }}>
-                        <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:700, color:P.textMid,
-                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
-                          EtCO₂ — {etco2List.length} mesure{etco2List.length>1?"s":""}
-                        </p>
-                        <Etco2Curve data={etco2List} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {racsTab === "sedat" && (
-                  <div>
-                    {/* Hypnovel inline */}
-                    <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"12px", marginBottom:12 }}>
-                      <Lbl>Hypnovel — 50 mg / 50 cc</Lbl>
-                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
-                        <input type="number" inputMode="decimal" value={racs.hypnovelV}
-                          onChange={e => sr("hypnovelV")(e.target.value)} placeholder="5"
-                          style={{ flex:1, background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:9,
-                            padding:"12px 10px", fontSize:18, color:P.text, fontFamily:mono, outline:"none",
-                            textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                          onFocus={e => e.target.style.borderColor = P.violet}
-                          onBlur={e  => e.target.style.borderColor = P.border} />
-                        <span style={{ fontSize:11, color:P.textSoft, whiteSpace:"nowrap" }}>mL/h</span>
-                      </div>
-                      {(() => {
-                        const v = parseFloat(racs.hypnovelV);
-                        const ok = !isNaN(v) && v > 0;
-                        const dose = ok ? (v * 1).toFixed(2) : null;
-                        return (
-                          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
-                            background: ok ? P.violet+"22" : P.borderSoft, borderRadius:8, padding:"10px 14px",
-                            border:`1.5px solid ${ok ? P.violet : P.border}` }}>
-                            <span style={{ fontSize:12, color:P.textSoft }}>→ Posologie</span>
-                            <span style={{ fontSize:20, fontWeight:700, color: ok ? P.violetText : P.textSoft, fontFamily:mono }}>
-                              {ok ? `${dose} mg/h` : "—"}
-                            </span>
-                          </div>
-                        );
-                      })()}
-                    </div>
-
-                    {/* Sufentanyl inline */}
-                    <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"12px", marginBottom:12 }}>
-                      <Lbl>Sufentanyl — 250 μg / 50 cc</Lbl>
-                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
-                        <input type="number" inputMode="decimal" value={racs.sufentaV}
-                          onChange={e => sr("sufentaV")(e.target.value)} placeholder="5"
-                          style={{ flex:1, background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:9,
-                            padding:"12px 10px", fontSize:18, color:P.text, fontFamily:mono, outline:"none",
-                            textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                          onFocus={e => e.target.style.borderColor = P.violet}
-                          onBlur={e  => e.target.style.borderColor = P.border} />
-                        <span style={{ fontSize:11, color:P.textSoft, whiteSpace:"nowrap" }}>mL/h</span>
-                      </div>
-                      {(() => {
-                        const v = parseFloat(racs.sufentaV);
-                        const ok = !isNaN(v) && v > 0;
-                        const dose = ok ? (v * 5).toFixed(1) : null;
-                        return (
-                          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
-                            background: ok ? P.violet+"22" : P.borderSoft, borderRadius:8, padding:"10px 14px",
-                            border:`1.5px solid ${ok ? P.violet : P.border}` }}>
-                            <span style={{ fontSize:12, color:P.textSoft }}>→ Posologie</span>
-                            <span style={{ fontSize:20, fontWeight:700, color: ok ? P.violetText : P.textSoft, fontFamily:mono }}>
-                              {ok ? `${dose} μg/h` : "—"}
-                            </span>
-                          </div>
-                        );
-                      })()}
-                    </div>
-
-                    <div style={{ marginBottom:12 }}>
-                      <Lbl>Curare (bolus)</Lbl>
-                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                        <input type="number" inputMode="decimal" value={racs.curare}
-                          onChange={e => sr("curare")(e.target.value)} placeholder="50"
-                          style={{ flex:1, background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:9,
-                            padding:"12px 10px", fontSize:18, color:P.text, fontFamily:mono, outline:"none",
-                            textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                          onFocus={e => e.target.style.borderColor = P.violet}
-                          onBlur={e  => e.target.style.borderColor = P.border} />
-                        <span style={{ fontSize:11, color:P.textSoft }}>mg</span>
-                      </div>
-                    </div>
-                    <Lbl>Autres drogues</Lbl>
-                    <TArea value={racs.autresDrogues} onChange={sr("autresDrogues")}
-                      placeholder="Ex : Propofol 200 mg/h..." rows={2} />
-                  </div>
-                )}
-
-                {racsTab === "hemo" && (
-                  <div style={{ width:"100%" }}>
-
-                    {/* TAs / TAd / FC — 3 champs séparés, avec tendance vs dernière mesure enregistrée */}
-                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, marginBottom:4 }}>
-                      {[
-                        { label:"TAs",        key:"tas", ph:"120", accent:P.rose, goodDir:"up" },
-                        { label:"TAd",        key:"tad", ph:"80",  accent:P.rose, goodDir:"up" },
-                        { label:"FC /min",    key:"fc",  ph:"80",  accent:P.rose, goodDir:"down" },
-                      ].map(f => {
-                        const lastVal = hemoList.length > 0 ? hemoList[hemoList.length - 1][f.key] : null;
-                        return (
-                        <div key={f.key} style={{ minWidth:0, position:"relative" }}>
-                          <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
-                            textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>{f.label}</p>
-                          {lastVal != null && <TrendBadge current={racs[f.key]} last={lastVal} P={P} goodDir={f.goodDir} />}
-                          <input type="number" inputMode="decimal" value={racs[f.key]}
-                            onChange={e => sr(f.key)(e.target.value)} placeholder={f.ph}
-                            style={{ width:"100%", background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-                              borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
-                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600,
-                              boxSizing:"border-box" }}
-                            onFocus={e => e.target.style.borderColor = f.accent}
-                            onBlur={e  => e.target.style.borderColor = P.border} />
-                        </div>
-                        );
-                      })}
-                    </div>
-                    {hemoList.length > 0 && (
-                      <p style={{ margin:"6px 0 10px", fontSize:9, color:P.textSoft, textAlign:"right", fontStyle:"italic" }}>
-                        vs dernière mesure enregistrée
-                      </p>
-                    )}
-
-                    {/* PAM calculée */}
-                    {(() => {
-                      const sys = parseFloat(racs.tas), dia = parseFloat(racs.tad);
-                      const pam = (!isNaN(sys) && !isNaN(dia) && sys>0 && dia>0)
-                        ? Math.round((sys + 2*dia) / 3) : null;
-                      return (
-                        <div style={{ marginBottom:12 }}>
-                          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2 }}>
-                            <span style={{ fontSize:9, color:P.textSoft, fontFamily:mono,
-                              textTransform:"uppercase", letterSpacing:"0.08em" }}>PAM calculée</span>
-                            <span style={{ fontSize:16, fontWeight:700, fontFamily:mono,
-                              color: pam!==null ? (pam>=65?P.greenText:P.roseText) : P.textSoft }}>
-                              {pam!==null ? `${pam} mmHg` : "—"}
-                            </span>
-                          </div>
-                          <p style={{ margin:0, fontSize:9, color:P.textSoft, fontStyle:"italic" }}>
-                            Objectif PAM {">"} 65 mmHg · post-TC {">"} 80 mmHg
-                          </p>
-                        </div>
-                      );
-                    })()}
-
-                    {/* Graphique live — évolution TA/FC (les mesures déjà enregistrées) */}
-                    {hemoList.length > 0 && (
-                      <div style={{ background:P.surfaceAlt, borderRadius:12, padding:"10px 12px", marginBottom:12 }}>
-                        <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:700, color:P.textMid,
-                          textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
-                          Évolution — {hemoList.length} mesure{hemoList.length>1?"s":""}
-                        </p>
-                        <HemoCurve hemoList={hemoList} amineList={amineList} P={P} mono={mono}
-                          refSec={events.find(e=>e.id==="rosc")?.sec||0} />
-                      </div>
-                    )}
-
-                    {/* Température — contrôle ciblé (ERC 2025 : prévention stricte de l'hyperthermie) */}
-                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
-                      background: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.roseSoft : P.amberSoft,
-                      border:`1px solid ${parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
-                      borderRadius:9, padding:"7px 10px" }}>
-                      <span style={{ fontSize:13, flexShrink:0 }}>🌡️</span>
-                      <input type="number" inputMode="decimal" step="0.1" value={racs.tempRacs}
-                        onChange={e => sr("tempRacs")(e.target.value)} placeholder="36,5"
-                        style={{ width:62,
-                          background:P.surface,
-                          border:`1px solid ${parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.rose : P.amber}`,
-                          borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
-                          fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
-                          boxSizing:"border-box", flexShrink:0 }}
-                        onFocus={e => e.target.style.borderColor = P.amberText}
-                        onBlur={e  => e.target.style.borderColor = P.amber} />
-                      <span style={{ fontSize:12,
-                        color: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
-                        fontWeight:600, flexShrink:0 }}>°C</span>
-                      <span style={{ fontSize:10,
-                        color: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? P.roseText : P.amberText,
-                        fontWeight: parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5 ? 700 : 400,
-                        lineHeight:1.3 }}>
-                        {parseFloat(String(racs.tempRacs).replace(",",".")) > 37.5
-                          ? "⚠️ > 37,5 °C — hyperthermie à traiter"
-                          : "Objectif : éviter > 37,5 °C (72h)"}
-                      </span>
-                    </div>
-
-                    {/* Glycémie — ACSOS : éviter hypo/hyperglycémie */}
-                    {(() => {
-                      const g = parseFloat(String(racs.glycemie).replace(",","."));
-                      const out = !isNaN(g) && (g < 1.0 || g > 1.8);
-                      return (
-                        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
-                          background: out ? P.roseSoft : P.amberSoft,
-                          border:`1px solid ${out ? P.rose : P.amber}`,
-                          borderRadius:9, padding:"7px 10px" }}>
-                          <span style={{ fontSize:13, flexShrink:0 }}>🩸</span>
-                          <input type="number" inputMode="decimal" step="0.01" value={racs.glycemie}
-                            onChange={e => sr("glycemie")(e.target.value)} placeholder="1,20"
-                            style={{ width:62, background:P.surface, border:`1px solid ${out ? P.rose : P.amber}`,
-                              borderRadius:7, padding:"5px 4px", fontSize:14, color:P.text,
-                              fontFamily:mono, outline:"none", textAlign:"center", fontWeight:700,
-                              boxSizing:"border-box", flexShrink:0 }}
-                            onFocus={e => e.target.style.borderColor = P.amberText}
-                            onBlur={e  => e.target.style.borderColor = P.amber} />
-                          <span style={{ fontSize:12, color: out ? P.roseText : P.amberText, fontWeight:600, flexShrink:0 }}>g/L</span>
-                          <span style={{ fontSize:10, color: out ? P.roseText : P.amberText,
-                            fontWeight: out ? 700 : 400, lineHeight:1.3 }}>
-                            {out ? "⚠️ Hors cible — corriger hypo/hyperglycémie" : "Objectif : 1,0-1,8 g/L (éviter hypo/hyper)"}
-                          </span>
-                        </div>
-                      );
-                    })()}
-
-                    {/* Pupilles — examen neurologique rapide */}
-                    <div style={{ marginBottom:10 }}>
-                      <Lbl>Pupilles</Lbl>
-                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
-                        {["Normales","Anormales","Non fait"].map(v => (
-                          <button key={v} onClick={() => {
-                              if (v === "Anormales") { setRacsPupillesExpanded(x => !x); return; }
-                              sr("pupilles")(v); setRacsPupillesExpanded(false);
-                            }}
-                            style={{ padding:"8px 4px", borderRadius:9, fontSize:10.5, fontWeight:600,
-                              border:`1.5px solid ${P.violet}`,
-                              background: (v==="Anormales" && racsPupillesExpanded) || (v!=="Anormales" && racs.pupilles===v) ? P.violet : P.surface,
-                              color: (v==="Anormales" && racsPupillesExpanded) || (v!=="Anormales" && racs.pupilles===v) ? "#fff" : P.violetText,
-                              cursor:"pointer", fontFamily:sans }}>
-                            {v}
-                          </button>
-                        ))}
-                      </div>
-                      {racs.pupilles && !["Normales","Non fait"].includes(racs.pupilles) && !racsPupillesExpanded && (
-                        <p style={{ margin:"6px 0 0", fontSize:10.5, color:P.violetText, fontWeight:700 }}>{racs.pupilles}</p>
-                      )}
-                      {racsPupillesExpanded && (
-                        <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:5 }}>
-                          {PUPILLES_DETAIL.map(({v,left,right}) => (
-                            <button key={v} onClick={() => { sr("pupilles")(v); setRacsPupillesExpanded(false); }}
-                              style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 11px",
-                                borderRadius:9, border:`1.5px solid ${P.border}`, background:P.surface,
-                                fontSize:11.5, fontWeight:600, color:P.text, cursor:"pointer",
-                                fontFamily:sans, textAlign:"left" }}>
-                              <PupilIcon left={left} right={right} />{v}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Noradrénaline */}
-                    <div style={{ background:P.surfaceAlt, borderRadius:10, padding:"10px", marginBottom:10 }}>
-                      <p style={{ margin:"0 0 6px", fontSize:9, fontWeight:500, color:P.textSoft,
-                        textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>
-                        Noradrénaline — 8 mg/40 cc
-                      </p>
-                      <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:7 }}>
-                        <input type="number" inputMode="decimal" value={racs.noradrV}
-                          onChange={e => sr("noradrV")(e.target.value)} placeholder="3"
-                          style={{ flex:1, minWidth:0, background:P.surface, border:`1.5px solid ${P.border}`,
-                            borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
-                            fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                          onFocus={e => e.target.style.borderColor = P.rose}
-                          onBlur={e  => e.target.style.borderColor = P.border} />
-                        <span style={{ fontSize:9, color:P.textSoft, flexShrink:0 }}>mL/h</span>
-                      </div>
-                      {(() => {
-                        const v = parseFloat(racs.noradrV), ok = !isNaN(v) && v>0;
-                        const dose = ok ? (v*0.2).toFixed(2) : null;
-                        return (
-                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
-                            background: ok?P.rose+"22":P.borderSoft, borderRadius:7, padding:"7px 10px",
-                            border:`1.5px solid ${ok?P.rose:P.border}` }}>
-                            <span style={{ fontSize:11, color:P.textSoft }}>→ Posologie</span>
-                            <span style={{ fontSize:17, fontWeight:700, color:ok?P.roseText:P.textSoft, fontFamily:mono }}>
-                              {ok ? `${dose} mg/h` : "—"}
-                            </span>
-                          </div>
-                        );
-                      })()}
-                    </div>
-
-                    {/* Dobutamine */}
-                    <div style={{ marginBottom:12 }}>
-                      <p style={{ margin:"0 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
-                        textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Dobutamine</p>
-                      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                        <input type="number" inputMode="decimal" value={racs.dobut}
-                          onChange={e => sr("dobut")(e.target.value)} placeholder="5"
-                          style={{ flex:1, minWidth:0, background:P.surfaceAlt, border:`1.5px solid ${P.border}`,
-                            borderRadius:8, padding:"9px 4px", fontSize:15, color:P.text,
-                            fontFamily:mono, outline:"none", textAlign:"center", fontWeight:600, boxSizing:"border-box" }}
-                          onFocus={e => e.target.style.borderColor = P.rose}
-                          onBlur={e  => e.target.style.borderColor = P.border} />
-                        <span style={{ fontSize:9, color:P.textSoft, flexShrink:0, whiteSpace:"nowrap" }}>μg/kg/min</span>
-                      </div>
-                    </div>
-
-                    {/* ── Remplissage vasculaire ── */}
-                    <RemplissageSection racs={racs} setRacs={setRacs} />
-
-                    <p style={{ margin:"10px 0 4px", fontSize:9, fontWeight:500, color:P.textSoft,
-                      textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:mono }}>Autres thérapeutiques</p>
-                    <TArea value={racs.autresHemo} onChange={sr("autresHemo")}
-                      placeholder="Ex : Vasopressine 0,03 U/min..." rows={2} />
-                  </div>
-                )}
-
-              </div>
-
-              {/* Le bouton "Récidive d'arrêt" a été déplacé en tête de la grille d'actions,
-                  bien plus visible qu'enfoui ici en bas du modal. */}
-
-              {/* Valider */}
-              <button onClick={() => {
-                addEvent("racs_soins", buildLog(), "🫀");
-                if (racs.tas || racs.fc) {
-                  setHemoList(prev => [...prev, { sec, time: getNow(), pas: racs.tas, pad: racs.tad, fc: racs.fc }]);
-                }
-                if (racs.capno) {
-                  setEtco2List(prev => [...prev, { val: racs.capno, sec, time: getNow() }]);
-                }
-                setModalRacs(false);
-              }}
-                style={{ width:"100%", background:"linear-gradient(135deg,#3EA876,#2A7D57)",
-                  border:"none", borderRadius:14, color:"#fff", fontSize:15, fontWeight:600,
-                  padding:"15px", cursor:"pointer", fontFamily:sans, marginTop:14, flexShrink:0,
-                  boxShadow:"0 6px 18px rgba(62,168,118,0.3)" }}>
-                ✓ Enregistrer les soins post-RACS
-              </button>
-            </div>
-          </div>
-        );
-      })()}
 
       {alert && (
         <div onClick={() => setAlert(null)} style={{ position:"fixed", top:0, left:0, right:0, zIndex:50,
@@ -13034,7 +15482,8 @@ function App() {
           <AdrenalineTimer
             startSec={adrTimerStart}
             intervalMin={adrIntervalGlobal}
-            setIntervalMin={null}
+            setIntervalMin={setAdrIntervalGlobal}
+            onAdjust={(d) => setAdrTimerStart(t => t + d * 1000)}
             onAdminister={() => { addEvent("adr","Adrénaline 1 mg IV/IO","💉"); setAdrTimerStart(Date.now()); }}
             onCancel={() => setAdrTimerStart(0)}
             running={running}
@@ -13271,47 +15720,20 @@ function App() {
             {etco2Open && <Etco2Curve data={etco2List} P={P} mono={mono} />}
           </div>
 
-          {/* ── Carte Hémodynamique post-RACS ── visible seulement si RACS */}
+          {/* ── Bandeau Post-RACS : ouvre la page post-RACS ── visible seulement si RACS */}
           {events.find(e => e.id === "rosc") && (
-            <div style={{ background:P.surface, border:`1px solid ${P.green}`, borderRadius:13,
-              padding:"9px 12px", marginBottom:10, boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 14%, transparent)` }}>
-              {/* En-tête */}
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: hemoOpen ? 6 : 0 }}>
-                <button onClick={() => setHemoOpen(v => !v)}
-                  style={{ display:"flex", alignItems:"center", gap:7, background:"transparent", border:"none",
-                    cursor:"pointer", padding:0, flex:1, minWidth:0, textAlign:"left" }}>
-                  <span style={{ width:24, height:24, borderRadius:8, background:P.greenSoft,
-                    display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>💓</span>
-                  <p style={{ margin:0, fontSize:11.5, fontWeight:800, color:P.text, fontFamily:disp }}>Hémodynamique <span style={{ fontSize:8, fontWeight:600, color:P.textSoft, fontFamily:mono }}>post-RACS</span></p>
-                  <span style={{ fontSize:10, color:P.textSoft, marginLeft:4 }}>{hemoOpen ? "▾" : "▸"}</span>
-                </button>
-                <div style={{ display:"flex", gap:7 }}>
-                  <button onClick={() => { setAmineForm({ type:"Noradrénaline", dose:"", unit:"mg/h" }); setModalAmine(true); }}
-                    style={{ background:`color-mix(in srgb, ${P.green} 14%, transparent)`, color:P.greenText,
-                      border:`1px solid ${P.green}`, borderRadius:9, padding:"5px 9px", fontSize:10.5,
-                      fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>+ Amine</button>
-                  <button onClick={() => { setHemoForm({ pas:"", pad:"", fc:"" }); setModalHemo(true); }}
-                    style={{ background:`color-mix(in srgb, ${P.green} 14%, transparent)`, color:P.greenText,
-                      border:`1px solid ${P.green}`, borderRadius:9, padding:"5px 9px", fontSize:10.5,
-                      fontWeight:700, cursor:"pointer", fontFamily:sans, whiteSpace:"nowrap" }}>+ Mesure</button>
-                </div>
-              </div>
-              {/* Légende */}
-              {hemoOpen && hemoList.length > 0 && (
-                <div style={{ display:"flex", gap:12, marginBottom:5 }}>
-                  {[{c:P.rose,l:"PAS"},{c:P.blue,l:"PAD"},{c:P.amber,l:"PAM",dash:true},{c:P.violet,l:"FC",dot:true}].map(({c,l,dash,dot})=>(
-                    <div key={l} style={{ display:"flex", alignItems:"center", gap:3 }}>
-                      <svg width="18" height="8" viewBox="0 0 18 8">
-                        <line x1="0" y1="4" x2="18" y2="4" stroke={c} strokeWidth="2"
-                          strokeDasharray={dash?"5 3":dot?"2 3":undefined} />
-                      </svg>
-                      <span style={{ fontSize:9, fontWeight:700, color:c, fontFamily:mono }}>{l}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {hemoOpen && <HemoCurve hemoList={hemoList} amineList={amineList} P={P} mono={mono} refSec={events.find(e=>e.id==="rosc")?.sec||0} />}
-            </div>
+            <button ref={tourModRefRacs} onClick={openSoins}
+              style={{ width:"100%", display:"flex", alignItems:"center", gap:10, textAlign:"left", cursor:"pointer", fontFamily:sans,
+                border:"none", borderRadius:16, padding:"11px 13px", marginBottom:10, color:"#fff",
+                background:`linear-gradient(135deg, ${P.green}, color-mix(in srgb, ${P.green} 65%, #000))`,
+                boxShadow:`0 6px 18px color-mix(in srgb, ${P.green} 35%, transparent)` }}>
+              <span style={{ width:34, height:34, borderRadius:11, background:"rgba(255,255,255,0.22)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🫀</span>
+              <span style={{ flex:1, minWidth:0 }}>
+                <span style={{ display:"block", fontSize:8.5, fontWeight:700, letterSpacing:"0.12em", fontFamily:mono, opacity:0.85 }}>POST-RACS · DEPUIS {Math.max(0, Math.round((sec - (events.find(e => e.id === "rosc")?.sec || 0)) / 60))} MIN</span>
+                <span style={{ display:"block", fontSize:13, fontWeight:800, fontFamily:disp, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{bannerText}</span>
+              </span>
+              <span style={{ fontSize:20, opacity:0.9 }}>›</span>
+            </button>
           )}
 
           {/* ── Tab bar Actions / (Étiologie) / Thérapeutiques / (Situations particulières VLI) ── */}
@@ -13371,7 +15793,7 @@ function App() {
                       <span style={{ fontSize:15, flexShrink:0 }}>↩</span>
                     </button>
 
-                    <button onClick={() => setModalRacs(true)}
+                    <button onClick={openSoins}
                       style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
                         background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
                         border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
@@ -13446,7 +15868,8 @@ function App() {
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
                   <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                     onClick={() => setModalRythme(true)} />
-                  <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+                  <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText,
+                    badge: events.some(e => e.id === "vvp" || e.id === "vio") ? { text:"✓", color:P.green, pulse:false } : null }}
                     onClick={() => setModalVvp(true)} />
                 </div>
                 <div ref={tourModRefVasVli} style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
@@ -13512,26 +15935,6 @@ function App() {
                     <p style={{ margin:0, fontSize:10.5, opacity:0.85 }}>Reprendre la réanimation</p>
                   </div>
                   <span style={{ fontSize:15, flexShrink:0 }}>↩</span>
-                </button>
-
-                <button ref={tourModRefRacs} onClick={() => setModalRacs(true)}
-                  style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
-                    background:`color-mix(in srgb, ${P.green} 12%, ${P.surface})`,
-                    border:`1.5px solid ${P.green}`, borderRadius:13, padding:"12px 14px",
-                    cursor:"pointer", fontFamily:sans, textAlign:"left",
-                    boxShadow:`0 2px 8px color-mix(in srgb, ${P.green} 18%, transparent)` }}>
-                  <span style={{ width:36, height:36, borderRadius:10,
-                    background:`color-mix(in srgb, ${P.green} 20%, transparent)`,
-                    display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, flexShrink:0 }}>🫀</span>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <p style={{ margin:0, fontSize:13.5, fontWeight:800, color:P.greenText, fontFamily:disp }}>
-                      Soins post-RACS
-                    </p>
-                    <p style={{ margin:0, fontSize:10.5, color:P.greenText, opacity:0.85 }}>
-                      RACS obtenu — renseigner constantes, amines, température
-                    </p>
-                  </div>
-                  <span style={{ fontSize:16, color:P.greenText, flexShrink:0 }}>›</span>
                 </button>
               </>
             )}
@@ -13642,7 +16045,8 @@ function App() {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
               <ActionBtn action={{ label:"Analyse de rythme", svg:ICONS.rythme, accent:P.amber, soft:P.amberSoft, textC:P.amberText }}
                 onClick={() => setModalRythme(true)} />
-              <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText }}
+              <ActionBtn action={{ label:"Voie d'abord", svg:ICONS.vvp, accent:P.green, soft:P.greenSoft, textC:P.greenText,
+                    badge: events.some(e => e.id === "vvp" || e.id === "vio") ? { text:"✓", color:P.green, pulse:false } : null }}
                 onClick={() => setModalVvp(true)} />
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
@@ -13747,7 +16151,7 @@ function App() {
             <div style={{ display:"grid", gridTemplateColumns: events.some(e => e.id === "rosc") ? "1fr" : "1fr 1fr", gap:9 }}>
               {!events.some(e => e.id === "rosc") && (
                 <ActionBtn action={{ label:"Soins post-RACS", icon:"🫀", accent:P.green, soft:P.greenSoft, textC:P.greenText }}
-                  onClick={() => setModalRacs(true)} />
+                  onClick={openSoins} />
               )}
               <ActionBtn action={{ label:"Constat de décès", svg:ICONS.deces, accent:P.slate, soft:P.slateSoft, textC:P.slateText }}
                 onClick={() => setModalDeces(true)} />
@@ -14124,7 +16528,7 @@ function App() {
                       onBlur={ev => ev.target.style.borderColor = "transparent"}
                     />
                     <button
-                      onClick={() => setEvents(prev => prev.filter((_, idx) => idx !== realIdx))}
+                      onClick={() => { if (window.confirm(`Retirer cet événement de la chronologie ?\n« ${e.label} » · ${e.time}`)) setEvents(prev => prev.filter((_, idx) => idx !== realIdx)); }}
                       title="Retirer cet événement"
                       style={{ background:"transparent", border:`1px solid ${P.border}`,
                         borderRadius:6, padding:"2px 7px", cursor:"pointer",
@@ -14255,6 +16659,20 @@ function App() {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
               <div><Lbl>Date de naissance</Lbl><TInput type="date" value={pat.ddn} onChange={v => { sf("ddn")(v); sf("age")(calcAge(v)); }} /></div>
               <div><Lbl>Âge</Lbl><TInput value={pat.age} onChange={sf("age")} placeholder="67 ans" /></div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <div>
+                <Lbl>Sexe</Lbl>
+                <div style={{ display:"flex", gap:6 }}>
+                  {[["H","Homme"],["F","Femme"]].map(([v, l]) => (
+                    <button key={v} onClick={() => sf("sexe")(pat.sexe === v ? "" : v)}
+                      style={{ flex:1, padding:"10px 0", borderRadius:9, fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:sans,
+                        border:`1.5px solid ${pat.sexe === v ? P.blue : P.border}`, background: pat.sexe === v ? P.blueSoft : P.surface,
+                        color: pat.sexe === v ? P.blueText : P.textSoft }}>{l}</button>
+                  ))}
+                </div>
+              </div>
+              <div><Lbl>Taille (cm)</Lbl><TInput type="number" value={pat.taille || ""} onChange={sf("taille")} placeholder="175" /></div>
             </div>
             {isTrauma && (
               <div>
@@ -15126,6 +17544,7 @@ export default function AppWithBoundary() {
     <ErrorBoundary>
       <AccessGate>
         <App />
+        <TrainingOverlay />
       </AccessGate>
     </ErrorBoundary>
   );
