@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-117";
+const APP_VERSION = "2026.08.15-118";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -5213,7 +5213,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
           hemoList={hemoListPed} etco2List={etco2ListPed} suspectedAd={suspectedPed}
           orient={orientListPed} onOrient={setOrientPed} tc={tcOnPed} onTc={setTcPed} mesures={mesuresPed} vasoLog={vasoLogPed}
           onSaveMesure={saveMesurePed} onDeleteMesure={deleteMesurePed} dest={regulDest} onDest={setRegulDest}
-          remMin={remMinPed} onRemMin={setRemMinPed} neuroLog={neuroLogPed} onSaveNeuro={saveNeuroPed} onDeleteNeuro={deleteNeuroPed} ventLog={ventLogPed} onEditMesure={editMesurePed}
+          remMin={remMinPed} onRemMin={setRemMinPed} neuroLog={neuroLogPed} onSaveNeuro={saveNeuroPed} onDeleteNeuro={deleteNeuroPed} ventLog={ventLogPed} onEditMesure={editMesurePed} setEvents={setEvents} onReport={() => { closeRacsPagePed(); setShowPdf(true); }}
           pamTarget={tcOnPed ? localMat.pamTC : localMat.pamHTC} fcSub={`≈ ${localMat.fcN} /min pour l'âge`} glyLo={0.7}
           orientOptions={ORIENT_PED} subtitle={`Pédiatrie · ${localPoids} kg`} soinsSub={soinsSubPed}
           onBack={closeRacsPagePed}
@@ -10654,7 +10654,7 @@ function RacsHoldButton({ P, mono, disp, onConfirm, ms = 2000 }) {
 
 function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoList, etco2List, suspectedAd,
   orient, onOrient, tc, onTc, mesures, vasoLog, onSaveMesure, onDeleteMesure, dest, onDest, onBack, onRecidive, renderBody, enCours, onEcg, onFast, onCause, onTransmission,
-  pamTarget, fcSub, glyLo, orientOptions, subtitle, soinsSub, remMin, onRemMin, neuroLog, onSaveNeuro, onDeleteNeuro, ventLog, onEditMesure }) {
+  pamTarget, fcSub, glyLo, orientOptions, subtitle, soinsSub, remMin, onRemMin, neuroLog, onSaveNeuro, onDeleteNeuro, ventLog, onEditMesure, setEvents, onReport }) {
   const tgt = pamTarget ?? (tc ? 80 : 65);
   const gLo = glyLo ?? 1.0;
   const num = v => { const n = parseFloat(String(v ?? "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
@@ -10664,6 +10664,14 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
   const [neuroSheet, setNeuroSheet] = useState(false);
   const [transport, setTransport] = useState(false);
   useWakeLock(transport);
+  const [logOpen, setLogOpen] = useState(false);
+  const [logFilter, setLogFilter] = useState("racs"); // racs | tout | perf
+  const [flash, setFlash] = useState(false);
+  const prevN = useRef(events.length);
+  useEffect(() => {
+    if (events.length > prevN.current) { setFlash(true); const t = setTimeout(() => setFlash(false), 2500); prevN.current = events.length; return () => clearTimeout(t); }
+    prevN.current = events.length;
+  }, [events.length]);
   const rem = remesureState(mesures, roscEvt, sec, remMin);
   const [openAcc, setOpenAcc] = useState(null); // "ventil" | "sedat" | "hemo"
   const accRef = useRef(null);
@@ -11072,6 +11080,68 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
           ← Retour à l'arrêt (le minuteur tourne)
         </button>
       </div>
+      {/* Bandeau chronologie fixe (dernier événement) + tiroir */}
+      {(() => {
+        const ordered = events.map((e, i) => ({ e, i })).sort((a, b) => ((a.e.sec ?? 0) - (b.e.sec ?? 0)) || (a.i - b.i));
+        const last = ordered.length ? ordered[ordered.length - 1].e : null;
+        return (
+          <>
+            <button onClick={() => setLogOpen(true)} aria-label="Ouvrir la chronologie"
+              style={{ flexShrink:0, display:"flex", alignItems:"center", gap:9, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:sans, border:"none",
+                borderTop:`1px solid ${flash ? P.green : P.border}`, background: flash ? P.greenSoft : P.surface, padding:"9px 12px", transition:"background .3s",
+                boxShadow:"0 -6px 18px rgba(0,0,0,0.06)", position:"relative", zIndex:3 }}>
+              <span style={{ width:30, height:30, borderRadius:9, background:P.blueSoft, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, flexShrink:0 }}>🕒</span>
+              <span style={{ flex:1, minWidth:0, lineHeight:1.2 }}>
+                <span style={{ display:"block", fontSize:8.5, fontWeight:700, letterSpacing:"0.1em", fontFamily:mono, color:P.textSoft }}>DERNIER{last ? ` · ${last.time}` : ""}</span>
+                <span style={{ display:"block", fontSize:12.5, fontWeight:700, color:P.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{last ? last.label : "Aucun événement"}</span>
+              </span>
+              <span style={{ fontSize:11, fontWeight:800, fontFamily:mono, color:P.blueText, background:P.blueSoft, borderRadius:99, padding:"3px 8px" }}>{events.length} ▴</span>
+            </button>
+            {logOpen && (() => {
+              const rs = roscEvt?.sec ?? 0;
+              const perf = new Set(["racs_vaso", "racs_sedation"]);
+              const list = [...ordered].reverse().filter(({ e }) => logFilter === "tout" ? true : logFilter === "perf" ? perf.has(e.id) : (e.sec ?? 0) >= rs);
+              return (
+                <div style={{ position:"absolute", inset:0, zIndex:6, background:"rgba(10,17,27,0.45)", display:"flex", flexDirection:"column", justifyContent:"flex-end" }} onClick={() => setLogOpen(false)}>
+                  <div onClick={e => e.stopPropagation()} style={{ background:P.surface, borderRadius:"18px 18px 0 0", borderTop:`1px solid ${P.border}`, height:"66%", display:"flex", flexDirection:"column", padding:"10px 14px 14px", boxShadow:"0 -12px 30px rgba(0,0,0,0.2)" }}>
+                    <div style={{ width:38, height:4, borderRadius:9, background:P.border, margin:"0 auto 8px", flexShrink:0 }} />
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:7, flexShrink:0 }}>
+                      <span style={{ fontFamily:disp, fontSize:15, fontWeight:800, color:P.text }}>🕒 Chronologie</span>
+                      <button onClick={onReport} style={{ marginLeft:"auto", background:P.blueSoft, color:P.blueText, border:`1px solid ${P.blue}`, borderRadius:9, padding:"5px 9px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans }}>📄 Compte-rendu</button>
+                      <button onClick={() => setLogOpen(false)} style={{ background:"transparent", border:"none", color:P.blueText, fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:sans }}>Fermer ▾</button>
+                    </div>
+                    <div style={{ display:"flex", gap:6, marginBottom:6, flexShrink:0 }}>
+                      {[["racs", "Depuis le RACS"], ["tout", "Tout"], ["perf", "Perfusions"]].map(([k, l]) => (
+                        <button key={k} onClick={() => setLogFilter(k)}
+                          style={{ fontSize:10.5, fontWeight:700, fontFamily:sans, cursor:"pointer", borderRadius:99, padding:"4px 10px",
+                            border:`1px solid ${logFilter === k ? P.blue : P.border}`, background: logFilter === k ? P.blueSoft : P.surfaceAlt, color: logFilter === k ? P.blueText : P.text }}>{l}</button>
+                      ))}
+                    </div>
+                    <div style={{ flex:1, overflowY:"auto" }}>
+                      {list.length === 0 && <p style={{ margin:"10px 0", fontSize:12, color:P.textSoft }}>Aucun événement.</p>}
+                      {list.map(({ e, i }, k) => {
+                        const linked = e.mid != null || e.sid != null || e.nid != null || e.id === "start" || e.id === "rosc";
+                        return (
+                          <div key={i} style={{ display:"flex", gap:9, alignItems:"baseline", padding:"6px 0", borderTop:`1px solid ${P.borderSoft}`, background: k === 0 && flash ? P.greenSoft : "transparent" }}>
+                            <span style={{ width:40, flexShrink:0, fontSize:10.5, fontWeight:700, fontFamily:mono, color:P.textSoft }}>{e.time}</span>
+                            <span style={{ width:18, flexShrink:0, fontSize:13 }}>{e.icon}</span>
+                            <span style={{ flex:1, minWidth:0, fontSize:12.5, lineHeight:1.35, color:P.text }}>{e.label}</span>
+                            {!linked && (
+                              <button onClick={() => { if (window.confirm(`Retirer cet événement de la chronologie ?\n« ${e.label} » · ${e.time}`)) setEvents(prev => prev.filter(x => x !== e)); }}
+                                aria-label="Retirer cet événement" style={{ background:"transparent", border:`1px solid ${P.border}`, borderRadius:6, padding:"1px 7px", cursor:"pointer", color:P.textSoft, fontSize:12, flexShrink:0 }}>✕</button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p style={{ margin:"6px 0 0", fontSize:9.5, fontFamily:mono, color:P.textSoft, flexShrink:0 }}>Les mesures, perfusions et réévaluations se suppriment depuis leur propre section.</p>
+                  </div>
+                </div>
+              );
+            })()}
+          </>
+        );
+      })()}
       {transport && (
         <div style={{ position:"absolute", inset:0, zIndex:5, background:P.bg, display:"flex", flexDirection:"column", paddingTop:"env(safe-area-inset-top, 0px)" }}>
           <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:`${isTraining() ? 24 : 9}px 12px 9px`, display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
@@ -15156,7 +15226,7 @@ function App() {
           roscEvt={events.find(e => e.id === "rosc")} events={events} racs={racs} renderBody={renderRacsBody} enCours={enCoursList}
           hemoList={hemoList} etco2List={etco2List} suspectedAd={suspectedAd}
           orient={orientList} onOrient={setOrient} tc={tcOn} onTc={setTc} mesures={mesures} vasoLog={vasoLog} onSaveMesure={saveMesure} onDeleteMesure={deleteMesure} dest={regulDest} onDest={setRegulDest}
-          remMin={remMin} onRemMin={setRemMin} neuroLog={neuroLog} onSaveNeuro={saveNeuro} onDeleteNeuro={deleteNeuro} ventLog={ventLog} onEditMesure={editMesure}
+          remMin={remMin} onRemMin={setRemMin} neuroLog={neuroLog} onSaveNeuro={saveNeuro} onDeleteNeuro={deleteNeuro} ventLog={ventLog} onEditMesure={editMesure} setEvents={setEvents} onReport={() => { closeRacsPage(); setShowPdf(true); }}
           onBack={closeRacsPage}
           onRecidive={() => {
             commitRacsMesures(); flushRacsLog();
