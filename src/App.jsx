@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-121";
+const APP_VERSION = "2026.08.15-122";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -10430,10 +10430,11 @@ const MES_FIELDS = [
   ["Ventilation",   [["sat","SpO₂","%"],["capno","EtCO₂","mmHg"],["fio2","FiO₂","%"]]],
   ["Autres",        [["temp","T°","°C"],["gly","Glycémie","g/L"]]],
 ];
-function MesureSheet({ P, mono, sans, disp, prefill, tc, pamTarget, onSave, onClose, initial }) {
+function MesureSheet({ P, mono, sans, disp, prefill, tc, pamTarget, onSave, onClose, initial, only }) {
   const [vals, setVals] = useState(() => { const v = {}; if (initial) MES_KEYS.forEach(k => { if (mesHas(initial[k])) v[k] = String(initial[k]); }); return v; });
-  const [active, setActive] = useState("pad");
+  const [active, setActive] = useState(only ? only[0] : "pad");
   const [time, setTime] = useState(initial?.time || getNow());
+  const onlyTitle = only ? ({ temp:"Température", gly:"Glycémie" }[only[0]] || "Constantes") : null;
   const small = active === "temp" || active === "gly";
   const steps = small ? [-0.5, -0.1, 0.1, 0.5] : [-5, -1, 1, 5];
   const apply = (st) => {
@@ -10455,17 +10456,17 @@ function MesureSheet({ P, mono, sans, disp, prefill, tc, pamTarget, onSave, onCl
           <div style={{ width:38, height:38, borderRadius:12, background:`linear-gradient(135deg, ${P.green}, ${P.greenText})`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:19 }}>📋</div>
           <div>
             <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.14em", color:P.green, fontFamily:mono, textTransform:"uppercase" }}>{initial ? "Modifier la mesure" : "Nouvelle mesure"}</div>
-            <div style={{ fontSize:17, fontWeight:800, fontFamily:disp, color:P.text }}>Constantes</div>
+            <div style={{ fontSize:17, fontWeight:800, fontFamily:disp, color:P.text }}>{onlyTitle || "Constantes"}</div>
           </div>
           <input type="time" value={time} onChange={e => setTime(e.target.value)}
             style={{ marginLeft:"auto", background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:10, padding:"6px 8px",
               fontSize:13, fontWeight:800, fontFamily:mono, color:P.text, outline:"none" }} />
           <button onClick={onClose} style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:22, cursor:"pointer", padding:2 }}>×</button>
         </div>
-        {MES_FIELDS.map(([grp, fields]) => (
+        {(only ? MES_FIELDS.map(([g, fl]) => [g, fl.filter(f => only.includes(f[0]))]).filter(([, fl]) => fl.length) : MES_FIELDS).map(([grp, fields]) => (
           <div key={grp}>
             <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.12em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase", margin:"10px 0 5px" }}>{grp}</div>
-            <div style={{ display:"grid", gridTemplateColumns:`repeat(${fields.length === 2 ? 2 : 3}, 1fr)`, gap:7 }}>
+            <div style={{ display:"grid", gridTemplateColumns:`repeat(${only ? 1 : fields.length === 2 ? 2 : 3}, 1fr)`, gap:7 }}>
               {fields.map(([k, label, unit]) => {
                 const set = mesHas(vals[k]), on = active === k;
                 return (
@@ -10479,7 +10480,7 @@ function MesureSheet({ P, mono, sans, disp, prefill, tc, pamTarget, onSave, onCl
                       onFocus={() => setActive(k)}
                       onChange={e => setVals(v => ({ ...v, [k]: e.target.value.replace(",", ".") }))}
                       style={{ width:"100%", boxSizing:"border-box", background:"transparent", border:"none", outline:"none", textAlign:"center",
-                        fontSize:21, fontWeight:800, fontFamily:mono, color: set ? P.greenText : P.text, padding:"1px 0" }} />
+                        fontSize: only ? 40 : 21, fontWeight:800, fontFamily:mono, color: set ? P.greenText : P.text, padding:"1px 0" }} autoFocus={!!only && k === only[0]} />
                     <div style={{ fontSize:9, fontStyle:"italic", fontFamily:mono, color:P.textSoft }}>
                       {set ? "mesuré" : mesHas(prefill[k]) ? `avant ${prefill[k]}` : "à mesurer"}
                     </div>
@@ -10487,7 +10488,7 @@ function MesureSheet({ P, mono, sans, disp, prefill, tc, pamTarget, onSave, onCl
                 );
               })}
             </div>
-            {grp === "Hémodynamique" && (
+            {grp === "Hémodynamique" && !only && (
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginTop:7, padding:"7px 10px", borderRadius:11,
                 background: pam == null ? P.surfaceAlt : pam < target ? P.amberSoft : P.greenSoft,
                 border:`1px solid ${pam == null ? P.border : pam < target ? P.amber : P.green}` }}>
@@ -10575,7 +10576,7 @@ function doEditMesure(o) {
 }
 
 // Réévaluation neurologique horodatée : Glasgow + pupilles
-function NeuroSheet({ P, mono, sans, disp, prefill, onSave, onClose }) {
+function NeuroSheet({ P, mono, sans, disp, prefill, onSave, onClose, pupOnly }) {
   const [gcs, setGcs] = useState(prefill?.glasgow ? String(prefill.glasgow) : "");
   const [pup, setPup] = useState(prefill?.pupilles || "");
   const [time, setTime] = useState(getNow());
@@ -10589,18 +10590,20 @@ function NeuroSheet({ P, mono, sans, disp, prefill, onSave, onClose }) {
           <div style={{ width:38, height:38, borderRadius:12, background:`linear-gradient(135deg, ${P.violet}, ${P.violetText})`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:19 }}>🧠</div>
           <div>
             <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.14em", color:P.violet, fontFamily:mono, textTransform:"uppercase" }}>Réévaluation</div>
-            <div style={{ fontSize:17, fontWeight:800, fontFamily:disp, color:P.text }}>Neurologique</div>
+            <div style={{ fontSize:17, fontWeight:800, fontFamily:disp, color:P.text }}>{pupOnly ? "Pupilles" : "Neurologique"}</div>
           </div>
           <input type="time" value={time} onChange={e => setTime(e.target.value)}
             style={{ marginLeft:"auto", background:P.surfaceAlt, border:`1.5px solid ${P.border}`, borderRadius:10, padding:"6px 8px", fontSize:13, fontWeight:800, fontFamily:mono, color:P.text, outline:"none" }} />
           <button onClick={onClose} style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:22, cursor:"pointer", padding:2 }}>×</button>
         </div>
+        {!pupOnly && (<>
         <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.12em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase", margin:"8px 0 5px" }}>Glasgow (/15)</div>
         <div style={{ display:"grid", gridTemplateColumns:"repeat(5, 1fr)", gap:6 }}>
           {[3,4,5,6,7,8,9,10,11,12,13,14,15].map(n => (
             <button key={n} onClick={() => setGcs(gcs === String(n) ? "" : String(n))} style={chip(gcs === String(n), "violet")}>{n}</button>
           ))}
         </div>
+        </>)}
         <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.12em", color:P.textSoft, fontFamily:mono, textTransform:"uppercase", margin:"12px 0 5px" }}>Pupilles</div>
         <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
           {[{ v:"Normales" }, ...PUPILLES_DETAIL].map(o => (
@@ -10613,7 +10616,7 @@ function NeuroSheet({ P, mono, sans, disp, prefill, onSave, onClose }) {
         <button disabled={!can} onClick={() => onSave({ glasgow:gcs, pupilles:pup }, time)}
           style={{ width:"100%", marginTop:14, border:"none", borderRadius:14, padding:13, fontSize:14, fontWeight:800, fontFamily:disp, color: can ? "#fff" : P.textSoft, cursor: can ? "pointer" : "default",
             background: can ? `linear-gradient(135deg, ${P.violet}, color-mix(in srgb, ${P.violet} 70%, #000))` : P.surfaceAlt }}>
-          ✓ Enregistrer la réévaluation
+          ✓ {pupOnly ? "Enregistrer les pupilles" : "Enregistrer la réévaluation"}
         </button>
       </div>
     </div>
@@ -10791,7 +10794,8 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
   const [sheet, setSheet] = useState(false);
   const [openRow, setOpenRow] = useState(null);
   const [editId, setEditId] = useState(null);
-  const [neuroSheet, setNeuroSheet] = useState(false);
+  const [neuroSheet, setNeuroSheet] = useState(false); // false | true | "pup"
+  const [quick, setQuick] = useState(null); // null | "temp" | "gly"
   const [transport, setTransport] = useState(false);
   useWakeLock(transport);
   const [logOpen, setLogOpen] = useState(false);
@@ -10848,9 +10852,9 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
   const checks = [
     { label:"ECG 12 dér.", done: !!ecgEv, time: ecgEv?.time, go: onEcg },
     { label:"Fast-écho",   done: !!fastEv, time: fastEv?.time, go: onFast },
-    { label:"Pupilles",    done: !!racs.pupilles || (neuroLog || []).some(n => n.pupilles), time: racs.pupilles ? String(racs.pupilles).slice(0, 14) : "", go: () => onDetail("hemo") },
-    { label:"Glycémie",    done: gly != null, time: gly != null ? `${gly} g/L` : "", go: () => onDetail("hemo") },
-    { label:"Température", done: temp != null, time: temp != null ? `${temp} °C` : "", go: () => onDetail("hemo") },
+    { label:"Pupilles",    done: !!racs.pupilles || (neuroLog || []).some(n => n.pupilles), time: racs.pupilles ? String(racs.pupilles).slice(0, 14) : "", go: () => setNeuroSheet("pup") },
+    { label:"Glycémie",    done: gly != null, time: gly != null ? `${gly} g/L` : "", go: () => setQuick("gly") },
+    { label:"Température", done: temp != null, time: temp != null ? `${temp} °C` : "", go: () => setQuick("temp") },
     { label:"Cause cherchée", done: (suspectedAd || []).length > 0, time: (suspectedAd || []).length ? `${suspectedAd.length} piste${suspectedAd.length > 1 ? "s" : ""}` : "", go: onCause },
   ];
   const nbDone = checks.filter(c => c.done).length;
@@ -11349,7 +11353,7 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
           onSave={(l, t) => { onSaveRass(l, t); setRassSheet(false); }} onClose={() => setRassSheet(false)} />
       )}
       {neuroSheet && (
-        <NeuroSheet P={P} mono={mono} sans={sans} disp={disp} prefill={{}}
+        <NeuroSheet P={P} mono={mono} sans={sans} disp={disp} prefill={{}} pupOnly={neuroSheet === "pup"}
           onSave={(v, t) => { onSaveNeuro(v, t); setNeuroSheet(false); }} onClose={() => setNeuroSheet(false)} />
       )}
       {editId != null && (() => {
@@ -11361,6 +11365,10 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
             onClose={() => setEditId(null)} />
         );
       })()}
+      {quick && (
+        <MesureSheet P={P} mono={mono} sans={sans} disp={disp} tc={tc} pamTarget={tgt} only={[quick]} prefill={{}}
+          onSave={(vals, time) => { onSaveMesure(vals, time); setQuick(null); }} onClose={() => setQuick(null)} />
+      )}
       {sheet && (
         <MesureSheet P={P} mono={mono} sans={sans} disp={disp} tc={tc} pamTarget={tgt}
           prefill={{ pas: tas ?? "", pad: tad ?? "", fc: fc ?? "", sat: spo2 ?? "", capno: etco2 ?? "", fio2: num(racs.fio2) ?? "", temp: temp ?? "", gly: gly ?? "" }}
