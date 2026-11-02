@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-122";
+const APP_VERSION = "2026.08.15-123";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -13050,6 +13050,9 @@ function App() {
   // Archives locales des arrêts
   const [archives, setArchives] = useState(() => loadArchives());
   const [viewArchive, setViewArchive] = useState(null); // snapshot consulté
+  const [showArchives, setShowArchives] = useState(false);
+  const [archQ, setArchQ] = useState("");
+  const [archF, setArchF] = useState("Tous");
   useEffect(() => { if (!module) setArchives(loadArchives()); }, [module]);
 
   // Réglages globaux — doivent être déclarés tôt (utilisés dans des effets)
@@ -13438,33 +13441,75 @@ function App() {
           P={P} mono={mono} sans={sans} disp={disp} fmtSec={fmtSec} />
       )}
 
-      {archives.length > 0 && (
-        <div style={{ width:"100%", maxWidth:420, marginTop:30 }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-            <p style={{ margin:0, fontSize:11, fontWeight:700, color:P.textSoft,
-              letterSpacing:"0.12em", textTransform:"uppercase", fontFamily:mono }}>
-              Arrêts archivés · {archives.length}
-            </p>
-            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-              <button ref={tourRefStats} onClick={() => setShowDashboard(true)}
-                style={{ background:P.blue, border:"none", borderRadius:8,
-                  color:"#fff", fontSize:11, fontWeight:700, cursor:"pointer",
-                  fontFamily:sans, padding:"5px 10px", display:"flex", alignItems:"center", gap:4 }}>
-                📊 Stats
+      {archives.length > 0 && (() => {
+        const nRacs = archives.filter(a => a.outcome === "RACS").length;
+        const rate = Math.round(nRacs / archives.length * 100);
+        const last = archives[0];
+        const ld = last ? new Date(last.archivedAt) : null;
+        const tile = { background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:14, padding:11, cursor:"pointer", fontFamily:sans, textAlign:"left", display:"flex", flexDirection:"column", gap:4 };
+        const ic = (bg, e) => <span style={{ width:26, height:26, borderRadius:8, background:bg, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>{e}</span>;
+        return (
+          <div style={{ width:"100%", maxWidth:380, marginTop:22 }}>
+            <p style={{ margin:"0 2px 8px", fontSize:10, fontWeight:700, color:P.textSoft, letterSpacing:"0.12em", textTransform:"uppercase", fontFamily:mono }}>Mon activité</p>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+              <button onClick={() => setShowArchives(true)} style={tile}>
+                <span style={{ display:"flex", alignItems:"center", gap:7, fontSize:13, fontWeight:800, fontFamily:disp, color:P.text }}>{ic(P.blueSoft, "🗂️")}Archives</span>
+                <span style={{ fontSize:26, fontWeight:800, fontFamily:mono, color:P.text }}>{archives.length}</span>
+                <span style={{ fontSize:10, fontWeight:600, fontFamily:mono, color:P.textSoft }}>dernier : {ld ? ld.toLocaleDateString("fr-FR", { day:"2-digit", month:"2-digit" }) : "—"}{last && last.outcome && last.outcome !== "—" ? ` · ${last.outcome}` : ""}</span>
+                <span style={{ marginTop:4, fontSize:11, fontWeight:800, color:P.blueText }}>Ouvrir ›</span>
               </button>
-              <button onClick={() => {
-                if (typeof window !== "undefined" && window.confirm("Effacer définitivement TOUS les arrêts archivés ?\nCette action est irréversible.")) {
-                  setArchives(clearArchives());
-                }
-              }} style={{ background:"transparent", border:"none", color:P.roseText,
-                fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:sans }}>
-                Tout effacer
+              <button ref={tourRefStats} onClick={() => setShowDashboard(true)} style={tile}>
+                <span style={{ display:"flex", alignItems:"center", gap:7, fontSize:13, fontWeight:800, fontFamily:disp, color:P.text }}>{ic(P.violetSoft, "📊")}Stats</span>
+                <span style={{ display:"flex", gap:6, marginTop:2 }}>
+                  <span style={{ flex:1, background:P.surfaceAlt, borderRadius:9, padding:"5px 8px" }}><b style={{ display:"block", fontSize:15, fontFamily:mono, color:P.text }}>{rate} %</b><small style={{ fontSize:8.5, fontFamily:mono, color:P.textSoft, textTransform:"uppercase" }}>RACS</small></span>
+                  <span style={{ flex:1, background:P.surfaceAlt, borderRadius:9, padding:"5px 8px" }}><b style={{ display:"block", fontSize:15, fontFamily:mono, color:P.text }}>{archives.length}</b><small style={{ fontSize:8.5, fontFamily:mono, color:P.textSoft, textTransform:"uppercase" }}>arrêts</small></span>
+                </span>
+                <span style={{ marginTop:4, fontSize:11, fontWeight:800, color:P.blueText }}>Détail ›</span>
               </button>
             </div>
           </div>
+        );
+      })()}
 
+      {showArchives && (() => {
+        const q = archQ.trim().toLowerCase();
+        const shownArchives = archives.filter(a => {
+          if (archF === "RACS" && a.outcome !== "RACS") return false;
+          if (archF === "Décès" && a.outcome !== "Décès") return false;
+          const ty = String(a.type || "").toLowerCase();
+          const isP = ty.includes("pédiatrique"), isT = ty.includes("traumat");
+          if (archF === "Péd" && !isP) return false;
+          if (archF === "Trauma" && !isT) return false;
+          if (archF === "Adulte" && (isP || isT)) return false;
+          if (q) {
+            const d = new Date(a.archivedAt).toLocaleDateString("fr-FR");
+            if (!(`${a.label || ""} ${a.type || ""} ${d}`.toLowerCase().includes(q))) return false;
+          }
+          return true;
+        });
+        const chip = (id) => (
+          <button key={id} onClick={() => setArchF(id)}
+            style={{ fontFamily:sans, fontSize:11, fontWeight:700, borderRadius:99, padding:"5px 11px", cursor:"pointer",
+              border:`1.5px solid ${archF === id ? P.blue : P.border}`, background: archF === id ? P.blueSoft : P.surface, color: archF === id ? P.blueText : P.textMid }}>{id}</button>
+        );
+        return (
+          <div style={{ position:"fixed", inset:0, zIndex:60, background:P.bg, overflowY:"auto", fontFamily:sans }}>
+            <div style={{ position:"sticky", top:0, zIndex:2, display:"flex", alignItems:"center", gap:8, padding:"12px 14px", background:P.surface, borderBottom:`1px solid ${P.border}` }}>
+              <button onClick={() => setShowArchives(false)} style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:10, padding:"7px 11px", fontSize:12, fontWeight:700, color:P.textMid, cursor:"pointer", fontFamily:sans }}>‹ Retour</button>
+              <b style={{ flex:1, fontFamily:disp, fontSize:15, color:P.text }}>Archives · {archives.length}</b>
+              <button onClick={() => {
+                if (typeof window !== "undefined" && window.confirm("Effacer définitivement TOUS les arrêts archivés ?\nCette action est irréversible.")) {
+                  setArchives(clearArchives()); setShowArchives(false);
+                }
+              }} style={{ background:"transparent", border:"none", color:P.roseText, fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:sans }}>Tout effacer</button>
+            </div>
+            <div style={{ maxWidth:420, margin:"0 auto", padding:"12px 14px 40px", display:"flex", flexDirection:"column", gap:10 }}>
+              <input value={archQ} onChange={e => setArchQ(e.target.value)} placeholder="🔍 Rechercher (libellé, date)…"
+                style={{ background:P.surface, border:`1.5px solid ${P.border}`, borderRadius:12, padding:"9px 12px", fontSize:13, fontFamily:sans, color:P.text, outline:"none" }} />
+              <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>{["Tous", "RACS", "Décès", "Adulte", "Trauma", "Péd"].map(chip)}</div>
+              {shownArchives.length === 0 && <p style={{ margin:"14px 0", fontSize:12.5, color:P.textSoft, textAlign:"center" }}>Aucun arrêt ne correspond.</p>}
           <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-            {archives.map(a => {
+            {shownArchives.map(a => {
               const d = new Date(a.archivedAt);
               const dateStr = d.toLocaleDateString("fr-FR", { day:"2-digit", month:"2-digit", year:"2-digit" })
                 + " · " + d.toLocaleTimeString("fr-FR", { hour:"2-digit", minute:"2-digit" });
@@ -13511,12 +13556,15 @@ function App() {
             })}
           </div>
 
+
           <p style={{ margin:"10px 2px 0", fontSize:9.5, color:P.textSoft, lineHeight:1.5, fontStyle:"italic" }}>
             ⚠️ Données stockées en clair sur cet appareil uniquement (non chiffrées, non synchronisées).
             Données de santé : n'utiliser que sur un appareil sécurisé et personnel ; anonymisation recommandée. Effacer après usage.
           </p>
-        </div>
-      )}
+            </div>
+          </div>
+        );
+      })()}
 
       <p style={{ marginTop:36, fontSize:10, color:P.textSoft, fontFamily:mono }}>
         Usage professionnel exclusif · Outil d'aide cognitive uniquement — chaque professionnel de santé demeure seul responsable de ses prescriptions et décisions thérapeutiques
