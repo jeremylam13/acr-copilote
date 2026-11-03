@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-123";
+const APP_VERSION = "2026.08.15-124";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -5252,7 +5252,7 @@ function RcpPediatrique({ onBack, onHome, acrTime, poids, mat, theme, setTheme, 
       )}
       {showLecturePed && (
         <ModeLecture P={P} mono={mono} sans={sans} disp={disp}
-          data={buildLecture({ ped:true, sec, events, racs:racsPed, hemoList:hemoListPed, etco2List:etco2ListPed, enCours:enCoursListPed,
+          data={buildReleve({ ped:true, patient:{ atcd:patPed.atcd, traitement:patPed.traitement, histoire:patPed.histoire }, trans:transPed, iot:{ cormack:"", sonde:localMat?.sondeAvecBallonnet||"", repere:localMat?.repereLab||"", capno:"" }, noFlow:noFlowMin, lowFlow:lowFlowMin, acrTime:localAcrTime, hemocue:[], curare: nimbex1Val !== "" ? `Nimbex ${nimbex1Val} mL` : "", sec, events, racs:racsPed, hemoList:hemoListPed, etco2List:etco2ListPed, enCours:enCoursListPed,
             orientLabels: orientListPed.map(id => ORIENT_PED.find(o => o.id === id)?.label).filter(Boolean), dest:regulDest,
             causeLabels: suspectedPed.map(id => CAUSES_PED.find(c => c.id === id)?.label || CAUSES_HOTT.find(c => c.id === id)?.label).filter(Boolean),
             ident: `${patPed.sexe === "H" || patPed.sexe === "Garçon" ? "Garçon" : patPed.sexe === "F" || patPed.sexe === "Fille" ? "Fille" : "Enfant"} ${patPed.age || calcAge(patPed.ddn) || localRow.age} · ${localPoids} kg`,
@@ -11439,33 +11439,118 @@ function buildLecture(o) {
   if ((orientLabels || []).length || (dest || "").trim()) {
     lines.push({ id:"orient", k:"Orient.", parts:[{ t:[(orientLabels || []).join(" + "), (dest || "").trim()].filter(Boolean).join(" — ") }] });
   }
-  return { headTitle, since, lines };
+  const vitals = [];
+  if (pam != null) { const bad = pam < pamTarget; vitals.push({ k:"PAM", v:String(pam), u:"mmHg", w:bad, sub: bad ? `↓ cible ≥ ${pamTarget}` : "" }); }
+  if (fc != null) vitals.push({ k:"FC", v:String(fc), u:"/min" });
+  if (spo2 != null) { const bad = spo2 < 94 || spo2 > 98; vitals.push({ k:"SpO₂", v:String(spo2), u:"%", w:bad, sub: spo2 > 98 ? "↑" : spo2 < 94 ? "↓" : "" }); }
+  if (etco2 != null) { const bad = etco2 < 35 || etco2 > 45; vitals.push({ k:"EtCO₂", v:String(etco2), u:"mmHg", w:bad, sub: etco2 > 45 ? "↑" : etco2 < 35 ? "↓" : "" }); }
+  if (temp != null) vitals.push({ k:"T°", v:fm(temp), u:"°C", w: temp > 37.5 });
+  if (gly != null) vitals.push({ k:"Glycémie", v:fm(gly), u:"g/L", w: gly < glyLo || gly > 1.8 });
+  return { headTitle, since, lines, vitals, ros, rcpMin, miss, ecgEv, fastEv, ident };
+}
+
+// ── Relève orale à l'équipe de réanimation : blocs dans l'ordre où l'on parle ──
+function buildReleve(o) {
+  const base = buildLecture(o);
+  const { patient, trans, iot, noFlow, lowFlow, acrTime, hemocue, curare, events, racs, enCours, causeLabels, orientLabels, dest, sec, ped } = o;
+  const t = trans || {}, pt = patient || {};
+  const fm = v => String(v).replace(".", ",");
+  const nb = id => events.filter(e => e.id === id).length;
+  const ros = base.ros, start = events.find(e => e.id === "start");
+  const row = (...parts) => parts.filter(Boolean).map(x => typeof x === "string" ? { t:x } : x);
+  const rows = (...r) => r.filter(x => x.length);
+  const blocks = [];
+  // 1 Patient
+  const atcdTxt = String(pt.atcd || "").trim(), trtTxt = String(pt.traitement || "").trim();
+  blocks.push({ id:"patient", title:"Patient", rows: rows(row(base.ident), row(atcdTxt && `ATCD : ${atcdTxt}`), row(trtTxt && `Traitement habituel : ${trtTxt}`)) });
+  // 2 Circonstances
+  const lieu = LIEUX_INTERVENTION.find(l => l.id === t.lieu)?.label;
+  const hEff = t.hEffondrement || acrTime || "";
+  const hist = String(pt.histoire || "").trim();
+  const dsa = [(parseInt(t.chocsPompiers) || 0) > 0 && `${t.chocsPompiers} choc(s) DSA pompiers`, (parseInt(t.chocsPublic) || 0) > 0 && `${t.chocsPublic} choc(s) DSA public`].filter(Boolean).join(" · ");
+  const rythmeDsa = ({ choquable:"choquable", nonChoquable:"non choquable", nonAnalyse:"non analysé" })[t.rythmeDSA] || t.rythmeDSA;
+  blocks.push({ id:"circ", title:"Circonstances", sub: lieu || "", rows: rows(
+    row(hEff && `Effondrement ${hEff}`, t.temoin && `témoin : ${t.temoin}`, t.mceTemoin && `MCE par témoin : ${t.mceTemoin}`),
+    row(rythmeDsa && `Rythme initial DSA : ${rythmeDsa}`, dsa),
+    row(o.extra),
+    row(hist),
+    row(t.gestesSecouristes && String(t.gestesSecouristes).trim()),
+  ) });
+  // 3 SMUR
+  const rv = events.find(e => ["rv_fvtv", "rv_aesp", "rv_asy"].includes(e.id));
+  const rvLbl = rv ? ({ rv_fvtv:"FV/TV", rv_aesp:"AESP", rv_asy:"asystolie" })[rv.id] : null;
+  const fc1 = events.find(e => e.id === "choc" || e.id === "doublechoc");
+  const dChoc = fc1 && start ? Math.max(0, Math.round((fc1.sec - start.sec) / 60)) : null;
+  const chocs = nb("choc") + 2 * nb("doublechoc"), adr = nb("adr"), amio = nb("amio");
+  const iotTxt = iot && iot.sonde ? `IOT sonde ${iot.sonde}${iot.repere ? ` · repère ${iot.repere} cm` : ""}${iot.cormack ? ` · Cormack ${iot.cormack}` : ""}` : (events.find(e => e.id === "iot") ? "intubé" : "");
+  blocks.push({ id:"smur", title:"Prise en charge SMUR", rows: rows(
+    row(rvLbl && `Rythme initial ${rvLbl}`, dChoc != null && `1er choc à ${dChoc} min`),
+    row(`${chocs} choc${chocs > 1 ? "s" : ""}`, `${adr} adrénaline`, amio > 0 && `${amio} amiodarone`),
+    row(iotTxt),
+    row(noFlow !== "" && noFlow != null && `no-flow ${noFlow} min`, lowFlow !== "" && lowFlow != null && `low-flow ${lowFlow} min`, base.rcpMin != null && `RCP SMUR ${base.rcpMin} min`),
+  ) });
+  // 4 RACS et état actuel
+  const gcs = racs.glasgow, pup = racs.pupilles;
+  const hbLast = hemocue && hemocue.length ? hemocue[hemocue.length - 1].val : null;
+  blocks.push({ id:"etat", title:"RACS et état actuel", sub: base.since != null ? `il y a ${base.since} min` : "", vitals: base.vitals,
+    rows: rows(
+      row(ros ? `RACS à ${ros.time}` : "Pas de RACS"),
+      row(gcs && `Glasgow ${gcs}`, pup && `pupilles : ${pup}`),
+    ) });
+  // 5 Traitements en cours
+  const ventTxt = [racs.volume && `Vt ${racs.volume}`, racs.fr && `FR ${racs.fr}`, racs.pep && `PEP ${racs.pep}`, racs.fio2 && `FiO₂ ${racs.fio2} %`].filter(Boolean).join(" · ");
+  const tt = (enCours || []).filter(c => c.k !== "vent");
+  blocks.push({ id:"ttt", title:"Traitements en cours", rows: rows(
+    ...tt.map(c => row(`${c.label} ${c.v}${c.sec != null ? ` (depuis ${Math.max(0, Math.round((sec - c.sec) / 60))} min)` : ""}`)),
+    row(curare),
+    row(ventTxt && `Ventilation : ${ventTxt}`),
+  ) });
+  // 6 Examens
+  const ecg = base.ecgEv ? `ECG : ${base.ecgEv.label.replace(/^ECG post-RACS\s*:?\s*/, "") || "fait"}` : "";
+  const fast = base.fastEv ? `FAST : ${base.fastEv.label.replace(/^Fast-écho\s*:?\s*/i, "").replace(/^FAST\s*/i, "").trim() || "fait"}` : "";
+  blocks.push({ id:"exam", title:"Examens", rows: rows(row(ecg), row(fast), row(hbLast && `Hb ${hbLast} g/dL`), row((causeLabels || []).length && `Cause évoquée : ${causeLabels.map(l => l.split(" (")[0]).join(", ")}`)) });
+  // Non fait
+  if (base.miss.length) blocks.push({ id:"nonfait", title:"Non fait / à poursuivre", tone:"todo", rows: base.miss.map(m => row(m[0].toUpperCase() + m.slice(1))) });
+  // 7 Orientation
+  const or = [(orientLabels || []).join(" + "), (dest || "").trim()].filter(Boolean).join(" — ");
+  blocks.push({ id:"orient", title:"Orientation", rows: rows(row(or)) });
+  let n = 0;
+  blocks.forEach(b => { if (b.tone !== "todo") { n += 1; b.n = n; } });
+  return { ...base, blocks };
 }
 
 function ModeLecture({ P, mono, sans, disp, data, onClose, onFreeze }) {
   useWakeLock(true);
   const [size, setSize] = useLocalState("acr_lecture_size", 17);
-  const [hidden, setHidden] = useState([]);
+  const [said, setSaid] = useState([]);
   const [frozen, setFrozen] = useState(null);
   const [copied, setCopied] = useState(false);
-  const visible = data.lines.filter(l => !hidden.includes(l.id));
-  const textOf = l => l.parts.map(p => p.t).join(" · ");
-  const shortText = () => [`${data.headTitle}${data.since != null ? ` · RACS depuis ${data.since} min` : ""}`, ...visible.map(l => `${l.k} : ${textOf(l)}`)].join("\n");
+  const blocks = data.blocks || [];
+  const textOfRow = r => r.map(p => p.t).join(" · ");
+  const textOfBlock = b => {
+    const vit = b.vitals && b.vitals.length ? [b.vitals.map(v => `${v.k} ${v.v}${v.sub ? ` ${v.sub}` : ""}`).join(" · ")] : [];
+    const body = [...(b.rows || []).map(textOfRow), ...vit];
+    return `${b.n ? `${b.n}. ` : "! "}${b.title}${b.sub ? ` (${b.sub})` : ""} : ${body.length ? body.join(" ; ") : "non renseigné"}`;
+  };
+  const fullText = () => [`Relève réanimation — ${data.headTitle || "Patient"}${data.since != null ? ` · RACS depuis ${data.since} min` : ""}`, ...blocks.map(textOfBlock)].join("\n");
   const copy = async () => {
-    const t = shortText();
+    const t = fullText();
     try { await navigator.clipboard.writeText(t); } catch (e) {
       try { const ta = document.createElement("textarea"); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); } catch (e2) {}
     }
     setCopied(true); setTimeout(() => setCopied(false), 1800);
   };
-  const freeze = () => { const t = getNow(); setFrozen(t); onFreeze(shortText().replace(/\n/g, " | "), t); };
+  const freeze = () => { const t = getNow(); setFrozen(t); onFreeze(fullText().replace(/\n/g, " | "), t); };
   const sz = Math.max(13, Math.min(26, Number(size) || 17));
+  const nDone = blocks.filter(b => said.includes(b.id)).length;
+  const toggle = id => setSaid(x => x.includes(id) ? x.filter(i => i !== id) : [...x, id]);
+  const firstOpen = blocks.find(b => !said.includes(b.id));
   return (
     <div style={{ position:"fixed", inset:0, zIndex:75, background:P.bg, display:"flex", flexDirection:"column", fontFamily:sans, paddingTop:"env(safe-area-inset-top, 0px)" }}>
       <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:"9px 12px", display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
         <button onClick={onClose} style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:10, padding:"8px 10px", fontSize:12, fontWeight:700, color:P.text, cursor:"pointer", fontFamily:sans }}>← Fermer</button>
         <div style={{ lineHeight:1.05 }}>
-          <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.12em", color:P.green, fontFamily:mono }}>MODE LECTURE</div>
+          <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.12em", color:P.green, fontFamily:mono }}>RELÈVE RÉANIMATION</div>
           <div style={{ fontSize:16, fontWeight:800, fontFamily:disp, color:P.text }}>Je transmets…</div>
         </div>
         <div style={{ marginLeft:"auto", display:"flex", gap:5 }}>
@@ -11485,27 +11570,51 @@ function ModeLecture({ P, mono, sans, disp, data, onClose, onFreeze }) {
             {data.since != null && <div style={{ fontSize:26, fontWeight:800, fontFamily:mono, whiteSpace:"nowrap" }}>{data.since}′</div>}
           </div>
         </div>
-        {data.lines.map(l => {
-          const off = hidden.includes(l.id);
-          const warn = l.tone === "warn", todo = l.tone === "todo";
+        <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:11, fontWeight:700, fontFamily:mono, color:P.textSoft, flexShrink:0 }}>
+          <span>{nDone} / {blocks.length} dits</span>
+          <span style={{ flex:1, height:6, borderRadius:9, background:P.border, overflow:"hidden" }}><span style={{ display:"block", height:"100%", width:`${blocks.length ? (nDone / blocks.length) * 100 : 0}%`, background:P.green, transition:"width .2s" }} /></span>
+        </div>
+        {blocks.map(b => {
+          const done = said.includes(b.id), todo = b.tone === "todo", now = !done && firstOpen && firstOpen.id === b.id;
+          const empty = !(b.rows || []).length && !(b.vitals || []).length;
           return (
-            <button key={l.id} onClick={() => setHidden(h => off ? h.filter(x => x !== l.id) : [...h, l.id])}
-              style={{ display:"flex", gap:10, alignItems:"flex-start", textAlign:"left", cursor:"pointer", fontFamily:sans, flexShrink:0,
-                background: todo ? P.roseSoft : warn ? P.amberSoft : P.surface,
-                border:`1px solid ${todo ? P.rose : warn ? P.amber : P.border}`, borderRadius:14, padding:"10px 12px", opacity: off ? 0.35 : 1 }}>
-              <span style={{ width:62, flexShrink:0, paddingTop:4, fontSize:10, fontWeight:800, letterSpacing:"0.08em", fontFamily:mono, color:P.textSoft, textTransform:"uppercase" }}>{l.k}</span>
-              <span style={{ flex:1, minWidth:0, fontSize:sz, lineHeight:1.45, fontWeight:700, color: todo ? P.roseText : P.text, textDecoration: off ? "line-through" : "none" }}>
-                {l.parts.map((p, i) => (
-                  <span key={i}>{i > 0 ? " · " : ""}{p.w ? <span style={{ color:P.amberText, background:P.amberSoft, borderRadius:6, padding:"0 5px", boxShadow:`inset 0 0 0 1px ${P.amber}` }}>{p.t}</span> : p.t}</span>
-                ))}
+            <button key={b.id} onClick={() => toggle(b.id)} aria-label={`${b.title}${done ? " (dit)" : ""}`}
+              style={{ display:"block", width:"100%", textAlign:"left", cursor:"pointer", fontFamily:sans, flexShrink:0, padding:"10px 12px", borderRadius:14,
+                background: todo ? P.roseSoft : P.surface, opacity: done ? 0.5 : 1,
+                border:`${now ? 2 : 1.5}px solid ${done ? P.green : todo ? P.rose : now ? P.blue : P.border}`,
+                boxShadow: now ? `0 0 0 3px color-mix(in srgb, ${P.blue} 22%, transparent)` : "none" }}>
+              <span style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5 }}>
+                <span style={{ width:22, height:22, borderRadius:"50%", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800, fontFamily:mono,
+                  background: done ? P.green : P.surfaceAlt, color: done ? "#fff" : todo ? P.roseText : P.textMid, border:`1.5px solid ${done ? P.green : todo ? P.rose : P.border}` }}>{done ? "✓" : todo ? "!" : b.n}</span>
+                <span style={{ fontSize:12, fontWeight:800, letterSpacing:"0.08em", fontFamily:mono, textTransform:"uppercase", color: todo ? P.roseText : P.textMid }}>{b.title}</span>
+                {b.sub ? <span style={{ marginLeft:"auto", fontSize:10, fontWeight:600, fontFamily:mono, color:P.textSoft }}>{b.sub}</span> : null}
               </span>
+              {empty && <span style={{ display:"block", fontSize:Math.round(sz * 0.9), fontStyle:"italic", fontWeight:600, color:P.textSoft }}>non renseigné</span>}
+              {(b.rows || []).slice(0, 1).map((r, i) => (
+                <span key={i} style={{ display:"block", fontSize:sz, lineHeight:1.45, fontWeight:700, color: todo ? P.roseText : P.text }}>{textOfRow(r)}</span>
+              ))}
+              {b.vitals && b.vitals.length > 0 && (
+                <span style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6, margin:"6px 0" }}>
+                  {b.vitals.map(v => (
+                    <span key={v.k} style={{ display:"block", textAlign:"center", borderRadius:11, padding:"5px 2px",
+                      background: v.w ? P.amberSoft : P.surfaceAlt, border:`1.5px solid ${v.w ? P.amber : P.border}` }}>
+                      <span style={{ display:"block", fontSize:8.5, fontWeight:700, letterSpacing:"0.08em", fontFamily:mono, textTransform:"uppercase", color:P.textSoft }}>{v.k}</span>
+                      <span style={{ display:"block", fontSize:Math.round(sz * 1.3), fontWeight:800, fontFamily:mono, lineHeight:1.1, color: v.w ? P.amberText : P.text }}>{v.v}</span>
+                      <span style={{ display:"block", fontSize:9, fontWeight:600, fontFamily:mono, color: v.w ? P.amberText : P.textSoft }}>{v.sub || v.u}</span>
+                    </span>
+                  ))}
+                </span>
+              )}
+              {(b.rows || []).slice(1).map((r, i) => (
+                <span key={i} style={{ display:"block", marginTop:3, fontSize:sz, lineHeight:1.45, fontWeight:700, color: todo ? P.roseText : P.text }}>{textOfRow(r)}</span>
+              ))}
             </button>
           );
         })}
-        <p style={{ margin:"2px 0", fontSize:10, fontWeight:600, fontFamily:mono, color:P.textSoft, textAlign:"center" }}>Toucher une ligne pour la masquer à l'oral · écran maintenu allumé</p>
+        <p style={{ margin:"2px 0", fontSize:10, fontWeight:600, fontFamily:mono, color:P.textSoft, textAlign:"center" }}>Toucher un bloc pour le cocher comme dit · écran maintenu allumé</p>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, flexShrink:0 }}>
-          <button onClick={copy} style={{ border:`1.5px solid ${P.border}`, background:P.surface, color:P.text, borderRadius:14, padding:11, fontSize:13, fontWeight:700, fontFamily:sans, cursor:"pointer" }}>{copied ? "✓ Copié" : "📋 Copier (court)"}</button>
-          <button onClick={freeze} disabled={!!frozen} style={{ border:`1.5px solid ${frozen ? P.green : P.border}`, background: frozen ? P.greenSoft : P.surface, color: frozen ? P.greenText : P.text, borderRadius:14, padding:11, fontSize:13, fontWeight:700, fontFamily:sans, cursor: frozen ? "default" : "pointer" }}>{frozen ? `✓ Figé à ${frozen}` : `🕒 Figer à ${getNow()}`}</button>
+          <button onClick={copy} style={{ border:`1.5px solid ${P.border}`, background:P.surface, color:P.text, borderRadius:14, padding:11, fontSize:13, fontWeight:700, fontFamily:sans, cursor:"pointer" }}>{copied ? "✓ Copié" : "📋 Copier la relève"}</button>
+          <button onClick={freeze} disabled={!!frozen} style={{ border:`1.5px solid ${frozen ? P.green : P.border}`, background: frozen ? P.greenSoft : P.surface, color: frozen ? P.greenText : P.text, borderRadius:14, padding:11, fontSize:13, fontWeight:700, fontFamily:sans, cursor: frozen ? "default" : "pointer" }}>{frozen ? `✓ Relève notée ${frozen}` : "🕒 Noter l'heure de relève"}</button>
         </div>
       </div>
     </div>
@@ -15458,7 +15567,7 @@ function App() {
       )}
       {showLecture && (
         <ModeLecture P={P} mono={mono} sans={sans} disp={disp}
-          data={buildLecture({ ped:false, sec, events, racs, hemoList, etco2List, enCours:enCoursList,
+          data={buildReleve({ ped:false, patient:pat, trans, iot, noFlow:noFlowMin, lowFlow:lowFlowMin, acrTime, hemocue:hemocueHist, curare: racs.curare ? `Nimbex ${racs.curare} mg` : "", sec, events, racs, hemoList, etco2List, enCours:enCoursList,
             orientLabels: orientList.map(id => ORIENT_OPTIONS.find(o => o.id === id)?.label).filter(Boolean), dest:regulDest,
             causeLabels: suspectedAd.map(id => CAUSES_HOTT.find(c => c.id === id)?.label).filter(Boolean),
             ident: [pat.sexe === "H" ? "H" : pat.sexe === "F" ? "F" : null, pat.age ? (/^\d+$/.test(String(pat.age).trim()) ? `${String(pat.age).trim()} ans` : pat.age) : null].filter(Boolean).join(" ") || "Adulte",
