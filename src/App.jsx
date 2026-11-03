@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-124";
+const APP_VERSION = "2026.08.15-125";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -11217,7 +11217,7 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
           style={{ background:`linear-gradient(135deg, ${P.green}, color-mix(in srgb, ${P.green} 70%, #000))`, border:"none", color:"#fff",
             borderRadius:16, padding:14, fontSize:14, fontWeight:800, fontFamily:disp, cursor:"pointer",
             boxShadow:`0 6px 18px color-mix(in srgb, ${P.green} 35%, transparent)` }}>
-          🔍 Mode lecture ›
+          🔍 Relève réa ›
         </button>
         <button onClick={onBack}
           style={{ background:"transparent", border:"none", color:P.textSoft, fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:sans, padding:6 }}>
@@ -11342,7 +11342,7 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
             )}
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:"auto" }}>
               <button onClick={() => setSheet(true)} style={{ border:"none", borderRadius:14, padding:15, fontSize:15, fontWeight:800, fontFamily:disp, color:"#fff", cursor:"pointer", background:`linear-gradient(135deg, ${P.green}, color-mix(in srgb, ${P.green} 70%, #000))` }}>+ Mesure</button>
-              <button onClick={onTransmission} style={{ border:`1.5px solid ${P.border}`, borderRadius:14, padding:15, fontSize:15, fontWeight:800, fontFamily:disp, color:P.text, cursor:"pointer", background:P.surface }}>🔍 Mode lecture</button>
+              <button onClick={onTransmission} style={{ border:`1.5px solid ${P.border}`, borderRadius:14, padding:15, fontSize:15, fontWeight:800, fontFamily:disp, color:P.text, cursor:"pointer", background:P.surface }}>🔍 Relève réa</button>
             </div>
             <p style={{ margin:0, fontSize:10, fontWeight:600, fontFamily:mono, color:P.textSoft, textAlign:"center" }}>Écran maintenu allumé</p>
           </div>
