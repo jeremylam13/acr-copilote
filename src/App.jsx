@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // ── Numéro de version — à incrémenter à chaque mise à jour déployée.
 // Permet de vérifier en un coup d'œil (Réglages) que tous les téléphones
 // de l'équipe tournent bien sur la même version après un déploiement.
-const APP_VERSION = "2026.08.15-125";
+const APP_VERSION = "2026.08.15-126";
 
 // ── Bandeau "Nouveautés" — indépendant d'APP_VERSION (qui change à chaque
 // correctif). Cette version-ci n'avance que lorsqu'il y a un vrai lot de
@@ -553,15 +553,15 @@ function TrainingOverlay() {
   return (
     <>
       <div aria-hidden="true" style={{ position:"fixed", inset:0, zIndex:9998, pointerEvents:"none",
-        boxShadow:`inset 0 0 0 3px ${violet}` }} />
+        boxShadow:`inset 0 0 0 6px ${violet}, inset 0 0 22px 2px rgba(100,51,201,0.45)` }} />
       <div style={{ position:"fixed", top:"env(safe-area-inset-top, 0px)", left:"50%",
         transform:"translateX(-50%)", zIndex:9999, display:"flex", alignItems:"center", gap:6,
-        background:violet, color:"#fff", borderRadius:"0 0 11px 11px", padding:"0 4px 1px 10px", height:17,
-        boxShadow:"0 2px 8px rgba(0,0,0,0.25)", fontFamily:"'JetBrains Mono', ui-monospace, monospace" }}>
-        <span style={{ fontSize:8.5, fontWeight:800, letterSpacing:"0.1em", whiteSpace:"nowrap" }}>🎓 ENTRAÎNEMENT</span>
+        background:violet, color:"#fff", borderRadius:"0 0 14px 14px", padding:"0 5px 2px 14px", height:26,
+        boxShadow:"0 3px 10px rgba(0,0,0,0.3)", fontFamily:"'JetBrains Mono', ui-monospace, monospace" }}>
+        <span style={{ fontSize:11.5, fontWeight:800, letterSpacing:"0.1em", whiteSpace:"nowrap" }}>🎓 ENTRAÎNEMENT</span>
         <button onClick={quitTraining}
           style={{ background:"rgba(255,255,255,0.22)", border:"1px solid rgba(255,255,255,0.55)", color:"#fff",
-            borderRadius:99, fontSize:8.5, fontWeight:700, padding:"1px 7px", cursor:"pointer", fontFamily:"inherit", lineHeight:1.2 }}>
+            borderRadius:99, fontSize:10.5, fontWeight:700, padding:"2px 9px", cursor:"pointer", fontFamily:"inherit", lineHeight:1.2 }}>
           Quitter
         </button>
       </div>
@@ -10875,7 +10875,7 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
     <div style={{ position:"fixed", inset:0, zIndex:60, background:P.bg, display:"flex", flexDirection:"column", fontFamily:sans,
       paddingTop:"env(safe-area-inset-top, 0px)" }}>
       {/* Barre fixe */}
-      <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:`${isTraining() ? 24 : 9}px 12px 9px`,
+      <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:`${isTraining() ? 32 : 9}px 12px 9px`,
         display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
         <button onClick={onBack}
           style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:10, padding:"8px 10px",
@@ -11288,7 +11288,7 @@ function PostRacsPage({ P, mono, sans, disp, sec, roscEvt, events, racs, hemoLis
       })()}
       {transport && (
         <div style={{ position:"absolute", inset:0, zIndex:5, background:P.bg, display:"flex", flexDirection:"column", paddingTop:"env(safe-area-inset-top, 0px)" }}>
-          <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:`${isTraining() ? 24 : 9}px 12px 9px`, display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+          <div style={{ background:P.surface, borderBottom:`1px solid ${P.border}`, padding:`${isTraining() ? 32 : 9}px 12px 9px`, display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
             <button onClick={() => setTransport(false)} style={{ background:P.surfaceAlt, border:`1px solid ${P.border}`, borderRadius:10, padding:"8px 10px", fontSize:12, fontWeight:700, color:P.text, cursor:"pointer", fontFamily:sans }}>← Page</button>
             <div style={{ lineHeight:1.05 }}>
               <div style={{ fontSize:8.5, fontWeight:700, letterSpacing:"0.12em", color:P.blue, fontFamily:mono }}>🚑 TRANSPORT · DEPUIS LE RACS</div>
@@ -13496,9 +13496,9 @@ function App() {
       {/* Mode entraînement — discret, en bas de l'accueil */}
       {!trainingOn && (
         <button onClick={startTraining}
-          style={{ marginTop:6, background:"transparent", border:`1px dashed ${P.border}`, color:P.textSoft,
-            borderRadius:99, padding:"6px 12px", fontSize:10.5, fontWeight:600, cursor:"pointer",
-            fontFamily:mono }}>
+          style={{ marginTop:10, background:P.violetSoft, border:`1.5px solid ${P.violet}`, color:P.violetText,
+            borderRadius:99, padding:"9px 16px", fontSize:12.5, fontWeight:800, cursor:"pointer",
+            fontFamily:mono, boxShadow:`0 2px 10px color-mix(in srgb, ${P.violet} 25%, transparent)` }}>
           🎓 Mode entraînement
         </button>
       )}
